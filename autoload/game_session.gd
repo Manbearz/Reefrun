@@ -17,6 +17,9 @@ var monthly: Array = []
 var week_key: String = ""
 var month_key: String = ""
 var web_display := ""
+var _vk_lock := false
+var _vk_restoring := false
+var _stable_win := Vector2i.ZERO
 
 const CourseBuilderScript := preload("res://scripts/course_builder.gd")
 const SAVE_PATH := "user://reefrun.cfg"
@@ -40,64 +43,210 @@ func _ready() -> void:
 	refresh_boards()
 
 
-func _apply_phone_aspect() -> void:
-	var win := get_window()
+func _phone_web() -> bool:
+	return OS.has_feature("web") or OS.has_feature("mobile") or OS.has_feature("ios") or OS.has_feature("android")
+
+
+func _apply_content_scale(win: Window) -> void:
 	win.content_scale_size = Vector2i(int(RR.VIEW_W), int(RR.VIEW_H))
 	win.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
 	win.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_FRACTIONAL
-	# Keep width-locked on phones so the virtual keyboard overlays instead of shrinking the game.
-	if OS.has_feature("web") or OS.has_feature("mobile") or OS.has_feature("ios") or OS.has_feature("android"):
+	if _phone_web():
 		win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP_WIDTH
+	else:
+		win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
+
+
+func _apply_phone_aspect() -> void:
+	var win := get_window()
+	_apply_content_scale(win)
+	_stable_win = win.size
+	if _phone_web():
 		return
-	win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
 	if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_WINDOWED:
 		var preview := Vector2i(int(RR.VIEW_W), int(RR.VIEW_H))
 		DisplayServer.window_set_size(preview)
 		var screen := DisplayServer.screen_get_usable_rect()
 		var origin := screen.position + (screen.size - preview) / 2
 		DisplayServer.window_set_position(origin)
+		_stable_win = preview
 
 
 func _lock_content_scale() -> void:
+	if _vk_restoring:
+		return
 	var win := get_window()
-	win.content_scale_size = Vector2i(int(RR.VIEW_W), int(RR.VIEW_H))
-	win.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
-	win.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_FRACTIONAL
-	if OS.has_feature("web") or OS.has_feature("mobile") or OS.has_feature("ios") or OS.has_feature("android"):
-		win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP_WIDTH
-	else:
-		win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
+	var now := win.size
+	if _vk_lock and _stable_win != Vector2i.ZERO:
+		if absi(now.x - _stable_win.x) > 48:
+			_vk_lock = false
+			_stable_win = now
+			_web_vk_eval("window.reefrunVkUnlock && window.reefrunVkUnlock();")
+		elif now != _stable_win:
+			_vk_restoring = true
+			win.size = _stable_win
+			_vk_restoring = false
+			_apply_content_scale(win)
+			return
+	elif not _vk_lock:
+		_stable_win = now
+	_apply_content_scale(win)
+
+
+func begin_virtual_keyboard_lock() -> void:
+	if not _phone_web():
+		return
+	var win := get_window()
+	if not _vk_lock:
+		_stable_win = win.size
+	_vk_lock = true
+	_web_vk_eval("window.reefrunVkLock && window.reefrunVkLock();")
+
+
+func end_virtual_keyboard_lock() -> void:
+	if not _vk_lock:
+		return
+	_vk_lock = false
+	_web_vk_eval("window.reefrunVkUnlock && window.reefrunVkUnlock();")
+
+
+func _web_vk_eval(code: String) -> void:
+	if not OS.has_feature("web") or not Engine.has_singleton("JavaScriptBridge"):
+		return
+	Engine.get_singleton("JavaScriptBridge").eval(code, true)
 
 
 func _lock_web_page_zoom() -> void:
 	if not OS.has_feature("web") or not Engine.has_singleton("JavaScriptBridge"):
 		return
-	var js := Engine.get_singleton("JavaScriptBridge")
-	js.eval(
+	Engine.get_singleton("JavaScriptBridge").eval(
 		"""
 		(function(){
+			if (window.__reefrunVkInstalled) return;
+			window.__reefrunVkInstalled = true;
+			var locked = false;
+			var layoutW = window.innerWidth;
+			var layoutH = window.innerHeight;
+			var watchRaf = 0;
+
+			function canvasEl(){ return document.getElementById('canvas'); }
+			function isText(el){
+				if (!el) return false;
+				var tag = (el.tagName || '').toLowerCase();
+				return tag === 'input' || tag === 'textarea' || !!el.isContentEditable;
+			}
+			function bumpInputFont(el){
+				if (!isText(el)) return;
+				el.style.setProperty('font-size', '16px', 'important');
+				el.style.setProperty('line-height', 'normal', 'important');
+				el.style.setProperty('transform', 'none', 'important');
+			}
+			function captureLayout(){
+				layoutW = window.innerWidth;
+				layoutH = window.innerHeight;
+			}
+			function applyCanvasLayout(){
+				var c = canvasEl();
+				if (!c) return;
+				c.style.width = layoutW + 'px';
+				c.style.height = layoutH + 'px';
+				c.style.top = '0px';
+				c.style.left = '0px';
+				c.style.position = c.style.position || 'absolute';
+			}
+			function watch(){
+				watchRaf = 0;
+				if (!locked) return;
+				applyCanvasLayout();
+				watchRaf = window.requestAnimationFrame(watch);
+			}
+			window.reefrunVkLock = function(){
+				if (!locked) captureLayout();
+				locked = true;
+				applyCanvasLayout();
+				if (!watchRaf) watchRaf = window.requestAnimationFrame(watch);
+			};
+			window.reefrunVkUnlock = function(){
+				locked = false;
+				if (watchRaf) {
+					window.cancelAnimationFrame(watchRaf);
+					watchRaf = 0;
+				}
+			};
+			function onResize(e){
+				if (!locked) {
+					captureLayout();
+					return;
+				}
+				if (Math.abs(window.innerWidth - layoutW) > 48) {
+					window.reefrunVkUnlock();
+					captureLayout();
+					return;
+				}
+				e.stopImmediatePropagation();
+				applyCanvasLayout();
+			}
+			window.addEventListener('resize', onResize, true);
+			if (window.visualViewport) {
+				window.visualViewport.addEventListener('resize', function(e){
+					if (!locked) return;
+					if (Math.abs(window.innerWidth - layoutW) > 48) {
+						window.reefrunVkUnlock();
+						return;
+					}
+					e.stopImmediatePropagation();
+					applyCanvasLayout();
+				}, true);
+			}
+			document.addEventListener('focusin', function(e){
+				bumpInputFont(e.target);
+				if (isText(e.target)) window.reefrunVkLock();
+			}, true);
+			document.addEventListener('focusout', function(e){
+				if (!isText(e.target)) return;
+				window.setTimeout(function(){
+					if (!isText(document.activeElement)) window.reefrunVkUnlock();
+				}, 50);
+			}, true);
 			var meta = document.querySelector('meta[name="viewport"]');
 			if (!meta) {
 				meta = document.createElement('meta');
 				meta.name = 'viewport';
 				document.head.appendChild(meta);
 			}
-			meta.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover');
+			meta.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=overlays-content');
 			if (!document.getElementById('reefrun-vk-style')) {
 				var style = document.createElement('style');
 				style.id = 'reefrun-vk-style';
-				style.textContent = 'html,body{overflow:hidden;touch-action:manipulation;}input,textarea{font-size:16px !important;transform:none !important;}';
+				style.textContent = 'html,body{margin:0;overflow:hidden;}canvas{touch-action:none;}input,textarea,[contenteditable]{font-size:16px !important;}';
 				document.head.appendChild(style);
 			}
-			var canvas = document.getElementById('canvas');
+			var obs = new MutationObserver(function(muts){
+				for (var i = 0; i < muts.length; i++) {
+					var nodes = muts[i].addedNodes;
+					for (var j = 0; j < nodes.length; j++) {
+						var n = nodes[j];
+						if (!n || n.nodeType !== 1) continue;
+						bumpInputFont(n);
+						if (n.querySelectorAll) {
+							var list = n.querySelectorAll('input,textarea');
+							for (var k = 0; k < list.length; k++) bumpInputFont(list[k]);
+						}
+					}
+				}
+			});
+			obs.observe(document.documentElement, {childList:true, subtree:true});
+			var canvas = canvasEl();
 			if (canvas) {
 				canvas.style.touchAction = 'none';
 				canvas.style.userSelect = 'none';
 				canvas.style.webkitUserSelect = 'none';
 				canvas.style.webkitTouchCallout = 'none';
 			}
+			captureLayout();
 		})();
-		"""
+		""",
+		true
 	)
 
 

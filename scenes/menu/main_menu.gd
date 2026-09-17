@@ -133,6 +133,7 @@ func _on_menu_touch_press(pos: Vector2) -> void:
 		return
 	if _home.visible and _name_edit and _name_edit.is_visible_in_tree() and _name_edit.get_global_rect().has_point(pos):
 		_name_edit.grab_focus()
+		GameSession.begin_virtual_keyboard_lock()
 		_mark_input_handled()
 
 
@@ -212,6 +213,8 @@ func _build_home(card_size: Vector2) -> void:
 	_name_edit.virtual_keyboard_enabled = true
 	_name_edit.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_DEFAULT
 	_style_name(_name_edit)
+	_name_edit.focus_entered.connect(GameSession.begin_virtual_keyboard_lock)
+	_name_edit.focus_exited.connect(GameSession.end_virtual_keyboard_lock)
 	_name_edit.text_changed.connect(_on_name_changed)
 	_name_edit.text_submitted.connect(func(_t: String): _play())
 	_home.add_child(_name_edit)
