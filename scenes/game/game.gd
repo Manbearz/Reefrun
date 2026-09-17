@@ -27,6 +27,18 @@ var school: Node2D
 var course: Node2D
 var course_draw: Node2D
 var _pipe_pool: Array[PipePair] = []
+var _warmup: Node2D
+var _warmup_frames := 8
+const PIPE_SPIKE_PROFILE := true
+var _spike_phase := "idle"
+var _spike_worst := {
+	"start": 0.0,
+	"pipe1_approach": 0.0,
+	"score1": 0.0,
+	"pipe2_approach": 0.0,
+	"score2": 0.0,
+}
+var _spike_reported := false
 var phantoms: PackedInt32Array = PackedInt32Array()
 var visual_scroll := 0.0
 var world_scroll := 0.0
@@ -93,12 +105,14 @@ func _ready() -> void:
 	hud = GameHUD.new()
 	hud.process_mode = Node.PROCESS_MODE_PAUSABLE
 	add_child(hud)
-	_begin_lobby()
 	_build_pause()
 	_prewarm_pipes()
+	_prime_opening_pipes()
 	_setup_harpoons()
+	_prewarm_gameplay_draw()
 	_bind_rewarded_ads()
 	_configure_web_touch()
+	_begin_lobby()
 	var vp := get_viewport()
 	vp.snap_2d_transforms_to_pixel = false
 	vp.snap_2d_vertices_to_pixel = false
@@ -343,6 +357,13 @@ func _begin_run() -> void:
 	if _pending_start_flap:
 		_pending_start_flap = false
 		_try_player_flap()
+	_spike_phase = "start"
+	_spike_reported = false
+	for key in _spike_worst.keys():
+		_spike_worst[key] = 0.0
+	var sfx := get_node_or_null("/root/Sfx")
+	if sfx:
+		sfx.prewarm()
 
 
 func _begin_lobby() -> void:
@@ -423,6 +444,14 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
+	if PIPE_SPIKE_PROFILE:
+		_sample_pipe_spike(delta)
+	if _warmup_frames > 0:
+		_warmup_frames -= 1
+		if _warmup_frames <= 0 and _warmup:
+			_warmup.visible = false
+			if hud:
+				hud.hide_prewarm()
 	if not finished and not paused:
 		world_scroll += RR.PIPE_SPEED * delta
 	if started and not finished and not paused:
@@ -454,24 +483,35 @@ func _process(delta: float) -> void:
 func _spawn_pipes() -> void:
 	var lead := RR.VIEW_W + 80.0
 	while spawn_index < layout.size() and layout[spawn_index]["x"] <= scroll + lead:
-		var spec: Dictionary = layout[spawn_index]
-		var pair: PipePair
-		if _pipe_pool.is_empty():
-			pair = _make_pooled_pipe()
-		else:
-			pair = _pipe_pool.pop_back()
-		pair.position = Vector2(spec["x"] + RR.PLAYER_X, 0)
-		pair.visual.position = pair.position
-		pair.rebuild(spec["style"], spec["gap_y"], spec["gap_h"])
-		pair.activate()
-		pipes.append(pair)
-		spawn_index += 1
-		if spawn_index % RR.COIN_EVERY == 0:
-			_spawn_coin_after_pipe(spawn_index - 1)
-		_pipes_until_harpoon -= 1
-		if _pipes_until_harpoon <= 0:
-			_harpoon_beat = 1
+		_take_pipe_from_layout()
+		if _harpoon_beat != 0:
 			break
+
+
+func _prime_opening_pipes() -> void:
+	var ready := mini(4, layout.size())
+	while spawn_index < ready:
+		_take_pipe_from_layout()
+
+
+func _take_pipe_from_layout() -> void:
+	var spec: Dictionary = layout[spawn_index]
+	var pair: PipePair
+	if _pipe_pool.is_empty():
+		pair = _make_pooled_pipe()
+	else:
+		pair = _pipe_pool.pop_back()
+	pair.position = Vector2(spec["x"] + RR.PLAYER_X, 0)
+	pair.visual.position = pair.position
+	pair.rebuild(spec["style"], spec["gap_y"], spec["gap_h"])
+	pair.activate()
+	pipes.append(pair)
+	spawn_index += 1
+	if spawn_index % RR.COIN_EVERY == 0:
+		_spawn_coin_after_pipe(spawn_index - 1)
+	_pipes_until_harpoon -= 1
+	if _pipes_until_harpoon <= 0:
+		_harpoon_beat = 1
 
 
 func _cull_pipes() -> void:
@@ -980,6 +1020,28 @@ func _prewarm_pipes() -> void:
 		_pipe_pool.append(_make_pooled_pipe())
 
 
+func _prewarm_gameplay_draw() -> void:
+	_warmup = Node2D.new()
+	_warmup.z_index = 40
+	add_child(_warmup)
+	var ids: PackedStringArray = RR.PIPE_IDS.duplicate()
+	ids.append("coin")
+	ids.append("num_gold_0")
+	ids.append("num_gold_1")
+	ids.append("num_gold_2")
+	for i in ids.size():
+		var spr := Sprite2D.new()
+		spr.texture = Sprites.tex(ids[i])
+		spr.centered = true
+		spr.scale = Vector2.ONE * 0.04
+		spr.position = Vector2(8.0 + float(i) * 6.0, 8.0)
+		spr.modulate.a = 0.05
+		_warmup.add_child(spr)
+	var sfx := get_node_or_null("/root/Sfx")
+	if sfx:
+		sfx.prewarm()
+
+
 func _make_pooled_pipe() -> PipePair:
 	var pair := PipePair.new()
 	pair.process_mode = Node.PROCESS_MODE_PAUSABLE
@@ -987,6 +1049,7 @@ func _make_pooled_pipe() -> PipePair:
 	course.add_child(pair)
 	course_draw.add_child(pair.visual)
 	pair.visual.position = pair.position
+	pair.activate()
 	pair.deactivate()
 	return pair
 
@@ -1186,3 +1249,37 @@ func _log_perf() -> void:
 			Engine.get_frames_per_second(),
 		]
 	)
+
+
+func _sample_pipe_spike(delta: float) -> void:
+	if _spike_reported or _spike_phase == "idle":
+		return
+	var ms := delta * 1000.0
+	if ms > float(_spike_worst[_spike_phase]):
+		_spike_worst[_spike_phase] = ms
+	if not started or finished or layout.size() < 2:
+		return
+	var px := RR.PLAYER_X + scroll
+	var p1 := float(layout[0]["x"]) + RR.PLAYER_X - px
+	var p2 := float(layout[1]["x"]) + RR.PLAYER_X - px
+	if score >= 2:
+		if _spike_phase != "score2":
+			_spike_phase = "score2"
+			return
+		_spike_reported = true
+		print(
+			"[pipe-spike] start=%.1f pipe1=%.1f score1=%.1f pipe2=%.1f score2=%.1f"
+			% [
+				float(_spike_worst["start"]),
+				float(_spike_worst["pipe1_approach"]),
+				float(_spike_worst["score1"]),
+				float(_spike_worst["pipe2_approach"]),
+				float(_spike_worst["score2"]),
+			]
+		)
+		return
+	if score >= 1:
+		_spike_phase = "pipe2_approach" if p2 < 220.0 else "score1"
+		return
+	if p1 < 220.0:
+		_spike_phase = "pipe1_approach"

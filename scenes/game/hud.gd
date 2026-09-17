@@ -17,6 +17,7 @@ var _alive := -1
 var _score := -1
 var _coins := -1
 var _feed_tween: Tween
+var _glyph_probe: SpriteTextScript
 
 
 func _ready() -> void:
@@ -47,6 +48,25 @@ func _ready() -> void:
 	lobby_text = _line("LOBBY", 22, Vector2(0, RR.VIEW_H * 0.30), Vector2(RR.VIEW_W, 32), HORIZONTAL_ALIGNMENT_CENTER)
 	lobby_time = _line("12", 64, Vector2(0, RR.VIEW_H * 0.36), Vector2(RR.VIEW_W, 80), HORIZONTAL_ALIGNMENT_CENTER, true)
 	feed_text = _line("", 14, Vector2(12, RR.VIEW_H - 92), Vector2(RR.VIEW_W - 24, 24), HORIZONTAL_ALIGNMENT_LEFT)
+	_prewarm_glyphs()
+
+
+func _prewarm_glyphs() -> void:
+	_glyph_probe = SpriteTextScript.new()
+	_glyph_probe.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_glyph_probe.position = Vector2(2, 2)
+	_glyph_probe.modulate.a = 0.04
+	_glyph_probe.configure("0123456789", 8, Vector2(72, 10), HORIZONTAL_ALIGNMENT_LEFT, true)
+	add_child(_glyph_probe)
+	score_text.set_value("1")
+	score_text.set_value("0")
+	show_feed(" ")
+	feed_text.modulate.a = 0.0
+
+
+func hide_prewarm() -> void:
+	if _glyph_probe:
+		_glyph_probe.visible = false
 
 
 func _line(text: String, height: float, pos: Vector2, box: Vector2, align: HorizontalAlignment, gold := false) -> SpriteTextScript:

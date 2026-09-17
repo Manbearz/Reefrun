@@ -23,6 +23,7 @@ func _ready() -> void:
 		add_child(player)
 		_players.append(player)
 	_start_music()
+	prewarm()
 
 
 func play_death(volume_db: float = -10.0) -> void:
@@ -47,6 +48,11 @@ func play(id: String, volume_db: float = 0.0) -> void:
 	player.stream = stream
 	player.volume_db = volume_db
 	player.play()
+
+
+func prewarm() -> void:
+	for id in ["swim", "checkpoint", "coin", "grappling"]:
+		play(id, -80.0)
 
 
 func _detect_bypass_swim() -> bool:
