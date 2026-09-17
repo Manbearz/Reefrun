@@ -1,0 +1,11 @@
+================ PRESENT_DIAG s1_540 ================
+frame_count=601
+avg_ms=16.6671 median_ms=16.6670 min_ms=16.5500 max_ms=16.7740 std_ms=0.0314
+buckets <12=0 12-15=0 15-18=601 18-20=0 20-25=0 >25=0
+frames_over_20ms=0
+avg_move_px=3.333433 move_median=3.333374 move_min=3.310059 move_max=3.354736 move_std=0.006274
+delta_jump_avg_ms=0.0407 delta_jump_max_ms=0.2240
+zero_moves=0 double_moves=0
+first_moves=3.335,3.332,3.333,3.334,3.333,3.333,3.337,3.334,3.330,3.334,3.341,3.325,3.333,3.334,3.333,3.339
+web_display=inner=(540, 960) scale_size=(540, 960) content_scale=1.000 screen=1 refresh=60.0 dpi=144
+window=(540, 960) screen=1 refresh=60.0 dpi=144 vsync=1 max_fps=0
