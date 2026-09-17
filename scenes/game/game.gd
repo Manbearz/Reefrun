@@ -67,22 +67,28 @@ var _coin_ad_watch: Button
 var _coin_ad_note: SpriteTextScript
 var _eat_emulated_mouse := false
 var _pending_start_flap := false
+var _press_is_touch := false
+var _mouse_pressed := 0
+var _mouse_flaps := 0
+var _mouse_rejected := 0
 var _screen_touch_pressed := 0
-var _touches_accepted := 0
-var _player_flap_calls := 0
+var _touch_flaps := 0
 var _touches_rejected := 0
-var _touch_log: Array[Dictionary] = []
+var _player_flap_calls := 0
 var _reject_counts := {}
 var _input_usec := 0
-var _tap_to_flap_n := 0
-var _tap_to_flap_sum := 0
-var _tap_to_flap_worst := 0
+var _mouse_lat_n := 0
+var _mouse_lat_sum := 0
+var _mouse_lat_worst := 0
+var _touch_lat_n := 0
+var _touch_lat_sum := 0
+var _touch_lat_worst := 0
 var _first_flap_pending := false
 var _first_flap_ms := -1.0
 var _expect_flap_vel := false
 var _flap_vel_after := 0.0
 var _vel_overwrites := 0
-const _TOUCH_LOG_CAP := 300
+var _probe_flash := 0
 
 
 func _ready() -> void:
@@ -114,6 +120,7 @@ func _ready() -> void:
 	_prewarm_pipes()
 	_setup_harpoons()
 	_bind_rewarded_ads()
+	_configure_web_touch()
 	var vp := get_viewport()
 	vp.snap_2d_transforms_to_pixel = false
 	vp.snap_2d_vertices_to_pixel = false
@@ -215,10 +222,32 @@ func _roll_death_pipe() -> int:
 	return cosmetic_rng.randi_range(9, 28)
 
 
+func _configure_web_touch() -> void:
+	if not OS.has_feature("web"):
+		return
+	if not Engine.has_singleton("JavaScriptBridge"):
+		return
+	var js := Engine.get_singleton("JavaScriptBridge")
+	js.eval(
+		"""
+		(function(){
+			var c = document.getElementById('canvas');
+			if (!c) return;
+			c.style.touchAction = 'none';
+			c.style.userSelect = 'none';
+			c.style.webkitUserSelect = 'none';
+			c.style.webkitTouchCallout = 'none';
+		})();
+		"""
+	)
+
+
 func _input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		if event.pressed:
-			_handle_screen_touch(event)
+			_flash_touch_probe()
+			_play_press(event.position, true)
+		get_viewport().set_input_as_handled()
 		return
 	if finished:
 		return
@@ -233,70 +262,51 @@ func _input(event: InputEvent) -> void:
 			_eat_emulated_mouse = false
 			get_viewport().set_input_as_handled()
 			return
-		if _button_at(event.position):
-			return
-		_input_usec = Time.get_ticks_usec()
-		_try_immediate_flap()
-		get_viewport().set_input_as_handled()
+		_play_press(event.position, false)
 		return
 	if event is InputEventKey and event.pressed and not event.echo and event.is_action("flap"):
+		_press_is_touch = false
 		_input_usec = Time.get_ticks_usec()
-		_try_immediate_flap()
+		_try_player_flap()
 		get_viewport().set_input_as_handled()
 
 
-func _handle_screen_touch(event: InputEventScreenTouch) -> void:
-	_screen_touch_pressed += 1
-	var pos := event.position
-	var ui_hit := _button_at(pos)
-	var vel_before := player.velocity.y if player else 0.0
-	var accepted := false
-	var flap_called := false
-	var reason := ""
-	if ui_hit:
-		reason = "UI_BLOCKED"
-		_press_button_at(pos)
-		get_viewport().set_input_as_handled()
-	elif finished:
-		reason = "FINISHED"
-	elif paused:
-		reason = "PAUSED"
-	elif player == null or not player.alive:
-		reason = "DEAD"
-	elif not started:
-		_pending_start_flap = true
-		reason = "NOT_STARTED_PENDING"
-	else:
-		_input_usec = Time.get_ticks_usec()
+func _play_press(pos: Vector2, from_touch: bool) -> void:
+	_press_is_touch = from_touch
+	if from_touch:
+		_screen_touch_pressed += 1
 		_eat_emulated_mouse = true
-		reason = _try_immediate_flap()
-		accepted = reason.is_empty()
-		flap_called = accepted
-	if accepted:
-		_touches_accepted += 1
+	else:
+		_mouse_pressed += 1
+	if _button_at(pos):
+		if from_touch:
+			_press_button_at(pos)
+			get_viewport().set_input_as_handled()
+		_count_reject("UI_BLOCKED", from_touch)
+		return
+	_input_usec = Time.get_ticks_usec()
+	var reason := _try_player_flap()
+	if reason.is_empty():
 		get_viewport().set_input_as_handled()
-	elif started and not paused and not finished:
+		return
+	_count_reject(reason, from_touch)
+
+
+func _count_reject(reason: String, from_touch: bool) -> void:
+	if from_touch:
 		_touches_rejected += 1
-		_reject_counts[reason] = int(_reject_counts.get(reason, 0)) + 1
-	var vel_after := player.velocity.y if player else 0.0
-	_touch_log.append({
-		"id": _screen_touch_pressed,
-		"usec": Time.get_ticks_usec(),
-		"index": event.index,
-		"pos": pos,
-		"started": started,
-		"paused": paused,
-		"finished": finished,
-		"tick": match_tick,
-		"ui": ui_hit,
-		"accepted": accepted,
-		"flap": flap_called,
-		"vel_before": vel_before,
-		"vel_after": vel_after,
-		"reason": reason,
-	})
-	if _touch_log.size() > _TOUCH_LOG_CAP:
-		_touch_log.remove_at(0)
+	else:
+		_mouse_rejected += 1
+	_reject_counts[reason] = int(_reject_counts.get(reason, 0)) + 1
+
+
+func _flash_touch_probe() -> void:
+	if not OS.is_debug_build():
+		return
+	if hud == null or hud.alive_text == null:
+		return
+	hud.alive_text.modulate = Color(1.7, 1.7, 0.35)
+	_probe_flash = 2
 
 
 func _button_at(pos: Vector2) -> bool:
@@ -342,7 +352,7 @@ func _press_button_in(node: Node, pos: Vector2) -> bool:
 	return false
 
 
-func _try_immediate_flap() -> String:
+func _try_player_flap() -> String:
 	if finished or paused:
 		return "GAME_STATE"
 	if player == null or not player.alive:
@@ -350,28 +360,34 @@ func _try_immediate_flap() -> String:
 	if not started:
 		_pending_start_flap = true
 		return "NOT_STARTED_PENDING"
-	_perform_player_flap_immediately()
-	return ""
-
-
-func _perform_player_flap_immediately() -> void:
 	var before := player.velocity.y
 	player.flap(true)
 	_player_flap_calls += 1
+	if _press_is_touch:
+		_touch_flaps += 1
+	else:
+		_mouse_flaps += 1
 	_recorded_flaps.append(match_tick)
 	_flap_vel_after = player.velocity.y
 	_expect_flap_vel = true
 	if _input_usec > 0:
 		var dt := Time.get_ticks_usec() - _input_usec
 		_input_usec = 0
-		_tap_to_flap_n += 1
-		_tap_to_flap_sum += dt
-		if dt > _tap_to_flap_worst:
-			_tap_to_flap_worst = dt
+		if _press_is_touch:
+			_touch_lat_n += 1
+			_touch_lat_sum += dt
+			if dt > _touch_lat_worst:
+				_touch_lat_worst = dt
+		else:
+			_mouse_lat_n += 1
+			_mouse_lat_sum += dt
+			if dt > _mouse_lat_worst:
+				_mouse_lat_worst = dt
 	if _first_flap_ms < 0.0:
 		_first_flap_pending = true
 	if before == _flap_vel_after and before != -RR.FLAP:
 		_vel_overwrites += 1
+	return ""
 
 
 func _begin_run() -> void:
@@ -381,14 +397,19 @@ func _begin_run() -> void:
 	match_tick = 0
 	_eat_emulated_mouse = false
 	_screen_touch_pressed = 0
-	_touches_accepted = 0
-	_player_flap_calls = 0
+	_touch_flaps = 0
 	_touches_rejected = 0
-	_touch_log.clear()
+	_mouse_pressed = 0
+	_mouse_flaps = 0
+	_mouse_rejected = 0
+	_player_flap_calls = 0
 	_reject_counts.clear()
-	_tap_to_flap_n = 0
-	_tap_to_flap_sum = 0
-	_tap_to_flap_worst = 0
+	_mouse_lat_n = 0
+	_mouse_lat_sum = 0
+	_mouse_lat_worst = 0
+	_touch_lat_n = 0
+	_touch_lat_sum = 0
+	_touch_lat_worst = 0
 	_first_flap_pending = false
 	_first_flap_ms = -1.0
 	_expect_flap_vel = false
@@ -407,7 +428,7 @@ func _begin_run() -> void:
 	_advance_playback()
 	if _pending_start_flap:
 		_pending_start_flap = false
-		_try_immediate_flap()
+		_try_player_flap()
 
 
 func _begin_lobby() -> void:
@@ -492,6 +513,10 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
+	if _probe_flash > 0:
+		_probe_flash -= 1
+		if _probe_flash <= 0 and hud and hud.alive_text:
+			hud.alive_text.modulate = Color.WHITE
 	if _first_flap_pending:
 		_first_flap_pending = false
 		_first_flap_ms = Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
@@ -1260,36 +1285,25 @@ func _log_perf() -> void:
 			Engine.get_frames_per_second(),
 		]
 	)
-	var avg_tap := float(_tap_to_flap_sum) / float(maxi(_tap_to_flap_n, 1))
+	var mouse_avg := float(_mouse_lat_sum) / float(maxi(_mouse_lat_n, 1))
+	var touch_avg := float(_touch_lat_sum) / float(maxi(_touch_lat_n, 1))
 	print(
-		"[tap-audit] screen_touch=%d accepted=%d flap_calls=%d rejected=%d vel_overwrite=%d tap_to_flap_us avg=%.0f worst=%d first_flap_ms=%.2f swim_bypass=%s reasons=%s"
+		"[tap-audit] mouse_press=%d mouse_flaps=%d mouse_rej=%d mouse_us avg=%.0f worst=%d touch_press=%d touch_flaps=%d touch_rej=%d touch_us avg=%.0f worst=%d flap_calls=%d vel_overwrite=%d first_flap_ms=%.2f swim_bypass=%s reasons=%s"
 		% [
+			_mouse_pressed,
+			_mouse_flaps,
+			_mouse_rejected,
+			mouse_avg,
+			_mouse_lat_worst,
 			_screen_touch_pressed,
-			_touches_accepted,
-			_player_flap_calls,
+			_touch_flaps,
 			_touches_rejected,
+			touch_avg,
+			_touch_lat_worst,
+			_player_flap_calls,
 			_vel_overwrites,
-			avg_tap,
-			_tap_to_flap_worst,
 			_first_flap_ms,
 			str(swim_off),
 			str(_reject_counts),
 		]
 	)
-	var dump := mini(_touch_log.size(), 24)
-	for i in range(_touch_log.size() - dump, _touch_log.size()):
-		var e: Dictionary = _touch_log[i]
-		print(
-			"[touch %d] tick=%s accepted=%s flap=%s ui=%s reason=%s vel %s -> %s pos=%s"
-			% [
-				int(e.get("id", 0)),
-				str(e.get("tick", 0)),
-				str(e.get("accepted", false)),
-				str(e.get("flap", false)),
-				str(e.get("ui", false)),
-				str(e.get("reason", "")),
-				str(e.get("vel_before", 0)),
-				str(e.get("vel_after", 0)),
-				str(e.get("pos", Vector2.ZERO)),
-			]
-		)

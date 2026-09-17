@@ -51,6 +51,7 @@ func _ready() -> void:
 
 func _line(text: String, height: float, pos: Vector2, box: Vector2, align: HorizontalAlignment, gold := false) -> SpriteTextScript:
 	var line := SpriteTextScript.new()
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	line.position = pos
 	line.configure(text, height, box, align, gold)
 	add_child(line)

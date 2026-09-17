@@ -130,7 +130,6 @@ func tick(delta: float) -> void:
 		simulate_vertical(delta)
 		_face_velocity()
 		return
-	flap_cd = maxf(flap_cd - delta, 0.0)
 	simulate_vertical(delta)
 	_face_velocity()
 	position.x = RR.PLAYER_X
