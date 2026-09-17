@@ -1,6 +1,9 @@
 extends Node
 
 var fish_index: int = 0
+var coins: int = 0
+var hat_index: int = -1
+var owned_hats: PackedInt32Array = PackedInt32Array()
 var player_name: String = ""
 var course_seed: int = 0
 var last_score: int = 0
@@ -97,6 +100,46 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func selected_fish() -> String:
 	return RR.FISH_IDS[fish_index]
+
+
+func owns_hat(index: int) -> bool:
+	if index < 0:
+		return false
+	for owned in owned_hats:
+		if owned == index:
+			return true
+	return false
+
+
+func add_coins(amount: int = 1) -> void:
+	coins = maxi(0, coins + amount)
+	_save()
+
+
+func buy_hat(index: int) -> bool:
+	if index < 0 or index >= RR.HAT_COUNT:
+		return false
+	if owns_hat(index):
+		equip_hat(index)
+		return true
+	if coins < RR.HAT_PRICE:
+		return false
+	coins -= RR.HAT_PRICE
+	owned_hats.append(index)
+	equip_hat(index)
+	_save()
+	return true
+
+
+func equip_hat(index: int) -> void:
+	if index < 0:
+		hat_index = -1
+		_save()
+		return
+	if not owns_hat(index):
+		return
+	hat_index = index
+	_save()
 
 
 func start_match() -> void:
@@ -196,6 +239,17 @@ func _load() -> void:
 		return
 	fish_index = int(cfg.get_value("player", "fish", 0))
 	player_name = str(cfg.get_value("player", "name", ""))
+	coins = int(cfg.get_value("player", "coins", 0))
+	hat_index = int(cfg.get_value("player", "hat", -1))
+	owned_hats = PackedInt32Array()
+	var raw_hats: Variant = cfg.get_value("player", "owned_hats", PackedInt32Array())
+	if raw_hats is PackedInt32Array:
+		owned_hats = raw_hats
+	elif raw_hats is Array:
+		for v in raw_hats:
+			owned_hats.append(int(v))
+	if hat_index >= 0 and not owns_hat(hat_index):
+		hat_index = -1
 	best_score = int(cfg.get_value("stats", "best_score", 0))
 	best_rank = int(cfg.get_value("stats", "best_rank", 100))
 	games_played = int(cfg.get_value("stats", "games", 0))
@@ -210,6 +264,9 @@ func _save() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("player", "fish", fish_index)
 	cfg.set_value("player", "name", player_name)
+	cfg.set_value("player", "coins", coins)
+	cfg.set_value("player", "hat", hat_index)
+	cfg.set_value("player", "owned_hats", owned_hats)
 	cfg.set_value("stats", "best_score", best_score)
 	cfg.set_value("stats", "best_rank", best_rank)
 	cfg.set_value("stats", "games", games_played)

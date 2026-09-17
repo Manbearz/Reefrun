@@ -56,19 +56,33 @@ var _perf_worst := 0.0
 var _perf_phys_sum := 0.0
 var _perf_phys_worst := 0.0
 var _ghost_bank
+var _coins: Array[Sprite2D] = []
+var _run_coins := 0
+var _over_rank := 0
+var _over_remaining := 0
+var _coin_reward_claimed := false
+var _reward_request_active := false
+var _coin_offer_open := false
+var _coin_ad_watch: Button
+var _coin_ad_note: SpriteTextScript
 var _eat_emulated_mouse := false
 var _pending_start_flap := false
-var _last_flap_tick := -1
-var _touch_presses := 0
-var _flaps_applied := 0
-var _taps_rejected := 0
-var _same_tick_ignored := 0
+var _screen_touch_pressed := 0
+var _touches_accepted := 0
+var _player_flap_calls := 0
+var _touches_rejected := 0
+var _touch_log: Array[Dictionary] = []
+var _reject_counts := {}
 var _input_usec := 0
 var _tap_to_flap_n := 0
 var _tap_to_flap_sum := 0
 var _tap_to_flap_worst := 0
 var _first_flap_pending := false
 var _first_flap_ms := -1.0
+var _expect_flap_vel := false
+var _flap_vel_after := 0.0
+var _vel_overwrites := 0
+const _TOUCH_LOG_CAP := 300
 
 
 func _ready() -> void:
@@ -99,6 +113,7 @@ func _ready() -> void:
 	_build_pause()
 	_prewarm_pipes()
 	_setup_harpoons()
+	_bind_rewarded_ads()
 	var vp := get_viewport()
 	vp.snap_2d_transforms_to_pixel = false
 	vp.snap_2d_vertices_to_pixel = false
@@ -201,6 +216,10 @@ func _roll_death_pipe() -> int:
 
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch:
+		if event.pressed:
+			_handle_screen_touch(event)
+		return
 	if finished:
 		return
 	if event.is_action_pressed("pause") and event is InputEventKey:
@@ -209,24 +228,12 @@ func _input(event: InputEvent) -> void:
 		return
 	if paused:
 		return
-	if event is InputEventScreenTouch:
-		if event.pressed:
-			_touch_presses += 1
-			if _over_interactive_control():
-				_taps_rejected += 1
-				return
-			_eat_emulated_mouse = true
-			_input_usec = Time.get_ticks_usec()
-			_try_immediate_flap()
-			get_viewport().set_input_as_handled()
-		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		if _eat_emulated_mouse:
 			_eat_emulated_mouse = false
 			get_viewport().set_input_as_handled()
 			return
-		if _over_interactive_control():
-			_taps_rejected += 1
+		if _button_at(event.position):
 			return
 		_input_usec = Time.get_ticks_usec()
 		_try_immediate_flap()
@@ -238,34 +245,122 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
-func _over_interactive_control() -> bool:
-	var hovered := get_viewport().gui_get_hovered_control()
-	while hovered:
-		if hovered is BaseButton:
+func _handle_screen_touch(event: InputEventScreenTouch) -> void:
+	_screen_touch_pressed += 1
+	var pos := event.position
+	var ui_hit := _button_at(pos)
+	var vel_before := player.velocity.y if player else 0.0
+	var accepted := false
+	var flap_called := false
+	var reason := ""
+	if ui_hit:
+		reason = "UI_BLOCKED"
+		_press_button_at(pos)
+		get_viewport().set_input_as_handled()
+	elif finished:
+		reason = "FINISHED"
+	elif paused:
+		reason = "PAUSED"
+	elif player == null or not player.alive:
+		reason = "DEAD"
+	elif not started:
+		_pending_start_flap = true
+		reason = "NOT_STARTED_PENDING"
+	else:
+		_input_usec = Time.get_ticks_usec()
+		_eat_emulated_mouse = true
+		reason = _try_immediate_flap()
+		accepted = reason.is_empty()
+		flap_called = accepted
+	if accepted:
+		_touches_accepted += 1
+		get_viewport().set_input_as_handled()
+	elif started and not paused and not finished:
+		_touches_rejected += 1
+		_reject_counts[reason] = int(_reject_counts.get(reason, 0)) + 1
+	var vel_after := player.velocity.y if player else 0.0
+	_touch_log.append({
+		"id": _screen_touch_pressed,
+		"usec": Time.get_ticks_usec(),
+		"index": event.index,
+		"pos": pos,
+		"started": started,
+		"paused": paused,
+		"finished": finished,
+		"tick": match_tick,
+		"ui": ui_hit,
+		"accepted": accepted,
+		"flap": flap_called,
+		"vel_before": vel_before,
+		"vel_after": vel_after,
+		"reason": reason,
+	})
+	if _touch_log.size() > _TOUCH_LOG_CAP:
+		_touch_log.remove_at(0)
+
+
+func _button_at(pos: Vector2) -> bool:
+	if pause_layer and pause_layer.visible:
+		if _any_button_at(pause_layer, pos):
 			return true
-		hovered = hovered.get_parent() as Control
+	if overlay and is_instance_valid(overlay) and overlay.visible:
+		if _any_button_at(overlay, pos):
+			return true
 	return false
 
 
-func _try_immediate_flap() -> void:
-	if finished or paused or player == null or not player.alive:
-		_taps_rejected += 1
-		return
+func _any_button_at(node: Node, pos: Vector2) -> bool:
+	if node is BaseButton:
+		var btn := node as BaseButton
+		if btn.visible and btn.is_visible_in_tree() and btn.mouse_filter != Control.MOUSE_FILTER_IGNORE:
+			if btn.get_global_rect().has_point(pos):
+				return true
+	for child in node.get_children():
+		if _any_button_at(child, pos):
+			return true
+	return false
+
+
+func _press_button_at(pos: Vector2) -> void:
+	if overlay and is_instance_valid(overlay) and overlay.visible:
+		if _press_button_in(overlay, pos):
+			return
+	if pause_layer and pause_layer.visible:
+		_press_button_in(pause_layer, pos)
+
+
+func _press_button_in(node: Node, pos: Vector2) -> bool:
+	if node is BaseButton:
+		var btn := node as BaseButton
+		if btn.visible and btn.is_visible_in_tree() and btn.mouse_filter != Control.MOUSE_FILTER_IGNORE:
+			if btn.get_global_rect().has_point(pos):
+				btn.pressed.emit()
+				return true
+	for child in node.get_children():
+		if _press_button_in(child, pos):
+			return true
+	return false
+
+
+func _try_immediate_flap() -> String:
+	if finished or paused:
+		return "GAME_STATE"
+	if player == null or not player.alive:
+		return "DEAD"
 	if not started:
 		_pending_start_flap = true
-		return
-	if _last_flap_tick == match_tick:
-		_same_tick_ignored += 1
-		return
+		return "NOT_STARTED_PENDING"
 	_perform_player_flap_immediately()
+	return ""
 
 
 func _perform_player_flap_immediately() -> void:
-	_last_flap_tick = match_tick
+	var before := player.velocity.y
 	player.flap(true)
-	if _recorded_flaps.is_empty() or _recorded_flaps[_recorded_flaps.size() - 1] != match_tick:
-		_recorded_flaps.append(match_tick)
-	_flaps_applied += 1
+	_player_flap_calls += 1
+	_recorded_flaps.append(match_tick)
+	_flap_vel_after = player.velocity.y
+	_expect_flap_vel = true
 	if _input_usec > 0:
 		var dt := Time.get_ticks_usec() - _input_usec
 		_input_usec = 0
@@ -275,6 +370,8 @@ func _perform_player_flap_immediately() -> void:
 			_tap_to_flap_worst = dt
 	if _first_flap_ms < 0.0:
 		_first_flap_pending = true
+	if before == _flap_vel_after and before != -RR.FLAP:
+		_vel_overwrites += 1
 
 
 func _begin_run() -> void:
@@ -282,17 +379,20 @@ func _begin_run() -> void:
 		return
 	started = true
 	match_tick = 0
-	_last_flap_tick = -1
 	_eat_emulated_mouse = false
-	_touch_presses = 0
-	_flaps_applied = 0
-	_taps_rejected = 0
-	_same_tick_ignored = 0
+	_screen_touch_pressed = 0
+	_touches_accepted = 0
+	_player_flap_calls = 0
+	_touches_rejected = 0
+	_touch_log.clear()
+	_reject_counts.clear()
 	_tap_to_flap_n = 0
 	_tap_to_flap_sum = 0
 	_tap_to_flap_worst = 0
 	_first_flap_pending = false
 	_first_flap_ms = -1.0
+	_expect_flap_vel = false
+	_vel_overwrites = 0
 	visual_scroll = scroll
 	player.reset_for_match()
 	player.started = true
@@ -317,6 +417,7 @@ func _begin_lobby() -> void:
 	_shown_ghosts = 0
 	swimming = 1
 	hud.set_lobby(true, ceili(_lobby_len))
+	hud.set_coins(GameSession.coins)
 
 
 func _tick_lobby(delta: float) -> void:
@@ -376,8 +477,13 @@ func _physics_process(delta: float) -> void:
 		_cull_pipes()
 		_tick_harpoons(delta)
 		_guide_ghosts()
+		_collect_coins()
 		_score_pipes()
 		_sample_perf()
+	if _expect_flap_vel and player:
+		_expect_flap_vel = false
+		if player.velocity.y > -RR.FLAP * 0.5:
+			_vel_overwrites += 1
 	player.tick(delta)
 	if not finished:
 		for ghost in ghosts:
@@ -432,6 +538,8 @@ func _spawn_pipes() -> void:
 		pair.activate()
 		pipes.append(pair)
 		spawn_index += 1
+		if spawn_index % RR.COIN_EVERY == 0:
+			_spawn_coin_after_pipe(spawn_index - 1)
 		_pipes_until_harpoon -= 1
 		if _pipes_until_harpoon <= 0:
 			_harpoon_beat = 1
@@ -484,6 +592,44 @@ func _upcoming_gap() -> float:
 	return (RR.PLAY_TOP + RR.PLAY_BOTTOM) * 0.5
 
 
+func _spawn_coin_after_pipe(pipe_i: int) -> void:
+	if pipe_i + 1 >= layout.size():
+		return
+	var a: Dictionary = layout[pipe_i]
+	var b: Dictionary = layout[pipe_i + 1]
+	var spr := Sprite2D.new()
+	spr.texture = Sprites.tex("coin")
+	spr.centered = true
+	spr.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	spr.z_index = 7
+	spr.scale = Vector2.ONE * 0.58
+	spr.position = Vector2((float(a["x"]) + float(b["x"])) * 0.5 + RR.PLAYER_X, (float(a["gap_y"]) + float(b["gap_y"])) * 0.5)
+	course_draw.add_child(spr)
+	_coins.append(spr)
+
+
+func _collect_coins() -> void:
+	if player == null or not player.alive:
+		return
+	for spr in _coins:
+		if spr == null or not spr.visible:
+			continue
+		var sx := spr.position.x - scroll
+		if sx > RR.PLAYER_X + 24.0:
+			continue
+		if sx < RR.PLAYER_X - 48.0:
+			spr.visible = false
+			continue
+		if absf(player.position.y - spr.position.y) > 58.0:
+			continue
+		spr.visible = false
+		_run_coins += 1
+		GameSession.add_coins(1)
+		Sfx.play("coin", -10.0)
+		if hud:
+			hud.set_coins(GameSession.coins)
+
+
 func _score_pipes() -> void:
 	for pair in pipes:
 		if pair.scored:
@@ -518,19 +664,195 @@ func _on_player_died() -> void:
 		return
 	if player.alive:
 		return
+	Sfx.play_death(-10.0)
 	swimming = maxi(swimming - 1, 0)
 	var remaining := swimming
 	var rank := remaining + 1
 	_save_ghost_run()
 	_log_perf()
 	GameSession.record_run(score, rank, remaining)
-	get_tree().create_timer(0.85).timeout.connect(_show_over.bind(rank, remaining))
+	get_tree().create_timer(0.85).timeout.connect(_after_death.bind(rank, remaining))
+
+
+func _after_death(rank: int, remaining: int) -> void:
+	if overlay and is_instance_valid(overlay):
+		return
+	_over_rank = rank
+	_over_remaining = remaining
+	if _run_coins > 0:
+		_show_coin_ad()
+	else:
+		_show_over(rank, remaining)
+
+
+func _bind_rewarded_ads() -> void:
+	RewardedAds.reward_earned.connect(_on_rewarded_ad_earned)
+	RewardedAds.ad_closed.connect(_on_rewarded_ad_closed)
+	RewardedAds.ad_failed.connect(_on_rewarded_ad_failed)
+	RewardedAds.ad_unavailable.connect(_on_rewarded_ad_unavailable)
+	tree_exiting.connect(_unbind_rewarded_ads)
+
+
+func _unbind_rewarded_ads() -> void:
+	if RewardedAds.reward_earned.is_connected(_on_rewarded_ad_earned):
+		RewardedAds.reward_earned.disconnect(_on_rewarded_ad_earned)
+	if RewardedAds.ad_closed.is_connected(_on_rewarded_ad_closed):
+		RewardedAds.ad_closed.disconnect(_on_rewarded_ad_closed)
+	if RewardedAds.ad_failed.is_connected(_on_rewarded_ad_failed):
+		RewardedAds.ad_failed.disconnect(_on_rewarded_ad_failed)
+	if RewardedAds.ad_unavailable.is_connected(_on_rewarded_ad_unavailable):
+		RewardedAds.ad_unavailable.disconnect(_on_rewarded_ad_unavailable)
+
+
+func _clear_overlay() -> void:
+	if overlay and is_instance_valid(overlay):
+		overlay.queue_free()
+	overlay = null
+
+
+func _show_coin_ad() -> void:
+	finished = true
+	_coin_offer_open = true
+	_coin_reward_claimed = false
+	_reward_request_active = false
+	_clear_overlay()
+	overlay = CanvasLayer.new()
+	overlay.layer = 40
+	overlay.process_mode = Node.PROCESS_MODE_ALWAYS
+	add_child(overlay)
+	var dim := ColorRect.new()
+	dim.color = Palette.SHADOW
+	dim.size = Vector2(RR.VIEW_W, RR.VIEW_H)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.add_child(dim)
+	var tex := Sprites.tex("coin_ad_overlay")
+	var src := Vector2(1536, 1024)
+	if tex:
+		src = Vector2(tex.get_width(), tex.get_height())
+	var scale := minf(RR.VIEW_W / src.x, RR.VIEW_H / src.y) * 0.96
+	var card_size := src * scale
+	var card_pos := (Vector2(RR.VIEW_W, RR.VIEW_H) - card_size) * 0.5
+	var card := TextureRect.new()
+	card.texture = tex
+	card.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	card.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	card.position = card_pos
+	card.size = card_size
+	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.add_child(card)
+	overlay.add_child(_coin_ad_hotspot(card_pos, scale, Rect2(400, 720, 360, 220), _skip_coin_ad))
+	_coin_ad_watch = _coin_ad_hotspot(card_pos, scale, Rect2(780, 720, 420, 220), _watch_coin_ad)
+	overlay.add_child(_coin_ad_watch)
+	_coin_ad_note = SpriteTextScript.new()
+	_coin_ad_note.position = Vector2(24, RR.VIEW_H - 70)
+	_coin_ad_note.configure("", 16, Vector2(RR.VIEW_W - 48, 28), HORIZONTAL_ALIGNMENT_CENTER)
+	overlay.add_child(_coin_ad_note)
+
+
+func _coin_ad_hotspot(origin: Vector2, scale: float, src: Rect2, pressed: Callable) -> Button:
+	var btn := Button.new()
+	btn.flat = true
+	btn.position = origin + src.position * scale
+	btn.size = src.size * scale
+	btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	btn.pressed.connect(pressed)
+	return btn
+
+
+func _skip_coin_ad() -> void:
+	if _reward_request_active:
+		return
+	_abandon_coin_offer()
+
+
+func _watch_coin_ad() -> void:
+	if _reward_request_active or _coin_reward_claimed:
+		return
+	if not _coin_offer_open:
+		return
+	_reward_request_active = true
+	if _coin_ad_watch:
+		_coin_ad_watch.disabled = true
+	_set_coin_ad_note("")
+	if not RewardedAds.is_rewarded_ad_available():
+		_on_rewarded_ad_unavailable()
+		return
+	if overlay:
+		overlay.visible = false
+	RewardedAds.show_rewarded_ad()
+
+
+func _finish_coin_ad() -> void:
+	if _coin_reward_claimed:
+		return
+	_coin_reward_claimed = true
+	_reward_request_active = false
+	_coin_offer_open = false
+	var bonus := _run_coins
+	if bonus > 0:
+		GameSession.add_coins(bonus)
+		_run_coins = 0
+		if hud:
+			hud.set_coins(GameSession.coins)
+	_show_over(_over_rank, _over_remaining)
+
+
+func _abandon_coin_offer() -> void:
+	_coin_offer_open = false
+	_reward_request_active = false
+	_run_coins = 0
+	_show_over(_over_rank, _over_remaining)
+
+
+func _restore_coin_ad(message: String) -> void:
+	_reward_request_active = false
+	if not _coin_offer_open or _coin_reward_claimed:
+		return
+	if overlay and is_instance_valid(overlay):
+		overlay.visible = true
+	if _coin_ad_watch:
+		_coin_ad_watch.disabled = false
+	_set_coin_ad_note(message)
+
+
+func _set_coin_ad_note(message: String) -> void:
+	if _coin_ad_note:
+		_coin_ad_note.set_value(message)
+	elif hud and not message.is_empty():
+		hud.show_feed(message)
+
+
+func _on_rewarded_ad_earned() -> void:
+	if not _coin_offer_open:
+		return
+	if _coin_reward_claimed:
+		return
+	_finish_coin_ad()
+
+
+func _on_rewarded_ad_closed() -> void:
+	if _coin_reward_claimed:
+		return
+	if not _coin_offer_open:
+		return
+	_restore_coin_ad("")
+
+
+func _on_rewarded_ad_failed(_reason: String) -> void:
+	if _coin_reward_claimed:
+		return
+	_restore_coin_ad("No ad available")
+
+
+func _on_rewarded_ad_unavailable() -> void:
+	if _coin_reward_claimed:
+		return
+	_restore_coin_ad("No ad available")
 
 
 func _show_over(rank: int, remaining: int) -> void:
-	if finished:
-		return
 	finished = true
+	_clear_overlay()
 	overlay = CanvasLayer.new()
 	overlay.layer = 40
 	overlay.process_mode = Node.PROCESS_MODE_ALWAYS
@@ -940,15 +1262,34 @@ func _log_perf() -> void:
 	)
 	var avg_tap := float(_tap_to_flap_sum) / float(maxi(_tap_to_flap_n, 1))
 	print(
-		"[tap-audit] touch=%d applied=%d rejected=%d same_tick=%d tap_to_flap_us avg=%.0f worst=%d first_flap_ms=%.2f swim_bypass=%s"
+		"[tap-audit] screen_touch=%d accepted=%d flap_calls=%d rejected=%d vel_overwrite=%d tap_to_flap_us avg=%.0f worst=%d first_flap_ms=%.2f swim_bypass=%s reasons=%s"
 		% [
-			_touch_presses,
-			_flaps_applied,
-			_taps_rejected,
-			_same_tick_ignored,
+			_screen_touch_pressed,
+			_touches_accepted,
+			_player_flap_calls,
+			_touches_rejected,
+			_vel_overwrites,
 			avg_tap,
 			_tap_to_flap_worst,
 			_first_flap_ms,
 			str(swim_off),
+			str(_reject_counts),
 		]
 	)
+	var dump := mini(_touch_log.size(), 24)
+	for i in range(_touch_log.size() - dump, _touch_log.size()):
+		var e: Dictionary = _touch_log[i]
+		print(
+			"[touch %d] tick=%s accepted=%s flap=%s ui=%s reason=%s vel %s -> %s pos=%s"
+			% [
+				int(e.get("id", 0)),
+				str(e.get("tick", 0)),
+				str(e.get("accepted", false)),
+				str(e.get("flap", false)),
+				str(e.get("ui", false)),
+				str(e.get("reason", "")),
+				str(e.get("vel_before", 0)),
+				str(e.get("vel_after", 0)),
+				str(e.get("pos", Vector2.ZERO)),
+			]
+		)

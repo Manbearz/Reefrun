@@ -11,7 +11,7 @@ const sheet = PNG.sync.read(fs.readFileSync(srcPath))
 const { width, height, data } = sheet
 
 const fishes = [
-	["fish_blue", 56, 80, 108, 120],
+	["fish_blue", 46, 76, 118, 128],
 	["fish_clown", 168, 80, 130, 120],
 	["fish_yellow", 296, 80, 130, 120],
 	["fish_green", 14, 214, 150, 120],
@@ -136,12 +136,12 @@ function applyMask(png, mask) {
 	}
 }
 
-function removeSmallBlobs(png) {
+function removeSmallBlobs(png, cutoff = 90) {
 	const { width: w, height: h, data: d } = png
 	const seen = new Uint8Array(w * h)
 	const blobs = []
 	for (let i = 0; i < w * h; i++) {
-		if (d[i * 4 + 3] < 90 || seen[i]) continue
+		if (d[i * 4 + 3] < cutoff || seen[i]) continue
 		const stack = [i]
 		seen[i] = 1
 		const cells = []
@@ -157,7 +157,7 @@ function removeSmallBlobs(png) {
 				const ny = y + oy
 				if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
 				const ni = ny * w + nx
-				if (d[ni * 4 + 3] < 90 || seen[ni]) continue
+				if (d[ni * 4 + 3] < cutoff || seen[ni]) continue
 				seen[ni] = 1
 				stack.push(ni)
 			}
@@ -193,6 +193,39 @@ function removeSmallBlobs(png) {
 					}
 				}
 			}
+		}
+	}
+}
+
+function removeSpecks(png, cutoff, maxArea) {
+	const { width: w, height: h, data: d } = png
+	const seen = new Uint8Array(w * h)
+	for (let i = 0; i < w * h; i++) {
+		if (d[i * 4 + 3] < cutoff || seen[i]) continue
+		const stack = [i]
+		seen[i] = 1
+		const cells = []
+		while (stack.length) {
+			const p = stack.pop()
+			cells.push(p)
+			const x = p % w
+			const y = (p / w) | 0
+			for (const [ox, oy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+				const nx = x + ox
+				const ny = y + oy
+				if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+				const ni = ny * w + nx
+				if (d[ni * 4 + 3] < cutoff || seen[ni]) continue
+				seen[ni] = 1
+				stack.push(ni)
+			}
+		}
+		if (cells.length > maxArea) continue
+		for (const p of cells) {
+			d[p * 4] = 0
+			d[p * 4 + 1] = 0
+			d[p * 4 + 2] = 0
+			d[p * 4 + 3] = 0
 		}
 	}
 }
@@ -235,21 +268,30 @@ function trim(png) {
 
 for (const [name, x, y, w, h] of fishes) {
 	const png = crop(x, y, w, h)
-	let mask = maskFrom(png, 110)
-	mask = morph(mask, w, h, false)
-	mask = morph(mask, w, h, false)
-	mask = morph(mask, w, h, false)
+	const gentle = name === "fish_blue"
+	let mask = maskFrom(png, gentle ? 90 : 110)
+	if (!gentle) {
+		mask = morph(mask, w, h, false)
+		mask = morph(mask, w, h, false)
+		mask = morph(mask, w, h, false)
+	}
 	mask = largestComponent(mask, w, h)
 	mask = morph(mask, w, h, true)
 	mask = morph(mask, w, h, true)
-	mask = morph(mask, w, h, true)
-	mask = morph(mask, w, h, true)
+	if (!gentle) {
+		mask = morph(mask, w, h, true)
+		mask = morph(mask, w, h, true)
+	}
 	const original = maskFrom(png, 18)
 	for (let i = 0; i < w * h; i++) {
 		if (mask[i] && !original[i]) mask[i] = 0
 	}
 	applyMask(png, mask)
 	removeSmallBlobs(png)
+	if (name === "fish_blue") {
+		removeSmallBlobs(png, 170)
+		removeSpecks(png, 80, 40)
+	}
 	const cleaned = trim(png)
 	fs.writeFileSync(path.join(outDir, `${name}.png`), PNG.sync.write(cleaned))
 	console.log(name, `${cleaned.width}x${cleaned.height}`)

@@ -33,14 +33,18 @@ func _load_known() -> void:
 		"pipe_kelp", "pipe_blue", "pipe_wood", "pipe_metal", "pipe_sand", "pipe_purple",
 		"crown_gold", "crown_silver", "crown_bronze",
 		"splash_a", "splash_b", "splash_c", "bubbles_small",
+		"shark_far",
 		"spear_long", "spear_mid", "spear_short",
 		"harpoon_00", "harpoon_01", "harpoon_02", "harpoon_03", "harpoon_04",
 		"harpoon_05", "harpoon_06", "harpoon_07", "harpoon_08", "harpoon_09",
 		"harpoon_10",
-		"death_overlay", "main_menu_overlay", "highscore_overlay", "btn_main_menu",
+		"death_overlay", "main_menu_overlay", "highscore_overlay", "btn_main_menu", "coin_ad_overlay",
+		"coin",
 	]
 	for id in IDS:
 		_ensure_tex(id)
+	for i in 40:
+		_ensure_tex("hat_%02d" % i)
 	for d in 10:
 		_ensure_tex("num_gold_%d" % d)
 		_ensure_tex("num_white_%d" % d)

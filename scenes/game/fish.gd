@@ -18,7 +18,7 @@ var survive_pipes := 9999
 var pipes_cleared := 0
 var look_ahead := 0.0
 var skill := 0.55
-var flap_cd := 0.0
+var flap_cd := 0.0 # AI anti-spam only. Local player input never checks this.
 var bob_t := 0.0
 var rest_y := 0.0
 var x_jitter := 0.0
@@ -28,6 +28,7 @@ var ghost_run
 var next_flap_index := 0
 
 var _sprite: Sprite2D
+var _hat: Sprite2D
 var _hit_area: Area2D
 
 
@@ -54,6 +55,15 @@ func _ready() -> void:
 	_sprite.scale = Vector2.ONE * s
 	_sprite.z_index = 20 if is_player else 8
 	add_child(_sprite)
+	_hat = Sprite2D.new()
+	_hat.centered = true
+	_hat.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	_hat.z_index = 1
+	_sprite.add_child(_hat)
+	if is_player:
+		apply_hat(GameSession.hat_index)
+	else:
+		apply_hat(-1)
 	if not is_player:
 		modulate = Color(1, 1, 1, RR.GHOST_ALPHA)
 		return
@@ -73,11 +83,27 @@ func _ready() -> void:
 	add_child(_hit_area)
 
 
+func apply_hat(index: int) -> void:
+	if _hat == null:
+		return
+	if index < 0 or index >= RR.HAT_COUNT:
+		_hat.visible = false
+		return
+	_hat.texture = _tex(RR.hat_id(index))
+	_hat.visible = _hat.texture != null
+	_hat.centered = true
+	_hat.position = RR.hat_anchor(skin)
+	_hat.offset = RR.hat_brim_offset(_hat.texture)
+	_hat.scale = Vector2.ONE * RR.hat_local_scale(_sprite.scale.x)
+
+
 func reset_for_match() -> void:
 	position = start_origin
 	velocity = Vector2.ZERO
 	if _sprite:
 		_sprite.rotation = 0.0
+	if is_player:
+		apply_hat(GameSession.hat_index)
 
 
 func simulate_vertical(delta: float) -> void:
@@ -124,7 +150,10 @@ func flap(play_sound := false) -> void:
 		return
 	started = true
 	velocity.y = -RR.FLAP
-	flap_cd = 0.08
+	if is_player:
+		flap_cd = 0.0
+	else:
+		flap_cd = 0.08
 	if _sprite:
 		_face_velocity()
 	if play_sound:

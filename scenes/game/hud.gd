@@ -11,8 +11,11 @@ var lobby_text: SpriteTextScript
 var lobby_time: SpriteTextScript
 var feed_text: SpriteTextScript
 var crown: TextureRect
+var _coin_icon: TextureRect
+var _coin_text: SpriteTextScript
 var _alive := -1
 var _score := -1
+var _coins := -1
 var _feed_tween: Tween
 
 
@@ -30,6 +33,15 @@ func _ready() -> void:
 	crown.visible = false
 	crown.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(crown)
+	_coin_icon = TextureRect.new()
+	_coin_icon.texture = Sprites.tex("coin")
+	_coin_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_coin_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_coin_icon.position = Vector2(RR.VIEW_W - 108, 16)
+	_coin_icon.size = Vector2(30, 30)
+	_coin_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_coin_icon)
+	_coin_text = _line("0", 22, Vector2(RR.VIEW_W - 74, 16), Vector2(62, 30), HORIZONTAL_ALIGNMENT_LEFT, true)
 	hint_text = _line("3", 78, Vector2(0, RR.VIEW_H * 0.34), Vector2(RR.VIEW_W, 110), HORIZONTAL_ALIGNMENT_CENTER, true)
 	hint_text.visible = false
 	lobby_text = _line("LOBBY", 22, Vector2(0, RR.VIEW_H * 0.30), Vector2(RR.VIEW_W, 32), HORIZONTAL_ALIGNMENT_CENTER)
@@ -72,6 +84,13 @@ func set_countdown(value: String) -> void:
 	if value.is_empty():
 		return
 	hint_text.set_value(value)
+
+
+func set_coins(value: int) -> void:
+	if value == _coins:
+		return
+	_coins = value
+	_coin_text.set_value(str(maxi(0, value)))
 
 
 func show_feed(text: String) -> void:

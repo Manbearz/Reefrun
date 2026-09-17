@@ -49,6 +49,11 @@ const FISH_IDS: PackedStringArray = [
 const FISH_NAMES: PackedStringArray = [
 	"Blue Tang", "Clown", "Goldie", "Kelp", "Pinkfin", "Violet"
 ]
+const HAT_COUNT := 40
+const HAT_PRICE := 50
+const HAT_SCALE := 0.155
+const HAT_BRIM := 0.46
+const COIN_EVERY := 5
 const PIPE_IDS: PackedStringArray = [
 	"pipe_kelp", "pipe_blue", "pipe_wood", "pipe_metal", "pipe_sand", "pipe_purple"
 ]
@@ -59,3 +64,35 @@ const GHOST_NAMES: PackedStringArray = [
 	"Current", "Dory", "Skipper", "Mussel", "Lagoon", "Comet", "Barnacle",
 	"Gill", "Nixie", "Triton", "Foam", "Cove", "Pike", "Sable"
 ]
+
+
+static func hat_id(index: int) -> String:
+	return "hat_%02d" % index
+
+
+static func hat_anchor(skin: String) -> Vector2:
+	match skin:
+		"fish_blue":
+			return Vector2(21.0, -25.0)
+		"fish_clown":
+			return Vector2(18.0, -24.0)
+		"fish_yellow":
+			return Vector2(16.0, -25.0)
+		"fish_green":
+			return Vector2(13.0, -27.0)
+		"fish_pink":
+			return Vector2(17.0, -24.0)
+		"fish_purple":
+			return Vector2(16.0, -25.0)
+		_:
+			return Vector2(16.0, -25.0)
+
+
+static func hat_local_scale(fish_sprite_scale: float) -> float:
+	return HAT_SCALE / maxf(fish_sprite_scale, 0.001)
+
+
+static func hat_brim_offset(hat_tex: Texture2D) -> Vector2:
+	if hat_tex == null:
+		return Vector2.ZERO
+	return Vector2(1.5, -hat_tex.get_height() * HAT_BRIM)

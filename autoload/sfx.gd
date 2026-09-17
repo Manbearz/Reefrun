@@ -14,12 +14,24 @@ func _ready() -> void:
 	_streams["swim"] = load("res://assets/sfx/swim.mp3")
 	_streams["grappling"] = load("res://assets/sfx/grappling.mp3")
 	_streams["checkpoint"] = load("res://assets/sfx/checkpoint.wav")
+	_streams["coin"] = load("res://assets/sfx/coin.wav")
+	_streams["splat"] = load("res://assets/sfx/splat.wav")
+	_streams["death"] = load("res://assets/sfx/death.wav")
 	bypass_swim = _detect_bypass_swim()
 	for i in POOL_SIZE:
 		var player := AudioStreamPlayer.new()
 		add_child(player)
 		_players.append(player)
 	_start_music()
+
+
+func play_death(volume_db: float = -10.0) -> void:
+	play("splat", volume_db)
+	var splat := _streams.get("splat") as AudioStream
+	var wait := 0.33
+	if splat:
+		wait = maxf(0.08, splat.get_length() - 0.05)
+	get_tree().create_timer(wait).timeout.connect(func(): play("death", volume_db))
 
 
 func play(id: String, volume_db: float = 0.0) -> void:

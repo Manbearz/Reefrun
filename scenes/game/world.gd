@@ -13,6 +13,14 @@ var _bubble_speed := PackedFloat32Array()
 var _bubble_phase := PackedFloat32Array()
 var _bubble_wobble := PackedFloat32Array()
 var _last_scroll := 0.0
+var _bg_layer: CanvasLayer
+var _shark: Sprite2D
+var _shark_active := false
+var _shark_wait := 0.0
+var _shark_speed := 0.0
+var _shark_bob := 0.0
+var _shark_y := 0.0
+var _shark_rng := RandomNumberGenerator.new()
 
 
 func _ready() -> void:
@@ -25,9 +33,9 @@ func _ready() -> void:
 
 
 func _build_backdrop() -> void:
-	var layer := CanvasLayer.new()
-	layer.layer = -20
-	add_child(layer)
+	_bg_layer = CanvasLayer.new()
+	_bg_layer.layer = -20
+	add_child(_bg_layer)
 	var tex := Sprites.tex("background")
 	var spr := Sprite2D.new()
 	spr.texture = tex
@@ -37,7 +45,8 @@ func _build_backdrop() -> void:
 	if tex:
 		var cover := maxf(RR.VIEW_W / float(tex.get_width()), RR.VIEW_H / float(tex.get_height()))
 		spr.scale = Vector2(cover, cover)
-	layer.add_child(spr)
+	_bg_layer.add_child(spr)
+	_build_shark()
 
 
 func _build_ceiling() -> void:
@@ -120,6 +129,7 @@ func tick_decor(delta: float) -> void:
 			_bubble_x[i] -= RR.VIEW_W + 100.0
 		var wobble := sin(_bubble_phase[i]) * _bubble_wobble[i]
 		_bubbles[i].position = Vector2(_bubble_x[i] + wobble, _bubble_y[i])
+	_tick_shark(delta)
 
 
 func _build_bubbles() -> void:
@@ -144,3 +154,62 @@ func _build_bubbles() -> void:
 		_bubble_phase.append(rng.randf() * TAU)
 		_bubble_wobble.append(rng.randf_range(6.0, 16.0))
 		spr.position = Vector2(_bubble_x[i], _bubble_y[i])
+
+
+func _build_shark() -> void:
+	var tex := Sprites.tex("shark_far")
+	if tex == null or _bg_layer == null:
+		return
+	_shark_rng.randomize()
+	_shark = Sprite2D.new()
+	_shark.texture = tex
+	_shark.centered = true
+	_shark.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	_shark.z_index = 1
+	_shark.visible = false
+	_shark.modulate = Color(0.58, 0.74, 0.9, 0.55)
+	_bg_layer.add_child(_shark)
+	_shark_wait = _shark_rng.randf_range(3.5, 9.0)
+
+
+func _tick_shark(delta: float) -> void:
+	if _shark == null:
+		return
+	if not _shark_active:
+		_shark_wait -= delta
+		if _shark_wait <= 0.0:
+			_launch_shark()
+		return
+	_shark_bob += delta
+	_shark.position.x += _shark_speed * delta
+	_shark.position.y = _shark_y + sin(_shark_bob * 1.15) * 5.0
+	var tex_w := 140.0
+	if _shark.texture:
+		tex_w = float(_shark.texture.get_width())
+	var half: float = tex_w * absf(_shark.scale.x) * 0.5
+	if _shark.position.x < -half - 20.0 or _shark.position.x > RR.VIEW_W + half + 20.0:
+		_shark_active = false
+		_shark.visible = false
+		_shark_wait = _shark_rng.randf_range(11.0, 24.0)
+
+
+func _launch_shark() -> void:
+	if _shark == null or _shark.texture == null:
+		_shark_wait = 12.0
+		return
+	var shark_scale: float = _shark_rng.randf_range(0.48, 0.72)
+	var going_right := _shark_rng.randf() > 0.5
+	var half: float = float(_shark.texture.get_width()) * shark_scale * 0.5
+	_shark.scale = Vector2(shark_scale, shark_scale)
+	_shark.flip_h = going_right
+	_shark_speed = _shark_rng.randf_range(26.0, 42.0)
+	if not going_right:
+		_shark_speed = -_shark_speed
+	_shark_y = _shark_rng.randf_range(RR.VIEW_H * 0.64, RR.VIEW_H * 0.78)
+	_shark_bob = _shark_rng.randf() * TAU
+	if going_right:
+		_shark.position = Vector2(-half - 16.0, _shark_y)
+	else:
+		_shark.position = Vector2(RR.VIEW_W + half + 16.0, _shark_y)
+	_shark.visible = true
+	_shark_active = true
