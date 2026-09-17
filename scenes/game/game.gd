@@ -5,6 +5,14 @@ const SpriteTextScript := preload("res://scripts/sprite_text.gd")
 const GhostRunScript := preload("res://scripts/ghost_run.gd")
 const GhostBankScript := preload("res://scripts/ghost_bank.gd")
 const CourseBuilderScript := preload("res://scripts/course_builder.gd")
+const ShareServiceScript := preload("res://scripts/share/share_service.gd")
+
+const SHARE_CARD_CROP_H := 798
+const SHARE_PLACE_RECT := Rect2(700, 398, 300, 100)
+const SHARE_CHECK_RECT := Rect2(700, 528, 300, 100)
+const SHARE_CLOSE_RECT := Rect2(190, 798, 400, 165)
+const SHARE_SHARE_RECT := Rect2(575, 798, 500, 170)
+const DEATH_SAND_BOTTOM := 1448.0
 
 var world: ReefWorld
 var hud: GameHUD
@@ -79,6 +87,13 @@ var _coin_ad_watch: Button
 var _coin_ad_note: SpriteTextScript
 var _eat_emulated_mouse := false
 var _pending_start_flap := false
+var _share_service: Node
+var _share_layer: CanvasLayer
+var _share_share_btn: Button
+var _wipe_again: Button
+var _wipe_share: TextureButton
+var _wipe_menu: TextureButton
+var _share_busy := false
 
 
 func _ready() -> void:
@@ -112,6 +127,9 @@ func _ready() -> void:
 	_prewarm_gameplay_draw()
 	_bind_rewarded_ads()
 	_configure_web_touch()
+	_share_service = ShareServiceScript.new()
+	add_child(_share_service)
+	_share_service.share_finished.connect(_on_share_finished)
 	_begin_lobby()
 	var vp := get_viewport()
 	vp.snap_2d_transforms_to_pixel = false
@@ -281,6 +299,8 @@ func _play_press(pos: Vector2, from_touch: bool) -> void:
 
 
 func _button_node_at(pos: Vector2) -> BaseButton:
+	if _share_layer and is_instance_valid(_share_layer) and _share_layer.visible:
+		return _find_button_at(_share_layer, pos)
 	if pause_layer and pause_layer.visible:
 		var pause_btn := _find_button_at(pause_layer, pos)
 		if pause_btn:
@@ -291,19 +311,23 @@ func _button_node_at(pos: Vector2) -> BaseButton:
 
 
 func _find_button_at(node: Node, pos: Vector2) -> BaseButton:
-	if node is BaseButton:
-		var btn := node as BaseButton
-		if btn.visible and btn.is_visible_in_tree() and btn.mouse_filter != Control.MOUSE_FILTER_IGNORE:
-			if btn.get_global_rect().has_point(pos):
-				return btn
-	for child in node.get_children():
-		var found := _find_button_at(child, pos)
+	var children := node.get_children()
+	for i in range(children.size() - 1, -1, -1):
+		var found := _find_button_at(children[i], pos)
 		if found:
 			return found
+	if node is BaseButton:
+		var btn := node as BaseButton
+		if btn.visible and not btn.disabled and btn.is_visible_in_tree() and btn.mouse_filter != Control.MOUSE_FILTER_IGNORE:
+			if btn.get_global_rect().has_point(pos):
+				return btn
 	return null
 
 
 func _press_button_at(pos: Vector2) -> void:
+	if _share_layer and is_instance_valid(_share_layer) and _share_layer.visible:
+		_press_button_in(_share_layer, pos)
+		return
 	if overlay and is_instance_valid(overlay) and overlay.visible:
 		if _press_button_in(overlay, pos):
 			return
@@ -312,15 +336,16 @@ func _press_button_at(pos: Vector2) -> void:
 
 
 func _press_button_in(node: Node, pos: Vector2) -> bool:
+	var children := node.get_children()
+	for i in range(children.size() - 1, -1, -1):
+		if _press_button_in(children[i], pos):
+			return true
 	if node is BaseButton:
 		var btn := node as BaseButton
-		if btn.visible and btn.is_visible_in_tree() and btn.mouse_filter != Control.MOUSE_FILTER_IGNORE:
+		if btn.visible and not btn.disabled and btn.is_visible_in_tree() and btn.mouse_filter != Control.MOUSE_FILTER_IGNORE:
 			if btn.get_global_rect().has_point(pos):
 				btn.pressed.emit()
 				return true
-	for child in node.get_children():
-		if _press_button_in(child, pos):
-			return true
 	return false
 
 
@@ -673,9 +698,13 @@ func _unbind_rewarded_ads() -> void:
 
 
 func _clear_overlay() -> void:
+	_close_share_overlay(false)
 	if overlay and is_instance_valid(overlay):
 		overlay.queue_free()
 	overlay = null
+	_wipe_again = null
+	_wipe_share = null
+	_wipe_menu = null
 
 
 func _show_coin_ad() -> void:
@@ -820,6 +849,8 @@ func _on_rewarded_ad_unavailable() -> void:
 
 func _show_over(rank: int, remaining: int) -> void:
 	finished = true
+	_over_rank = rank
+	_over_remaining = remaining
 	_clear_overlay()
 	overlay = CanvasLayer.new()
 	overlay.layer = 40
@@ -840,6 +871,10 @@ func _show_over(rank: int, remaining: int) -> void:
 	var menu_src := Vector2(1821, 864)
 	if menu_tex:
 		menu_src = Vector2(menu_tex.get_width(), menu_tex.get_height())
+	var share_tex := Sprites.tex("btn_share_small")
+	var share_src := Vector2(335, 377)
+	if share_tex:
+		share_src = Vector2(share_tex.get_width(), share_tex.get_height())
 	var gap := 6.0
 	var card_scale := RR.VIEW_W / src_w
 	var menu_w := RR.VIEW_W * 0.92
@@ -871,22 +906,33 @@ func _show_over(rank: int, remaining: int) -> void:
 	overlay.add_child(_over_digits(card_pos, card_scale, Rect2(559, 991, 296, 119), [
 		["num_white", remaining],
 	]))
-	var again := Button.new()
-	again.flat = true
-	again.position = card_pos + Vector2(310, 1175) * card_scale
-	again.size = Vector2(430, 150) * card_scale
-	again.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	again.pressed.connect(_retry)
-	overlay.add_child(again)
-	var menu := TextureButton.new()
-	menu.texture_normal = menu_tex
-	menu.ignore_texture_size = true
-	menu.stretch_mode = TextureButton.STRETCH_KEEP_ASPECT_CENTERED
-	menu.position = Vector2((RR.VIEW_W - menu_w) * 0.5, stack_y + card_h + gap)
-	menu.size = Vector2(menu_w, menu_h)
-	menu.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	menu.pressed.connect(_menu)
-	overlay.add_child(menu)
+	_wipe_again = Button.new()
+	_wipe_again.flat = true
+	_wipe_again.position = card_pos + Vector2(310, 1175) * card_scale
+	_wipe_again.size = Vector2(430, 150) * card_scale
+	_wipe_again.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_wipe_again.pressed.connect(_retry)
+	overlay.add_child(_wipe_again)
+	_wipe_menu = TextureButton.new()
+	_wipe_menu.texture_normal = menu_tex
+	_wipe_menu.ignore_texture_size = true
+	_wipe_menu.stretch_mode = TextureButton.STRETCH_KEEP_ASPECT_CENTERED
+	_wipe_menu.position = Vector2((RR.VIEW_W - menu_w) * 0.5, stack_y + card_h + gap)
+	_wipe_menu.size = Vector2(menu_w, menu_h)
+	_wipe_menu.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_wipe_menu.pressed.connect(_menu)
+	overlay.add_child(_wipe_menu)
+	var share_h := 124.0
+	var share_w := share_h * (share_src.x / share_src.y)
+	_wipe_share = TextureButton.new()
+	_wipe_share.texture_normal = share_tex
+	_wipe_share.ignore_texture_size = true
+	_wipe_share.stretch_mode = TextureButton.STRETCH_KEEP_ASPECT_CENTERED
+	_wipe_share.position = Vector2((RR.VIEW_W - share_w) * 0.5, card_pos.y + DEATH_SAND_BOTTOM * card_scale + 2.0)
+	_wipe_share.size = Vector2(share_w, share_h)
+	_wipe_share.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_wipe_share.pressed.connect(_open_share_overlay)
+	overlay.add_child(_wipe_share)
 
 
 func _over_digits(card_pos: Vector2, card_scale: float, src: Rect2, parts: Array) -> Control:
@@ -970,6 +1016,209 @@ func _place_digit_group(box: Control, glyphs: Array, x: float, scale: float, ker
 		digit.position = Vector2(x, (box.size.y - dh) * 0.5)
 		box.add_child(digit)
 		x += dw
+
+
+func _share_open() -> bool:
+	return _share_layer != null and is_instance_valid(_share_layer) and _share_layer.visible
+
+
+func _set_wipe_controls_enabled(enabled: bool) -> void:
+	for btn in [_wipe_again, _wipe_share, _wipe_menu]:
+		if btn == null or not is_instance_valid(btn):
+			continue
+		btn.disabled = not enabled
+		btn.mouse_filter = Control.MOUSE_FILTER_STOP if enabled else Control.MOUSE_FILTER_IGNORE
+
+
+func _share_value_parts() -> Array:
+	return [
+		[["num_gold", _over_rank]],
+		[["num_gold", score]],
+	]
+
+
+func _open_share_overlay() -> void:
+	if not finished:
+		return
+	if _share_open():
+		return
+	_set_wipe_controls_enabled(false)
+	_share_busy = false
+	if _share_layer and is_instance_valid(_share_layer):
+		_share_layer.queue_free()
+	_share_layer = CanvasLayer.new()
+	_share_layer.layer = 50
+	_share_layer.process_mode = Node.PROCESS_MODE_ALWAYS
+	add_child(_share_layer)
+	var dim := ColorRect.new()
+	dim.color = Palette.SHADOW
+	dim.size = Vector2(RR.VIEW_W, RR.VIEW_H)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	_share_layer.add_child(dim)
+	var tex := Sprites.tex("share_overlay")
+	var src := Vector2(1153, 985)
+	if tex:
+		src = Vector2(tex.get_width(), tex.get_height())
+	var card_scale := minf(RR.VIEW_W / src.x, RR.VIEW_H / src.y) * 0.96
+	var card_size := src * card_scale
+	var card_pos := (Vector2(RR.VIEW_W, RR.VIEW_H) - card_size) * 0.5
+	var card := TextureRect.new()
+	card.texture = tex
+	card.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	card.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	card.position = card_pos
+	card.size = card_size
+	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_share_layer.add_child(card)
+	var parts: Array = _share_value_parts()
+	_share_layer.add_child(_over_digits(card_pos, card_scale, SHARE_PLACE_RECT, parts[0]))
+	_share_layer.add_child(_over_digits(card_pos, card_scale, SHARE_CHECK_RECT, parts[1]))
+	var close_btn := Button.new()
+	close_btn.flat = true
+	close_btn.position = card_pos + SHARE_CLOSE_RECT.position * card_scale
+	close_btn.size = SHARE_CLOSE_RECT.size * card_scale
+	close_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	close_btn.pressed.connect(_close_share_overlay.bind(true))
+	_share_layer.add_child(close_btn)
+	_share_share_btn = Button.new()
+	_share_share_btn.flat = true
+	_share_share_btn.position = card_pos + SHARE_SHARE_RECT.position * card_scale
+	_share_share_btn.size = SHARE_SHARE_RECT.size * card_scale
+	_share_share_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_share_share_btn.pressed.connect(_share_card_pressed)
+	_share_layer.add_child(_share_share_btn)
+
+
+func _close_share_overlay(restore_wipe := true) -> void:
+	_share_busy = false
+	_share_share_btn = null
+	if _share_layer and is_instance_valid(_share_layer):
+		_share_layer.queue_free()
+	_share_layer = null
+	if restore_wipe:
+		_set_wipe_controls_enabled(true)
+
+
+func _texture_image(tex: Texture2D) -> Image:
+	if tex == null:
+		return null
+	var img := tex.get_image()
+	if img == null or img.is_empty():
+		var path := tex.resource_path
+		if path.is_empty():
+			return null
+		img = Image.load_from_file(path)
+	if img == null or img.is_empty():
+		return null
+	if img.is_compressed():
+		img.decompress()
+	if img.get_format() != Image.FORMAT_RGBA8:
+		img.convert(Image.FORMAT_RGBA8)
+	return img
+
+
+func _capture_share_card_png() -> PackedByteArray:
+	var tex := Sprites.tex("share_overlay")
+	var src := _texture_image(tex)
+	if src == null:
+		return PackedByteArray()
+	var crop_h := mini(SHARE_CARD_CROP_H, src.get_height())
+	var card := src.get_region(Rect2i(0, 0, src.get_width(), crop_h))
+	if card.get_format() != Image.FORMAT_RGBA8:
+		card.convert(Image.FORMAT_RGBA8)
+	var parts: Array = _share_value_parts()
+	_blit_share_digits(card, SHARE_PLACE_RECT, parts[0])
+	_blit_share_digits(card, SHARE_CHECK_RECT, parts[1])
+	return card.save_png_to_buffer()
+
+
+func _blit_share_digits(dest: Image, src: Rect2, parts: Array) -> void:
+	var box := src.size
+	var groups: Array = []
+	var max_h := 1.0
+	for part in parts:
+		var prefix: String = part[0]
+		var glyphs: Array = []
+		for ch in str(part[1]):
+			var glyph_tex: Texture2D
+			if prefix == "glyph":
+				glyph_tex = Sprites.glyph(ch)
+			else:
+				glyph_tex = Sprites.tex("%s_%s" % [prefix, ch])
+			glyphs.append(glyph_tex)
+			if glyph_tex:
+				max_h = maxf(max_h, float(glyph_tex.get_height()))
+		groups.append(glyphs)
+	var pad := box.y * 0.14
+	var target_h := maxf(8.0, box.y - pad * 2.0)
+	var scale := target_h / max_h * 0.88
+	var kern := 1.08
+	var group_gap := target_h * 0.05
+	var x_pad := box.x * 0.08
+	var total_w := 0.0
+	var group_widths: PackedFloat32Array = PackedFloat32Array()
+	for glyphs in groups:
+		var gw := _digit_width(glyphs, scale, kern)
+		group_widths.append(gw)
+		if group_widths.size() > 1:
+			total_w += group_gap
+		total_w += gw
+	if total_w > box.x - x_pad * 2.0:
+		scale *= (box.x - x_pad * 2.0) / maxf(total_w, 1.0)
+		total_w = 0.0
+		group_gap = target_h * 0.05 * (scale / (target_h / max_h))
+		for g in groups.size():
+			group_widths[g] = _digit_width(groups[g], scale, kern)
+			if g > 0:
+				total_w += group_gap
+			total_w += group_widths[g]
+	var x := src.position.x + (box.x - total_w) * 0.5
+	for g in groups.size():
+		if g > 0:
+			x += group_gap
+		var gx := x
+		for i in groups[g].size():
+			var glyph_tex: Texture2D = groups[g][i]
+			if glyph_tex == null:
+				continue
+			var dw := float(glyph_tex.get_width()) * scale
+			var dh := float(glyph_tex.get_height()) * scale
+			if i > 0:
+				gx -= dw * (1.0 - kern)
+			var gimg := _texture_image(glyph_tex)
+			if gimg:
+				gimg.resize(maxi(1, int(round(dw))), maxi(1, int(round(dh))), Image.INTERPOLATE_LANCZOS)
+				var px := int(round(gx))
+				var py := int(round(src.position.y + (box.y - dh) * 0.5))
+				dest.blend_rect(gimg, Rect2i(Vector2i.ZERO, gimg.get_size()), Vector2i(px, py))
+			gx += dw
+		x += group_widths[g]
+
+
+func _share_card_pressed() -> void:
+	if not _share_open():
+		return
+	if _share_busy or (_share_service and _share_service.is_busy()):
+		return
+	_share_busy = true
+	if _share_share_btn:
+		_share_share_btn.disabled = true
+	var png := _capture_share_card_png()
+	if png.is_empty():
+		_on_share_finished("failed")
+		return
+	if _share_service == null:
+		_on_share_finished("failed")
+		return
+	var status := str(_share_service.share_image(png))
+	if status == "busy" or status.is_empty():
+		_on_share_finished(status)
+
+
+func _on_share_finished(_status: String) -> void:
+	_share_busy = false
+	if _share_share_btn and is_instance_valid(_share_share_btn):
+		_share_share_btn.disabled = false
 
 
 func _retry() -> void:
