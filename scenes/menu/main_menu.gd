@@ -103,22 +103,64 @@ func _process(delta: float) -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if not _home.visible or _hat_clip == null:
-		return
 	if event is InputEventScreenTouch:
 		var touch := event as InputEventScreenTouch
-		var pos := _hat_local(touch.position)
 		if touch.pressed:
-			if not Rect2(Vector2.ZERO, _hat_clip.size).has_point(pos):
-				return
-			_begin_hat_drag(pos)
-			get_viewport().set_input_as_handled()
-		elif _hat_pressing:
-			_end_hat_drag(pos)
-			get_viewport().set_input_as_handled()
-	elif event is InputEventScreenDrag and _hat_pressing:
+			_on_menu_touch_press(touch.position)
+		else:
+			_on_menu_touch_release(touch.position)
+		return
+	if event is InputEventScreenDrag and _hat_pressing:
 		_move_hat_drag(_hat_local((event as InputEventScreenDrag).position))
 		get_viewport().set_input_as_handled()
+
+
+func _on_menu_touch_press(pos: Vector2) -> void:
+	if _home.visible and _hat_clip != null and _hat_contains(pos):
+		_begin_hat_drag(_hat_local(pos))
+		get_viewport().set_input_as_handled()
+		return
+	if _press_button_at(pos):
+		get_viewport().set_input_as_handled()
+		return
+	if _home.visible and _name_edit and _name_edit.is_visible_in_tree() and _name_edit.get_global_rect().has_point(pos):
+		_name_edit.grab_focus()
+		get_viewport().set_input_as_handled()
+
+
+func _on_menu_touch_release(pos: Vector2) -> void:
+	if _hat_pressing:
+		_end_hat_drag(_hat_local(pos))
+		get_viewport().set_input_as_handled()
+
+
+func _hat_contains(pos: Vector2) -> bool:
+	if _hat_clip == null:
+		return false
+	return Rect2(Vector2.ZERO, _hat_clip.size).has_point(_hat_local(pos))
+
+
+func _press_button_at(pos: Vector2) -> bool:
+	if _home and _home.visible:
+		if _press_button_in(_home, pos):
+			return true
+	if _scores and _scores.visible:
+		if _press_button_in(_scores, pos):
+			return true
+	return false
+
+
+func _press_button_in(node: Node, pos: Vector2) -> bool:
+	for i in range(node.get_child_count() - 1, -1, -1):
+		if _press_button_in(node.get_child(i), pos):
+			return true
+	if node is BaseButton:
+		var btn := node as BaseButton
+		if btn.visible and btn.is_visible_in_tree() and not btn.disabled and btn.mouse_filter != Control.MOUSE_FILTER_IGNORE:
+			if btn.get_global_rect().has_point(pos):
+				btn.pressed.emit()
+				return true
+	return false
 
 
 func _backdrop() -> void:
