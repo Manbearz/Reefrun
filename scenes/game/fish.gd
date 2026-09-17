@@ -125,6 +125,8 @@ func flap(play_sound := false) -> void:
 	started = true
 	velocity.y = -RR.FLAP
 	flap_cd = 0.08
+	if _sprite:
+		_face_velocity()
 	if play_sound:
 		var sfx := get_node_or_null("/root/Sfx")
 		if sfx:

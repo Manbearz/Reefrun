@@ -26,6 +26,8 @@ var _name_edit: LineEdit
 var _ground: TextureRect
 var _fish_icons: Array[TextureRect] = []
 var _fish_rings: Array[Panel] = []
+var _fish_rest: Array[Vector2] = []
+var _bob_t := 0.0
 var _card_pos := Vector2.ZERO
 var _card_scale := 1.0
 var _score_pos := Vector2.ZERO
@@ -51,6 +53,8 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	if _home.visible:
+		_bob_picker(delta)
 	if not _scores.visible:
 		return
 	_check_t += delta
@@ -171,6 +175,7 @@ func _build_fish_picker() -> void:
 		icon.position = Vector2(x, row_y)
 		icon.size = Vector2(cell, row_h)
 		_fish_icons.append(icon)
+		_fish_rest.append(icon.position)
 		_home.add_child(icon)
 		var btn := Button.new()
 		btn.flat = true
@@ -203,6 +208,14 @@ func _refresh_fish_pick() -> void:
 		var grow := 1.08 if on else 1.0
 		_fish_icons[i].pivot_offset = _fish_icons[i].size * 0.5
 		_fish_icons[i].scale = Vector2(grow, grow)
+
+
+func _bob_picker(delta: float) -> void:
+	_bob_t += delta
+	var wave := sin(_bob_t * 1.7) * 4.0
+	for i in _fish_icons.size():
+		var dir := 1.0 if i % 2 == 0 else -1.0
+		_fish_icons[i].position = _fish_rest[i] + Vector2(0.0, wave * dir)
 
 
 func _hotspot(src: Rect2, pressed: Callable, origin: Vector2, scale: float) -> Button:

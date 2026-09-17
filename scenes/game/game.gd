@@ -56,15 +56,19 @@ var _perf_worst := 0.0
 var _perf_phys_sum := 0.0
 var _perf_phys_worst := 0.0
 var _ghost_bank
-var _queued_flaps := 0
 var _eat_emulated_mouse := false
+var _pending_start_flap := false
+var _last_flap_tick := -1
 var _touch_presses := 0
-var _flap_requests := 0
-var _flaps_consumed := 0
+var _flaps_applied := 0
 var _taps_rejected := 0
+var _same_tick_ignored := 0
+var _input_usec := 0
+var _tap_to_flap_n := 0
+var _tap_to_flap_sum := 0
+var _tap_to_flap_worst := 0
 var _first_flap_pending := false
 var _first_flap_ms := -1.0
-const MAX_QUEUED_FLAPS := 2
 
 
 func _ready() -> void:
@@ -212,7 +216,8 @@ func _input(event: InputEvent) -> void:
 				_taps_rejected += 1
 				return
 			_eat_emulated_mouse = true
-			_request_flap()
+			_input_usec = Time.get_ticks_usec()
+			_try_immediate_flap()
 			get_viewport().set_input_as_handled()
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
@@ -223,11 +228,13 @@ func _input(event: InputEvent) -> void:
 		if _over_interactive_control():
 			_taps_rejected += 1
 			return
-		_request_flap()
+		_input_usec = Time.get_ticks_usec()
+		_try_immediate_flap()
 		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventKey and event.pressed and not event.echo and event.is_action("flap"):
-		_request_flap()
+		_input_usec = Time.get_ticks_usec()
+		_try_immediate_flap()
 		get_viewport().set_input_as_handled()
 
 
@@ -240,25 +247,32 @@ func _over_interactive_control() -> bool:
 	return false
 
 
-func _request_flap() -> void:
-	if finished or paused or not started or player == null or not player.alive:
+func _try_immediate_flap() -> void:
+	if finished or paused or player == null or not player.alive:
 		_taps_rejected += 1
 		return
-	var before := _queued_flaps
-	_queued_flaps = mini(_queued_flaps + 1, MAX_QUEUED_FLAPS)
-	if _queued_flaps > before:
-		_flap_requests += 1
-	else:
-		_taps_rejected += 1
-
-
-func _consume_flap() -> void:
-	if _queued_flaps <= 0 or not player.alive or finished or not started:
+	if not started:
+		_pending_start_flap = true
 		return
-	_queued_flaps -= 1
-	_flaps_consumed += 1
-	_recorded_flaps.append(match_tick)
+	if _last_flap_tick == match_tick:
+		_same_tick_ignored += 1
+		return
+	_perform_player_flap_immediately()
+
+
+func _perform_player_flap_immediately() -> void:
+	_last_flap_tick = match_tick
 	player.flap(true)
+	if _recorded_flaps.is_empty() or _recorded_flaps[_recorded_flaps.size() - 1] != match_tick:
+		_recorded_flaps.append(match_tick)
+	_flaps_applied += 1
+	if _input_usec > 0:
+		var dt := Time.get_ticks_usec() - _input_usec
+		_input_usec = 0
+		_tap_to_flap_n += 1
+		_tap_to_flap_sum += dt
+		if dt > _tap_to_flap_worst:
+			_tap_to_flap_worst = dt
 	if _first_flap_ms < 0.0:
 		_first_flap_pending = true
 
@@ -268,12 +282,15 @@ func _begin_run() -> void:
 		return
 	started = true
 	match_tick = 0
-	_queued_flaps = 0
+	_last_flap_tick = -1
 	_eat_emulated_mouse = false
 	_touch_presses = 0
-	_flap_requests = 0
-	_flaps_consumed = 0
+	_flaps_applied = 0
 	_taps_rejected = 0
+	_same_tick_ignored = 0
+	_tap_to_flap_n = 0
+	_tap_to_flap_sum = 0
+	_tap_to_flap_worst = 0
 	_first_flap_pending = false
 	_first_flap_ms = -1.0
 	visual_scroll = scroll
@@ -288,6 +305,9 @@ func _begin_run() -> void:
 		ghost.started = true
 		ghost.rest_y = ghost.position.y
 	_advance_playback()
+	if _pending_start_flap:
+		_pending_start_flap = false
+		_try_immediate_flap()
 
 
 func _begin_lobby() -> void:
@@ -348,7 +368,6 @@ func _physics_process(delta: float) -> void:
 		return
 	if started and not finished:
 		match_tick += 1
-		_consume_flap()
 		_advance_playback()
 		scroll += RR.PIPE_SPEED * delta
 		course.position.x = -scroll
@@ -387,6 +406,8 @@ func _process(delta: float) -> void:
 	_feed_wait = maxf(_feed_wait - delta, 0.0)
 	if _in_lobby:
 		_tick_lobby(delta)
+		if _in_lobby and _lobby_len - _lobby_t > 1.0 / 60.0:
+			_pending_start_flap = false
 		hud.refresh(swimming, 0, false, player.alive)
 		return
 	_tick_countdown(delta)
@@ -917,14 +938,16 @@ func _log_perf() -> void:
 			Engine.get_frames_per_second(),
 		]
 	)
+	var avg_tap := float(_tap_to_flap_sum) / float(maxi(_tap_to_flap_n, 1))
 	print(
-		"[tap-audit] touch=%d requests=%d consumed=%d rejected=%d queued_left=%d first_flap_ms=%.2f swim_bypass=%s"
+		"[tap-audit] touch=%d applied=%d rejected=%d same_tick=%d tap_to_flap_us avg=%.0f worst=%d first_flap_ms=%.2f swim_bypass=%s"
 		% [
 			_touch_presses,
-			_flap_requests,
-			_flaps_consumed,
+			_flaps_applied,
 			_taps_rejected,
-			_queued_flaps,
+			_same_tick_ignored,
+			avg_tap,
+			_tap_to_flap_worst,
 			_first_flap_ms,
 			str(swim_off),
 		]
