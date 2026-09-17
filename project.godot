@@ -14,8 +14,8 @@ config/name="Reefrun"
 config/description="99 fish. One reef. Last one swimming."
 run/main_scene="res://scenes/menu/main_menu.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
-config/icon="res://icon.svg"
 run/delta_smoothing=false
+config/icon="res://icon.svg"
 
 [autoload]
 
@@ -29,12 +29,8 @@ window/size/viewport_width=540
 window/size/viewport_height=960
 window/size/window_width_override=540
 window/size/window_height_override=960
-window/size/resizable=true
-window/handheld/orientation=1
 window/stretch/mode="viewport"
-window/stretch/aspect="keep"
-window/stretch/scale_mode="fractional"
-window/vsync/vsync_mode=1
+window/handheld/orientation=1
 
 [input]
 
@@ -62,15 +58,10 @@ pause={
 
 2d/default_gravity=0
 common/physics_interpolation=true
-common/physics_ticks_per_second=60
 
 [rendering]
 
-textures/canvas_textures/default_texture_filter=1
-2d/snap/snap_2d_transforms_to_pixel=false
-2d/snap/snap_2d_vertices_to_pixel=false
 rendering_device/driver.windows="d3d12"
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
-renderer/rendering_method.web="gl_compatibility"
 environment/defaults/default_clear_color=Color(0.008, 0.09, 0.16, 1)

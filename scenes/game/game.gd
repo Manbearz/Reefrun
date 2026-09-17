@@ -56,6 +56,15 @@ var _perf_worst := 0.0
 var _perf_phys_sum := 0.0
 var _perf_phys_worst := 0.0
 var _ghost_bank
+var _queued_flaps := 0
+var _eat_emulated_mouse := false
+var _touch_presses := 0
+var _flap_requests := 0
+var _flaps_consumed := 0
+var _taps_rejected := 0
+var _first_flap_pending := false
+var _first_flap_ms := -1.0
+const MAX_QUEUED_FLAPS := 2
 
 
 func _ready() -> void:
@@ -187,26 +196,71 @@ func _roll_death_pipe() -> int:
 	return cosmetic_rng.randi_range(9, 28)
 
 
-func _unhandled_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
 	if finished:
 		return
-	if event.is_action_pressed("pause"):
+	if event.is_action_pressed("pause") and event is InputEventKey:
 		_set_paused(not paused)
 		get_viewport().set_input_as_handled()
 		return
 	if paused:
 		return
-	if event.is_action_pressed("flap"):
-		if started:
-			_flap()
+	if event is InputEventScreenTouch:
+		if event.pressed:
+			_touch_presses += 1
+			if _over_interactive_control():
+				_taps_rejected += 1
+				return
+			_eat_emulated_mouse = true
+			_request_flap()
+			get_viewport().set_input_as_handled()
+		return
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		if _eat_emulated_mouse:
+			_eat_emulated_mouse = false
+			get_viewport().set_input_as_handled()
+			return
+		if _over_interactive_control():
+			_taps_rejected += 1
+			return
+		_request_flap()
+		get_viewport().set_input_as_handled()
+		return
+	if event is InputEventKey and event.pressed and not event.echo and event.is_action("flap"):
+		_request_flap()
 		get_viewport().set_input_as_handled()
 
 
-func _flap() -> void:
-	if not player.alive or finished or not started:
+func _over_interactive_control() -> bool:
+	var hovered := get_viewport().gui_get_hovered_control()
+	while hovered:
+		if hovered is BaseButton:
+			return true
+		hovered = hovered.get_parent() as Control
+	return false
+
+
+func _request_flap() -> void:
+	if finished or paused or not started or player == null or not player.alive:
+		_taps_rejected += 1
 		return
+	var before := _queued_flaps
+	_queued_flaps = mini(_queued_flaps + 1, MAX_QUEUED_FLAPS)
+	if _queued_flaps > before:
+		_flap_requests += 1
+	else:
+		_taps_rejected += 1
+
+
+func _consume_flap() -> void:
+	if _queued_flaps <= 0 or not player.alive or finished or not started:
+		return
+	_queued_flaps -= 1
+	_flaps_consumed += 1
 	_recorded_flaps.append(match_tick)
 	player.flap(true)
+	if _first_flap_ms < 0.0:
+		_first_flap_pending = true
 
 
 func _begin_run() -> void:
@@ -214,6 +268,14 @@ func _begin_run() -> void:
 		return
 	started = true
 	match_tick = 0
+	_queued_flaps = 0
+	_eat_emulated_mouse = false
+	_touch_presses = 0
+	_flap_requests = 0
+	_flaps_consumed = 0
+	_taps_rejected = 0
+	_first_flap_pending = false
+	_first_flap_ms = -1.0
 	visual_scroll = scroll
 	player.reset_for_match()
 	player.started = true
@@ -286,6 +348,7 @@ func _physics_process(delta: float) -> void:
 		return
 	if started and not finished:
 		match_tick += 1
+		_consume_flap()
 		_advance_playback()
 		scroll += RR.PIPE_SPEED * delta
 		course.position.x = -scroll
@@ -304,6 +367,9 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
+	if _first_flap_pending:
+		_first_flap_pending = false
+		_first_flap_ms = Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
 	if not finished and not paused:
 		world_scroll += RR.PIPE_SPEED * delta
 	if started and not finished and not paused:
@@ -624,6 +690,7 @@ func _build_pause() -> void:
 	var dim := ColorRect.new()
 	dim.color = Palette.SHADOW
 	dim.size = Vector2(RR.VIEW_W, RR.VIEW_H)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	pause_layer.add_child(dim)
 	var title := SpriteTextScript.new()
 	title.position = Vector2(0, RR.VIEW_H * 0.30)
@@ -831,6 +898,8 @@ func _log_perf() -> void:
 			vis_ai += 1
 	var avg := _perf_sum / float(maxi(_perf_n, 1))
 	var avg_phys := _perf_phys_sum / float(maxi(_perf_n, 1))
+	var sfx := get_node_or_null("/root/Sfx")
+	var swim_off := sfx != null and bool(sfx.get("bypass_swim"))
 	print(
 		"[ghost-perf] seed=%d tick=%d vis_rec=%d vis_ai=%d logical=%d phantoms=%d nodes=%d avg_ms=%.2f worst_ms=%.2f avg_phys_ms=%.2f worst_phys_ms=%.2f fps=%.0f"
 		% [
@@ -846,5 +915,17 @@ func _log_perf() -> void:
 			avg_phys,
 			_perf_phys_worst,
 			Engine.get_frames_per_second(),
+		]
+	)
+	print(
+		"[tap-audit] touch=%d requests=%d consumed=%d rejected=%d queued_left=%d first_flap_ms=%.2f swim_bypass=%s"
+		% [
+			_touch_presses,
+			_flap_requests,
+			_flaps_consumed,
+			_taps_rejected,
+			_queued_flaps,
+			_first_flap_ms,
+			str(swim_off),
 		]
 	)

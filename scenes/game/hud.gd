@@ -28,6 +28,7 @@ func _ready() -> void:
 	crown.position = Vector2(RR.VIEW_W * 0.5 - 17, 48)
 	crown.size = Vector2(34, 28)
 	crown.visible = false
+	crown.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(crown)
 	hint_text = _line("3", 78, Vector2(0, RR.VIEW_H * 0.34), Vector2(RR.VIEW_W, 110), HORIZONTAL_ALIGNMENT_CENTER, true)
 	hint_text.visible = false
