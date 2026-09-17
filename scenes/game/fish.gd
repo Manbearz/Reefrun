@@ -43,6 +43,8 @@ func setup(p_skin: String, p_player: bool, origin: Vector2, p_name: String) -> v
 	x_jitter = origin.x - RR.PLAYER_X
 	bob_t = 0.0
 	control = CTRL_PLAYER if p_player else CTRL_AI
+	if p_player:
+		physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 
 
 func _ready() -> void:
@@ -110,6 +112,7 @@ func reset_for_match() -> void:
 	if _sprite:
 		_sprite.rotation = 0.0
 		_sprite.position = Vector2.ZERO
+		_sprite.offset = Vector2.ZERO
 	_flap_present_usec = 0
 	if is_player:
 		apply_hat(GameSession.hat_index)
@@ -144,6 +147,7 @@ func _present_sprite() -> void:
 	if not started or not alive:
 		_sprite.position = Vector2.ZERO
 		return
+	# Local offset only. Collision stays on this node's physics position.
 	_sprite.position = Vector2(0.0, velocity.y * _present_dt())
 
 
@@ -188,12 +192,20 @@ func flap(play_sound := false) -> void:
 	if is_player:
 		flap_cd = 0.0
 		_flap_present_usec = Time.get_ticks_usec()
+		# Stop displaying the previous falling pose. Collision stays here;
+		# only the sprite presentation is corrected.
+		physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
+		reset_physics_interpolation()
+		if _sprite:
+			_sprite.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
+			_sprite.reset_physics_interpolation()
+			_sprite.position = Vector2.ZERO
+			_face_velocity()
+			_present_sprite()
 	else:
 		flap_cd = 0.08
-	if _sprite:
-		_face_velocity()
-		if is_player:
-			_present_sprite()
+		if _sprite:
+			_face_velocity()
 	if play_sound:
 		var sfx := get_node_or_null("/root/Sfx")
 		if sfx:

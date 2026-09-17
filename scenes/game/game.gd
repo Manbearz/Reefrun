@@ -90,6 +90,9 @@ var _expect_flap_vel := false
 var _flap_vel_after := 0.0
 var _vel_overwrites := 0
 var _probe_flash := 0
+var last_recovery := {}
+var _recovery_phys_left := 0
+var _last_ui_hit := "NONE"
 
 
 func _ready() -> void:
@@ -288,7 +291,10 @@ func _play_press(pos: Vector2, from_touch: bool) -> void:
 		_eat_emulated_mouse = true
 	else:
 		_mouse_pressed += 1
-	if _button_at(pos):
+	_last_ui_hit = "NONE"
+	var ui := _button_node_at(pos)
+	if ui:
+		_last_ui_hit = ui.name
 		if from_touch:
 			_press_button_at(pos)
 			_mark_input_handled()
@@ -320,13 +326,30 @@ func _flash_touch_probe() -> void:
 
 
 func _button_at(pos: Vector2) -> bool:
+	return _button_node_at(pos) != null
+
+
+func _button_node_at(pos: Vector2) -> BaseButton:
 	if pause_layer and pause_layer.visible:
-		if _any_button_at(pause_layer, pos):
-			return true
+		var pause_btn := _find_button_at(pause_layer, pos)
+		if pause_btn:
+			return pause_btn
 	if overlay and is_instance_valid(overlay) and overlay.visible:
-		if _any_button_at(overlay, pos):
-			return true
-	return false
+		return _find_button_at(overlay, pos)
+	return null
+
+
+func _find_button_at(node: Node, pos: Vector2) -> BaseButton:
+	if node is BaseButton:
+		var btn := node as BaseButton
+		if btn.visible and btn.is_visible_in_tree() and btn.mouse_filter != Control.MOUSE_FILTER_IGNORE:
+			if btn.get_global_rect().has_point(pos):
+				return btn
+	for child in node.get_children():
+		var found := _find_button_at(child, pos)
+		if found:
+			return found
+	return null
 
 
 func _any_button_at(node: Node, pos: Vector2) -> bool:
@@ -373,6 +396,21 @@ func _try_player_flap() -> String:
 	var before := player.velocity.y
 	player.flap(true)
 	_player_flap_calls += 1
+	if before > 0.0:
+		last_recovery = {
+			"touch": _press_is_touch,
+			"tick": match_tick,
+			"y": player.position.y,
+			"before": before,
+			"after": player.velocity.y,
+			"ui": _last_ui_hit,
+			"phys1_vel": 0.0,
+			"phys2_vel": 0.0,
+			"phys1_y": 0.0,
+			"phys2_y": 0.0,
+			"terminal": before >= RR.TERMINAL * 0.9,
+		}
+		_recovery_phys_left = 2
 	if _press_is_touch:
 		_touch_flaps += 1
 	else:
@@ -516,6 +554,14 @@ func _physics_process(delta: float) -> void:
 		if player.velocity.y > -RR.FLAP * 0.5:
 			_vel_overwrites += 1
 	player.tick(delta)
+	if _recovery_phys_left > 0 and player:
+		if _recovery_phys_left == 2:
+			last_recovery["phys1_vel"] = player.velocity.y
+			last_recovery["phys1_y"] = player.position.y
+		else:
+			last_recovery["phys2_vel"] = player.velocity.y
+			last_recovery["phys2_y"] = player.position.y
+		_recovery_phys_left -= 1
 	if not finished:
 		for ghost in ghosts:
 			if ghost.alive:
