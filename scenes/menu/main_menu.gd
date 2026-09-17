@@ -112,26 +112,34 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventScreenDrag and _hat_pressing:
 		_move_hat_drag(_hat_local((event as InputEventScreenDrag).position))
-		get_viewport().set_input_as_handled()
+		_mark_input_handled()
+
+
+func _mark_input_handled() -> void:
+	if not is_inside_tree():
+		return
+	var vp := get_viewport()
+	if vp:
+		vp.set_input_as_handled()
 
 
 func _on_menu_touch_press(pos: Vector2) -> void:
 	if _home.visible and _hat_clip != null and _hat_contains(pos):
 		_begin_hat_drag(_hat_local(pos))
-		get_viewport().set_input_as_handled()
+		_mark_input_handled()
 		return
 	if _press_button_at(pos):
-		get_viewport().set_input_as_handled()
+		_mark_input_handled()
 		return
 	if _home.visible and _name_edit and _name_edit.is_visible_in_tree() and _name_edit.get_global_rect().has_point(pos):
 		_name_edit.grab_focus()
-		get_viewport().set_input_as_handled()
+		_mark_input_handled()
 
 
 func _on_menu_touch_release(pos: Vector2) -> void:
 	if _hat_pressing:
 		_end_hat_drag(_hat_local(pos))
-		get_viewport().set_input_as_handled()
+		_mark_input_handled()
 
 
 func _hat_contains(pos: Vector2) -> bool:
@@ -201,6 +209,8 @@ func _build_home(card_size: Vector2) -> void:
 	_name_edit.position = _card_pos + NAME_BOX.position * _card_scale
 	_name_edit.size = NAME_BOX.size * _card_scale
 	_name_edit.caret_blink = true
+	_name_edit.virtual_keyboard_enabled = true
+	_name_edit.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_DEFAULT
 	_style_name(_name_edit)
 	_name_edit.text_changed.connect(_on_name_changed)
 	_name_edit.text_submitted.connect(func(_t: String): _play())
@@ -645,7 +655,7 @@ func _style_name(edit: LineEdit) -> void:
 	edit.add_theme_color_override("font_color", Color("16324a"))
 	edit.add_theme_color_override("font_placeholder_color", Color(0.42, 0.55, 0.66, 0.85))
 	edit.add_theme_color_override("caret_color", Color("16324a"))
-	edit.add_theme_font_size_override("font_size", maxi(16, int(round(NAME_BOX.size.y * _card_scale * 0.42))))
+	edit.add_theme_font_size_override("font_size", maxi(18, int(round(NAME_BOX.size.y * _card_scale * 0.42))))
 
 
 func _on_name_changed(value: String) -> void:
@@ -712,4 +722,4 @@ func _show_home() -> void:
 func _play() -> void:
 	_on_name_changed(_name_edit.text)
 	GameSession.start_match()
-	get_tree().change_scene_to_file("res://scenes/game/game.tscn")
+	get_tree().change_scene_to_file.call_deferred("res://scenes/game/game.tscn")

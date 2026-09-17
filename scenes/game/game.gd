@@ -247,20 +247,20 @@ func _input(event: InputEvent) -> void:
 		if event.pressed:
 			_flash_touch_probe()
 			_play_press(event.position, true)
-		get_viewport().set_input_as_handled()
+		_mark_input_handled()
 		return
 	if finished:
 		return
 	if event.is_action_pressed("pause") and event is InputEventKey:
 		_set_paused(not paused)
-		get_viewport().set_input_as_handled()
+		_mark_input_handled()
 		return
 	if paused:
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		if _eat_emulated_mouse:
 			_eat_emulated_mouse = false
-			get_viewport().set_input_as_handled()
+			_mark_input_handled()
 			return
 		_play_press(event.position, false)
 		return
@@ -268,7 +268,15 @@ func _input(event: InputEvent) -> void:
 		_press_is_touch = false
 		_input_usec = Time.get_ticks_usec()
 		_try_player_flap()
-		get_viewport().set_input_as_handled()
+		_mark_input_handled()
+
+
+func _mark_input_handled() -> void:
+	if not is_inside_tree():
+		return
+	var vp := get_viewport()
+	if vp:
+		vp.set_input_as_handled()
 
 
 func _play_press(pos: Vector2, from_touch: bool) -> void:
@@ -281,13 +289,13 @@ func _play_press(pos: Vector2, from_touch: bool) -> void:
 	if _button_at(pos):
 		if from_touch:
 			_press_button_at(pos)
-			get_viewport().set_input_as_handled()
+			_mark_input_handled()
 		_count_reject("UI_BLOCKED", from_touch)
 		return
 	_input_usec = Time.get_ticks_usec()
 	var reason := _try_player_flap()
 	if reason.is_empty():
-		get_viewport().set_input_as_handled()
+		_mark_input_handled()
 		return
 	_count_reject(reason, from_touch)
 
@@ -1032,12 +1040,12 @@ func _place_digit_group(box: Control, glyphs: Array, x: float, scale: float, ker
 func _retry() -> void:
 	get_tree().paused = false
 	GameSession.start_match()
-	get_tree().reload_current_scene()
+	get_tree().reload_current_scene.call_deferred()
 
 
 func _menu() -> void:
 	get_tree().paused = false
-	get_tree().change_scene_to_file("res://scenes/menu/main_menu.tscn")
+	get_tree().change_scene_to_file.call_deferred("res://scenes/menu/main_menu.tscn")
 
 
 func _set_paused(value: bool) -> void:

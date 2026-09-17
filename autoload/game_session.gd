@@ -29,6 +29,8 @@ func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	Engine.max_fps = 0
 	_apply_phone_aspect()
+	get_window().size_changed.connect(_lock_content_scale)
+	_lock_web_page_zoom()
 	_capture_web_display()
 	if OS.has_feature("editor"):
 		_bind_reload()
@@ -42,16 +44,61 @@ func _apply_phone_aspect() -> void:
 	var win := get_window()
 	win.content_scale_size = Vector2i(int(RR.VIEW_W), int(RR.VIEW_H))
 	win.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
-	win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
 	win.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_FRACTIONAL
-	if OS.has_feature("web"):
+	# Keep width-locked on phones so the virtual keyboard overlays instead of shrinking the game.
+	if OS.has_feature("web") or OS.has_feature("mobile") or OS.has_feature("ios") or OS.has_feature("android"):
+		win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP_WIDTH
 		return
+	win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
 	if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_WINDOWED:
 		var preview := Vector2i(int(RR.VIEW_W), int(RR.VIEW_H))
 		DisplayServer.window_set_size(preview)
 		var screen := DisplayServer.screen_get_usable_rect()
 		var origin := screen.position + (screen.size - preview) / 2
 		DisplayServer.window_set_position(origin)
+
+
+func _lock_content_scale() -> void:
+	var win := get_window()
+	win.content_scale_size = Vector2i(int(RR.VIEW_W), int(RR.VIEW_H))
+	win.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
+	win.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_FRACTIONAL
+	if OS.has_feature("web") or OS.has_feature("mobile") or OS.has_feature("ios") or OS.has_feature("android"):
+		win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP_WIDTH
+	else:
+		win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
+
+
+func _lock_web_page_zoom() -> void:
+	if not OS.has_feature("web") or not Engine.has_singleton("JavaScriptBridge"):
+		return
+	var js := Engine.get_singleton("JavaScriptBridge")
+	js.eval(
+		"""
+		(function(){
+			var meta = document.querySelector('meta[name="viewport"]');
+			if (!meta) {
+				meta = document.createElement('meta');
+				meta.name = 'viewport';
+				document.head.appendChild(meta);
+			}
+			meta.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover');
+			if (!document.getElementById('reefrun-vk-style')) {
+				var style = document.createElement('style');
+				style.id = 'reefrun-vk-style';
+				style.textContent = 'html,body{overflow:hidden;touch-action:manipulation;}input,textarea{font-size:16px !important;transform:none !important;}';
+				document.head.appendChild(style);
+			}
+			var canvas = document.getElementById('canvas');
+			if (canvas) {
+				canvas.style.touchAction = 'none';
+				canvas.style.userSelect = 'none';
+				canvas.style.webkitUserSelect = 'none';
+				canvas.style.webkitTouchCallout = 'none';
+			}
+		})();
+		"""
+	)
 
 
 func _capture_web_display() -> void:
