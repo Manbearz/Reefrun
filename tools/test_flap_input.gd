@@ -25,54 +25,31 @@ class Runner extends Node:
 			player.set("position", Vector2(RR.PLAYER_X, RR.VIEW_H * 0.42))
 		var pos := Vector2(RR.VIEW_W * 0.5, RR.VIEW_H * 0.55)
 		var vp := get_viewport()
+		var mouse_ok := 0
+		var touch_ok := 0
 		for i in 50:
+			if player:
+				player.set("velocity", Vector2(0, 0))
 			var mouse := InputEventMouseButton.new()
 			mouse.button_index = MOUSE_BUTTON_LEFT
 			mouse.pressed = true
 			mouse.position = pos
 			vp.push_input(mouse)
+			if player and is_equal_approx(float(player.get("velocity").y), -RR.FLAP):
+				mouse_ok += 1
 			await get_tree().process_frame
+		for i in 50:
 			if player:
 				player.set("velocity", Vector2(0, 0))
-				player.set("position", Vector2(RR.PLAYER_X, RR.VIEW_H * 0.42))
-		for i in 50:
 			var touch := InputEventScreenTouch.new()
 			touch.index = 0
 			touch.pressed = true
 			touch.position = pos
 			vp.push_input(touch)
+			if player and is_equal_approx(float(player.get("velocity").y), -RR.FLAP):
+				touch_ok += 1
 			await get_tree().process_frame
-			if player:
-				player.set("velocity", Vector2(0, 0))
-				player.set("position", Vector2(RR.PLAYER_X, RR.VIEW_H * 0.42))
-		print(
-			"[flap-input] started=%s mouse_press=%s mouse_flaps=%s mouse_rej=%s touch_press=%s touch_flaps=%s touch_rej=%s flap_calls=%s vel_overwrite=%s reasons=%s"
-			% [
-				str(game.get("started")),
-				str(game.get("_mouse_pressed")),
-				str(game.get("_mouse_flaps")),
-				str(game.get("_mouse_rejected")),
-				str(game.get("_screen_touch_pressed")),
-				str(game.get("_touch_flaps")),
-				str(game.get("_touches_rejected")),
-				str(game.get("_player_flap_calls")),
-				str(game.get("_vel_overwrites")),
-				str(game.get("_reject_counts")),
-			]
-		)
-		var mouse_n: int = int(game.get("_mouse_lat_n"))
-		var touch_n: int = int(game.get("_touch_lat_n"))
-		var mouse_avg := float(int(game.get("_mouse_lat_sum"))) / float(maxi(mouse_n, 1))
-		var touch_avg := float(int(game.get("_touch_lat_sum"))) / float(maxi(touch_n, 1))
-		print(
-			"[flap-input] mouse_us avg=%.0f worst=%s touch_us avg=%.0f worst=%s"
-			% [mouse_avg, str(game.get("_mouse_lat_worst")), touch_avg, str(game.get("_touch_lat_worst"))]
-		)
-		var ok := (
-			int(game.get("_mouse_pressed")) == 50
-			and int(game.get("_mouse_flaps")) == 50
-			and int(game.get("_screen_touch_pressed")) == 50
-			and int(game.get("_touch_flaps")) == 50
-			and int(game.get("_player_flap_calls")) == 100
-		)
+		var recorded: PackedInt32Array = game.get("_recorded_flaps")
+		print("[flap-input] mouse_flaps=%d touch_flaps=%d recorded=%d" % [mouse_ok, touch_ok, recorded.size()])
+		var ok := mouse_ok == 50 and touch_ok == 50 and recorded.size() == 100
 		get_tree().quit(0 if ok else 1)

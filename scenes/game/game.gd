@@ -21,7 +21,6 @@ var spawn_index := 0
 var score := 0
 var overlay: CanvasLayer
 var pause_layer: CanvasLayer
-const INPUT_AUDIT := false
 var swimming := 100
 var _feed_wait := 0.0
 var school: Node2D
@@ -68,31 +67,6 @@ var _coin_ad_watch: Button
 var _coin_ad_note: SpriteTextScript
 var _eat_emulated_mouse := false
 var _pending_start_flap := false
-var _press_is_touch := false
-var _mouse_pressed := 0
-var _mouse_flaps := 0
-var _mouse_rejected := 0
-var _screen_touch_pressed := 0
-var _touch_flaps := 0
-var _touches_rejected := 0
-var _player_flap_calls := 0
-var _reject_counts := {}
-var _input_usec := 0
-var _mouse_lat_n := 0
-var _mouse_lat_sum := 0
-var _mouse_lat_worst := 0
-var _touch_lat_n := 0
-var _touch_lat_sum := 0
-var _touch_lat_worst := 0
-var _first_flap_pending := false
-var _first_flap_ms := -1.0
-var _expect_flap_vel := false
-var _flap_vel_after := 0.0
-var _vel_overwrites := 0
-var _probe_flash := 0
-var last_recovery := {}
-var _recovery_phys_left := 0
-var _last_ui_hit := "NONE"
 
 
 func _ready() -> void:
@@ -249,8 +223,6 @@ func _configure_web_touch() -> void:
 func _input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		if event.pressed:
-			if INPUT_AUDIT:
-				_flash_touch_probe()
 			_play_press(event.position, true)
 		_mark_input_handled()
 		return
@@ -270,8 +242,6 @@ func _input(event: InputEvent) -> void:
 		_play_press(event.position, false)
 		return
 	if event is InputEventKey and event.pressed and not event.echo and event.is_action("flap"):
-		_press_is_touch = false
-		_input_usec = Time.get_ticks_usec()
 		_try_player_flap()
 		_mark_input_handled()
 
@@ -285,48 +255,15 @@ func _mark_input_handled() -> void:
 
 
 func _play_press(pos: Vector2, from_touch: bool) -> void:
-	_press_is_touch = from_touch
 	if from_touch:
-		_screen_touch_pressed += 1
 		_eat_emulated_mouse = true
-	else:
-		_mouse_pressed += 1
-	_last_ui_hit = "NONE"
-	var ui := _button_node_at(pos)
-	if ui:
-		_last_ui_hit = ui.name
+	if _button_node_at(pos):
 		if from_touch:
 			_press_button_at(pos)
 			_mark_input_handled()
-		_count_reject("UI_BLOCKED", from_touch)
 		return
-	_input_usec = Time.get_ticks_usec()
-	var reason := _try_player_flap()
-	if reason.is_empty():
-		_mark_input_handled()
-		return
-	_count_reject(reason, from_touch)
-
-
-func _count_reject(reason: String, from_touch: bool) -> void:
-	if from_touch:
-		_touches_rejected += 1
-	else:
-		_mouse_rejected += 1
-	_reject_counts[reason] = int(_reject_counts.get(reason, 0)) + 1
-
-
-func _flash_touch_probe() -> void:
-	if not OS.is_debug_build():
-		return
-	if hud == null or hud.alive_text == null:
-		return
-	hud.alive_text.modulate = Color(1.7, 1.7, 0.35)
-	_probe_flash = 2
-
-
-func _button_at(pos: Vector2) -> bool:
-	return _button_node_at(pos) != null
+	_try_player_flap()
+	_mark_input_handled()
 
 
 func _button_node_at(pos: Vector2) -> BaseButton:
@@ -352,18 +289,6 @@ func _find_button_at(node: Node, pos: Vector2) -> BaseButton:
 	return null
 
 
-func _any_button_at(node: Node, pos: Vector2) -> bool:
-	if node is BaseButton:
-		var btn := node as BaseButton
-		if btn.visible and btn.is_visible_in_tree() and btn.mouse_filter != Control.MOUSE_FILTER_IGNORE:
-			if btn.get_global_rect().has_point(pos):
-				return true
-	for child in node.get_children():
-		if _any_button_at(child, pos):
-			return true
-	return false
-
-
 func _press_button_at(pos: Vector2) -> void:
 	if overlay and is_instance_valid(overlay) and overlay.visible:
 		if _press_button_in(overlay, pos):
@@ -385,57 +310,16 @@ func _press_button_in(node: Node, pos: Vector2) -> bool:
 	return false
 
 
-func _try_player_flap() -> String:
+func _try_player_flap() -> void:
 	if finished or paused:
-		return "GAME_STATE"
+		return
 	if player == null or not player.alive:
-		return "DEAD"
+		return
 	if not started:
 		_pending_start_flap = true
-		return "NOT_STARTED_PENDING"
-	var before := player.velocity.y
+		return
 	player.flap(true)
-	_player_flap_calls += 1
-	if before > 0.0:
-		last_recovery = {
-			"touch": _press_is_touch,
-			"tick": match_tick,
-			"y": player.position.y,
-			"before": before,
-			"after": player.velocity.y,
-			"ui": _last_ui_hit,
-			"phys1_vel": 0.0,
-			"phys2_vel": 0.0,
-			"phys1_y": 0.0,
-			"phys2_y": 0.0,
-			"terminal": before >= RR.TERMINAL * 0.9,
-		}
-		_recovery_phys_left = 2
-	if _press_is_touch:
-		_touch_flaps += 1
-	else:
-		_mouse_flaps += 1
 	_recorded_flaps.append(match_tick)
-	_flap_vel_after = player.velocity.y
-	_expect_flap_vel = true
-	if _input_usec > 0:
-		var dt := Time.get_ticks_usec() - _input_usec
-		_input_usec = 0
-		if _press_is_touch:
-			_touch_lat_n += 1
-			_touch_lat_sum += dt
-			if dt > _touch_lat_worst:
-				_touch_lat_worst = dt
-		else:
-			_mouse_lat_n += 1
-			_mouse_lat_sum += dt
-			if dt > _mouse_lat_worst:
-				_mouse_lat_worst = dt
-	if _first_flap_ms < 0.0:
-		_first_flap_pending = true
-	if before == _flap_vel_after and before != -RR.FLAP:
-		_vel_overwrites += 1
-	return ""
 
 
 func _begin_run() -> void:
@@ -444,24 +328,6 @@ func _begin_run() -> void:
 	started = true
 	match_tick = 0
 	_eat_emulated_mouse = false
-	_screen_touch_pressed = 0
-	_touch_flaps = 0
-	_touches_rejected = 0
-	_mouse_pressed = 0
-	_mouse_flaps = 0
-	_mouse_rejected = 0
-	_player_flap_calls = 0
-	_reject_counts.clear()
-	_mouse_lat_n = 0
-	_mouse_lat_sum = 0
-	_mouse_lat_worst = 0
-	_touch_lat_n = 0
-	_touch_lat_sum = 0
-	_touch_lat_worst = 0
-	_first_flap_pending = false
-	_first_flap_ms = -1.0
-	_expect_flap_vel = false
-	_vel_overwrites = 0
 	visual_scroll = scroll
 	player.reset_for_match()
 	player.started = true
@@ -549,19 +415,7 @@ func _physics_process(delta: float) -> void:
 		_collect_coins()
 		_score_pipes()
 		_sample_perf()
-	if _expect_flap_vel and player:
-		_expect_flap_vel = false
-		if player.velocity.y > -RR.FLAP * 0.5:
-			_vel_overwrites += 1
 	player.tick(delta)
-	if _recovery_phys_left > 0 and player:
-		if _recovery_phys_left == 2:
-			last_recovery["phys1_vel"] = player.velocity.y
-			last_recovery["phys1_y"] = player.position.y
-		else:
-			last_recovery["phys2_vel"] = player.velocity.y
-			last_recovery["phys2_y"] = player.position.y
-		_recovery_phys_left -= 1
 	if not finished:
 		for ghost in ghosts:
 			if ghost.alive:
@@ -569,13 +423,6 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
-	if INPUT_AUDIT and _probe_flash > 0:
-		_probe_flash -= 1
-		if _probe_flash <= 0 and hud and hud.alive_text:
-			hud.alive_text.modulate = Color.WHITE
-	if _first_flap_pending:
-		_first_flap_pending = false
-		_first_flap_ms = Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
 	if not finished and not paused:
 		world_scroll += RR.PIPE_SPEED * delta
 	if started and not finished and not paused:
@@ -1322,8 +1169,6 @@ func _log_perf() -> void:
 			vis_ai += 1
 	var avg := _perf_sum / float(maxi(_perf_n, 1))
 	var avg_phys := _perf_phys_sum / float(maxi(_perf_n, 1))
-	var sfx := get_node_or_null("/root/Sfx")
-	var swim_off := sfx != null and bool(sfx.get("bypass_swim"))
 	print(
 		"[ghost-perf] seed=%d tick=%d vis_rec=%d vis_ai=%d logical=%d phantoms=%d nodes=%d avg_ms=%.2f worst_ms=%.2f avg_phys_ms=%.2f worst_phys_ms=%.2f fps=%.0f"
 		% [
@@ -1341,26 +1186,3 @@ func _log_perf() -> void:
 			Engine.get_frames_per_second(),
 		]
 	)
-	if INPUT_AUDIT:
-		var mouse_avg := float(_mouse_lat_sum) / float(maxi(_mouse_lat_n, 1))
-		var touch_avg := float(_touch_lat_sum) / float(maxi(_touch_lat_n, 1))
-		print(
-			"[tap-audit] mouse_press=%d mouse_flaps=%d mouse_rej=%d mouse_us avg=%.0f worst=%d touch_press=%d touch_flaps=%d touch_rej=%d touch_us avg=%.0f worst=%d flap_calls=%d vel_overwrite=%d first_flap_ms=%.2f swim_bypass=%s reasons=%s"
-			% [
-				_mouse_pressed,
-				_mouse_flaps,
-				_mouse_rejected,
-				mouse_avg,
-				_mouse_lat_worst,
-				_screen_touch_pressed,
-				_touch_flaps,
-				_touches_rejected,
-				touch_avg,
-				_touch_lat_worst,
-				_player_flap_calls,
-				_vel_overwrites,
-				_first_flap_ms,
-				str(swim_off),
-				str(_reject_counts),
-			]
-		)

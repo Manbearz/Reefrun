@@ -30,7 +30,6 @@ var next_flap_index := 0
 var _sprite: Sprite2D
 var _hat: Sprite2D
 var _hit_area: Area2D
-var _flap_present_usec := 0
 
 
 func setup(p_skin: String, p_player: bool, origin: Vector2, p_name: String) -> void:
@@ -43,18 +42,11 @@ func setup(p_skin: String, p_player: bool, origin: Vector2, p_name: String) -> v
 	x_jitter = origin.x - RR.PLAYER_X
 	bob_t = 0.0
 	control = CTRL_PLAYER if p_player else CTRL_AI
-	if p_player:
-		physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 
 
 func _ready() -> void:
-	set_process(is_player)
+	set_process(false)
 	set_physics_process(false)
-	# Ghosts keep interpolation. The local player's drawn sprite is presented in
-	# _process so a flap is visible before the next 60 Hz physics step.
-	physics_interpolation_mode = (
-		Node.PHYSICS_INTERPOLATION_MODE_OFF if is_player else Node.PHYSICS_INTERPOLATION_MODE_ON
-	)
 	_sprite = Sprite2D.new()
 	_sprite.texture = _tex(skin)
 	_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
@@ -62,8 +54,6 @@ func _ready() -> void:
 	_sprite.scale = Vector2.ONE * s
 	_sprite.z_index = 20 if is_player else 8
 	add_child(_sprite)
-	if is_player:
-		_sprite.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	_hat = Sprite2D.new()
 	_hat.centered = true
 	_hat.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
@@ -112,8 +102,6 @@ func reset_for_match() -> void:
 	if _sprite:
 		_sprite.rotation = 0.0
 		_sprite.position = Vector2.ZERO
-		_sprite.offset = Vector2.ZERO
-	_flap_present_usec = 0
 	if is_player:
 		apply_hat(GameSession.hat_index)
 
@@ -121,34 +109,6 @@ func reset_for_match() -> void:
 func simulate_vertical(delta: float) -> void:
 	velocity.y = minf(velocity.y + RR.GRAVITY * delta, RR.TERMINAL)
 	position.y += velocity.y * delta
-	if is_player:
-		_flap_present_usec = 0
-
-
-func _process(_delta: float) -> void:
-	if is_player:
-		_present_sprite()
-
-
-func _present_dt() -> float:
-	var tick := 1.0 / float(Engine.physics_ticks_per_second)
-	if _flap_present_usec > 0:
-		var elapsed := float(Time.get_ticks_usec() - _flap_present_usec) * 0.000001
-		var refresh := DisplayServer.screen_get_refresh_rate()
-		if refresh < 30.0:
-			refresh = 60.0
-		return clampf(maxf(elapsed, 1.0 / refresh), 0.0, tick)
-	return clampf(Engine.get_physics_interpolation_fraction() * tick, 0.0, tick)
-
-
-func _present_sprite() -> void:
-	if _sprite == null or not is_player:
-		return
-	if not started or not alive:
-		_sprite.position = Vector2.ZERO
-		return
-	# Local offset only. Collision stays on this node's physics position.
-	_sprite.position = Vector2(0.0, velocity.y * _present_dt())
 
 
 func tick(delta: float) -> void:
@@ -191,21 +151,10 @@ func flap(play_sound := false) -> void:
 	velocity.y = -RR.FLAP
 	if is_player:
 		flap_cd = 0.0
-		_flap_present_usec = Time.get_ticks_usec()
-		# Stop displaying the previous falling pose. Collision stays here;
-		# only the sprite presentation is corrected.
-		physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
-		reset_physics_interpolation()
-		if _sprite:
-			_sprite.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
-			_sprite.reset_physics_interpolation()
-			_sprite.position = Vector2.ZERO
-			_face_velocity()
-			_present_sprite()
 	else:
 		flap_cd = 0.08
-		if _sprite:
-			_face_velocity()
+	if _sprite:
+		_face_velocity()
 	if play_sound:
 		var sfx := get_node_or_null("/root/Sfx")
 		if sfx:
