@@ -45,9 +45,13 @@ func setup(p_skin: String, p_player: bool, origin: Vector2, p_name: String) -> v
 
 
 func _ready() -> void:
-	set_process(false)
+	set_process(is_player)
 	set_physics_process(false)
-	physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_ON
+	# Ghosts keep interpolation. The local player's drawn sprite is presented in
+	# _process so a flap is visible before the next 60 Hz physics step.
+	physics_interpolation_mode = (
+		Node.PHYSICS_INTERPOLATION_MODE_OFF if is_player else Node.PHYSICS_INTERPOLATION_MODE_ON
+	)
 	_sprite = Sprite2D.new()
 	_sprite.texture = _tex(skin)
 	_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
@@ -102,6 +106,7 @@ func reset_for_match() -> void:
 	velocity = Vector2.ZERO
 	if _sprite:
 		_sprite.rotation = 0.0
+		_sprite.position = Vector2.ZERO
 	if is_player:
 		apply_hat(GameSession.hat_index)
 
@@ -109,6 +114,21 @@ func reset_for_match() -> void:
 func simulate_vertical(delta: float) -> void:
 	velocity.y = minf(velocity.y + RR.GRAVITY * delta, RR.TERMINAL)
 	position.y += velocity.y * delta
+
+
+func _process(_delta: float) -> void:
+	if is_player:
+		_present_sprite()
+
+
+func _present_sprite() -> void:
+	if _sprite == null or not is_player:
+		return
+	if not started or not alive:
+		_sprite.position = Vector2.ZERO
+		return
+	var dt := Engine.get_physics_interpolation_fraction() / float(Engine.physics_ticks_per_second)
+	_sprite.position = Vector2(0.0, velocity.y * dt)
 
 
 func tick(delta: float) -> void:
@@ -155,6 +175,8 @@ func flap(play_sound := false) -> void:
 		flap_cd = 0.08
 	if _sprite:
 		_face_velocity()
+		if is_player:
+			_present_sprite()
 	if play_sound:
 		var sfx := get_node_or_null("/root/Sfx")
 		if sfx:

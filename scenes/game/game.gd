@@ -21,6 +21,7 @@ var spawn_index := 0
 var score := 0
 var overlay: CanvasLayer
 var pause_layer: CanvasLayer
+const INPUT_AUDIT := false
 var swimming := 100
 var _feed_wait := 0.0
 var school: Node2D
@@ -245,7 +246,8 @@ func _configure_web_touch() -> void:
 func _input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		if event.pressed:
-			_flash_touch_probe()
+			if INPUT_AUDIT:
+				_flash_touch_probe()
 			_play_press(event.position, true)
 		_mark_input_handled()
 		return
@@ -521,7 +523,7 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
-	if _probe_flash > 0:
+	if INPUT_AUDIT and _probe_flash > 0:
 		_probe_flash -= 1
 		if _probe_flash <= 0 and hud and hud.alive_text:
 			hud.alive_text.modulate = Color.WHITE
@@ -1293,25 +1295,26 @@ func _log_perf() -> void:
 			Engine.get_frames_per_second(),
 		]
 	)
-	var mouse_avg := float(_mouse_lat_sum) / float(maxi(_mouse_lat_n, 1))
-	var touch_avg := float(_touch_lat_sum) / float(maxi(_touch_lat_n, 1))
-	print(
-		"[tap-audit] mouse_press=%d mouse_flaps=%d mouse_rej=%d mouse_us avg=%.0f worst=%d touch_press=%d touch_flaps=%d touch_rej=%d touch_us avg=%.0f worst=%d flap_calls=%d vel_overwrite=%d first_flap_ms=%.2f swim_bypass=%s reasons=%s"
-		% [
-			_mouse_pressed,
-			_mouse_flaps,
-			_mouse_rejected,
-			mouse_avg,
-			_mouse_lat_worst,
-			_screen_touch_pressed,
-			_touch_flaps,
-			_touches_rejected,
-			touch_avg,
-			_touch_lat_worst,
-			_player_flap_calls,
-			_vel_overwrites,
-			_first_flap_ms,
-			str(swim_off),
-			str(_reject_counts),
-		]
-	)
+	if INPUT_AUDIT:
+		var mouse_avg := float(_mouse_lat_sum) / float(maxi(_mouse_lat_n, 1))
+		var touch_avg := float(_touch_lat_sum) / float(maxi(_touch_lat_n, 1))
+		print(
+			"[tap-audit] mouse_press=%d mouse_flaps=%d mouse_rej=%d mouse_us avg=%.0f worst=%d touch_press=%d touch_flaps=%d touch_rej=%d touch_us avg=%.0f worst=%d flap_calls=%d vel_overwrite=%d first_flap_ms=%.2f swim_bypass=%s reasons=%s"
+			% [
+				_mouse_pressed,
+				_mouse_flaps,
+				_mouse_rejected,
+				mouse_avg,
+				_mouse_lat_worst,
+				_screen_touch_pressed,
+				_touch_flaps,
+				_touches_rejected,
+				touch_avg,
+				_touch_lat_worst,
+				_player_flap_calls,
+				_vel_overwrites,
+				_first_flap_ms,
+				str(swim_off),
+				str(_reject_counts),
+			]
+		)
