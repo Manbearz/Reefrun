@@ -16,8 +16,24 @@ func has_session() -> bool:
 	return not access_token.is_empty() and not user_id.is_empty()
 
 
+func has_refresh_token() -> bool:
+	return not refresh_token.strip_edges().is_empty()
+
+
+func access_token_fresh(leeway_sec: int = 30) -> bool:
+	if access_token.is_empty() or access_token.begins_with("sb_publishable_"):
+		return false
+	if expires_at <= 0:
+		return false
+	return expires_at > int(Time.get_unix_time_from_system()) + leeway_sec
+
+
+func needs_refresh(leeway_sec: int = 30) -> bool:
+	return has_refresh_token() and not access_token_fresh(leeway_sec)
+
+
 func can_restore() -> bool:
-	return not user_id.is_empty() and (not access_token.is_empty() or not refresh_token.is_empty())
+	return not user_id.is_empty() and (not access_token.is_empty() or has_refresh_token())
 
 
 func load_session() -> bool:
@@ -54,8 +70,9 @@ func apply_payload(data: Variant) -> bool:
 	if token.is_empty():
 		return false
 	access_token = token
-	refresh_token = refresh
-	if not uid.is_empty():
+	if not refresh.is_empty():
+		refresh_token = refresh
+	if not uid.is_empty() and (user_id.is_empty() or uid == user_id):
 		user_id = uid
 	var expires_in := int(session.get("expires_in", root.get("expires_in", 3600)))
 	var explicit_exp := int(session.get("expires_at", root.get("expires_at", 0)))

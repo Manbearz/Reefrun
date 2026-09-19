@@ -7,21 +7,29 @@ const ClientScript := preload("res://scripts/backend/supabase_client.gd")
 const AuthScript := preload("res://scripts/backend/supabase_auth.gd")
 const ProfileScript := preload("res://scripts/backend/profile_service.gd")
 const CourseSeedScript := preload("res://scripts/backend/course_seed_service.gd")
+const LeaderboardScript := preload("res://scripts/backend/leaderboard_repository.gd")
 const GhostRunScript := preload("res://scripts/ghost_run.gd")
 
 signal signed_in(user_id: String)
 signal identity_ready
+signal leaderboards_ready
 
 var auth = null
 var _client = null
 var _profiles = null
 var _seeds = null
+var _leaderboards = null
+var global_weekly: Array = []
+var global_monthly: Array = []
+var _lb_busy := false
 var _ghost_cache: Dictionary = {}
 var _pending_uploads: Array = []
 var _shared_seed := 0
 var _busy := false
 var _auth_logged := false
 var _diag_printed := false
+var _refresh_busy := false
+var _last_refresh_status := 0
 var last_auth_diag: Dictionary = {
 	"url_configured": "NO",
 	"key_configured": "NO",
@@ -39,6 +47,7 @@ func _ready() -> void:
 	_client = ClientScript.new(self)
 	_profiles = ProfileScript.new()
 	_seeds = CourseSeedScript.new()
+	_leaderboards = LeaderboardScript.new()
 	_reset_auth_diag()
 	if not ConfigScript.is_configured():
 		_resolve_identity()
@@ -54,12 +63,16 @@ func has_session() -> bool:
 	return auth != null and auth.has_session()
 
 
+func has_usable_session() -> bool:
+	return auth != null and auth.has_session() and auth.access_token_fresh()
+
+
 func auth_source_label() -> String:
 	return "Supabase Anonymous" if has_session() else "Local Fallback"
 
 
 func supabase_status_label() -> String:
-	return "Connected" if has_session() else "Not Connected"
+	return "Connected" if has_usable_session() else "Not Connected"
 
 
 func _reset_auth_diag() -> void:
@@ -212,7 +225,12 @@ func cancel_pre_match_requests() -> void:
 func prepare_menu() -> void:
 	if not is_configured():
 		return
-	if _busy or has_session() or _auth_logged:
+	if _busy:
+		return
+	if auth != null and auth.needs_refresh() and _pre_match_network_allowed():
+		_ensure_fresh_session()
+		return
+	if has_session() or _auth_logged:
 		return
 	_bootstrap()
 
@@ -222,18 +240,35 @@ func _bootstrap() -> void:
 		return
 	_busy = true
 	if auth.load_session():
+		print("[AUTH REFRESH] saved session found")
 		if not auth.user_id.is_empty() and not auth.user_id.begins_with("local_"):
 			_adopt_supabase_user(auth.user_id)
+		if auth.access_token_fresh():
 			print("[AUTH] Request started")
 			_log_auth_result("restored", true, auth.user_id)
-		if _pre_match_network_allowed() and not auth.has_session():
-			await _refresh_if_needed()
-	if not auth.has_session() and _pre_match_network_allowed():
+		else:
+			print("[AUTH REFRESH] access token expired")
+			print("[AUTH REFRESH] refresh token present: %s" % ("YES" if auth.has_refresh_token() else "NO"))
+			if _pre_match_network_allowed() and auth.has_refresh_token():
+				await _refresh_session()
+	# A saved refresh_token means this is the same anonymous user. Do not sign up again.
+	if auth.user_id.is_empty() and not auth.has_refresh_token() and _pre_match_network_allowed():
 		await _sign_in_anonymous()
 	if auth.has_session():
 		_adopt_supabase_user(auth.user_id)
 	_busy = false
 	_resolve_identity()
+
+
+func _ensure_fresh_session() -> void:
+	if _busy or auth == null:
+		return
+	_busy = true
+	if auth.needs_refresh() and _pre_match_network_allowed():
+		await _refresh_session()
+	if auth.has_session():
+		_adopt_supabase_user(auth.user_id)
+	_busy = false
 
 
 func _sign_in_anonymous() -> void:
@@ -279,44 +314,102 @@ func _fetch_auth_user() -> void:
 	auth.apply_user_id(uid)
 
 
-func _refresh_if_needed() -> void:
-	if not _pre_match_network_allowed():
-		return
-	if auth.has_session() and auth.expires_at > int(Time.get_unix_time_from_system()) + 30:
-		return
-	if auth.refresh_token.is_empty():
-		return
-	var result: Dictionary = await _client.request_json(
+func _refresh_session() -> bool:
+	if auth == null:
+		return false
+	if _refresh_busy:
+		while _refresh_busy:
+			await get_tree().process_frame
+		return auth.access_token_fresh()
+	if not auth.has_refresh_token():
+		print("[AUTH REFRESH] refresh token present: NO")
+		return false
+	_refresh_busy = true
+	var previous_uid := str(auth.user_id)
+	print("[AUTH REFRESH] refresh token present: YES")
+	print("[AUTH REFRESH] refresh request sent")
+	var result: Dictionary = await _client.request_json_independent(
 		"POST",
 		auth.refresh_url(),
 		_client.auth_headers(),
 		JSON.stringify({"refresh_token": auth.refresh_token})
 	)
+	_last_refresh_status = int(result.get("status", 0))
+	print("[AUTH REFRESH] HTTP STATUS=%d" % _last_refresh_status)
 	var applied: bool = bool(result.ok) and auth.apply_payload(result.data)
 	if applied:
+		if not previous_uid.is_empty() and auth.user_id != previous_uid:
+			auth.user_id = previous_uid
+			auth.save_session()
 		_adopt_supabase_user(auth.user_id)
+		print("[AUTH REFRESH] session refreshed")
+		print("[AUTH REFRESH] player ID unchanged: %s" % ("YES" if auth.user_id == previous_uid or previous_uid.is_empty() else "NO"))
+		_refresh_busy = false
+		return true
+	print("[AUTH REFRESH] refresh failed: %s" % _safe_auth_error(result))
+	_refresh_busy = false
+	return false
+
+
+func _is_jwt_expired(result: Dictionary) -> bool:
+	if int(result.get("status", 0)) != 401:
+		return false
+	var data: Variant = result.get("data", null)
+	if typeof(data) == TYPE_DICTIONARY:
+		var code := str(data.get("code", data.get("error_code", ""))).to_lower()
+		if code == "pgrst301" or code.find("jwt") >= 0:
+			return true
+	var err := _safe_auth_error(result).to_lower()
+	return err.find("jwt expired") >= 0 or err.find("invalid jwt") >= 0
+
+
+func _send_authed(method: String, url: String, body: String, independent: bool, prefer_minimal: bool) -> Dictionary:
+	var headers: PackedStringArray = _client.auth_headers(auth.access_token)
+	if prefer_minimal:
+		headers.append("Prefer: return=minimal")
+	if independent:
+		return await _client.request_json_independent(method, url, headers, body)
+	return await _client.request_json(method, url, headers, body)
+
+
+func _authed_request(method: String, url: String, body: String = "", independent := false, prefer_minimal := true, lb_diag := false) -> Dictionary:
+	if auth != null and auth.needs_refresh():
+		await _refresh_session()
+	var result: Dictionary = await _send_authed(method, url, body, independent, prefer_minimal)
+	if not _is_jwt_expired(result):
+		return result
+	if lb_diag:
+		print("[LB TEST] first request HTTP STATUS=", int(result.get("status", 0)))
+		print("[LB TEST] refreshing session")
+	var refreshed := await _refresh_session()
+	if not refreshed:
+		if lb_diag:
+			print("[LB TEST] retry HTTP STATUS=0")
+			print("[LB TEST] result=FAIL refresh failed")
+		return result
+	result = await _send_authed(method, url, body, independent, prefer_minimal)
+	if lb_diag:
+		print("[LB TEST] retry HTTP STATUS=", int(result.get("status", 0)))
+		print("[LB TEST] result=", "SUCCESS" if result.ok else "FAIL")
+	return result
 
 
 func _ensure_profile() -> void:
 	if not _pre_match_network_allowed():
 		return
-	var got: Dictionary = await _client.request_json(
-		"GET",
-		_profiles.profiles_url(auth.user_id),
-		_rest_headers()
-	)
+	var got: Dictionary = await _authed_request("GET", _profiles.profiles_url(auth.user_id), "", false, true)
 	if got.ok and got.data is Array and not got.data.is_empty():
 		return
 	await get_tree().create_timer(0.25).timeout
 	if not _pre_match_network_allowed():
 		return
-	await _client.request_json("GET", _profiles.profiles_url(auth.user_id), _rest_headers())
+	await _authed_request("GET", _profiles.profiles_url(auth.user_id), "", false, true)
 
 
 func _refresh_shared_seed() -> void:
 	if not _pre_match_network_allowed():
 		return
-	var result: Dictionary = await _client.request_json("GET", _seeds.current_url(), _rest_headers())
+	var result: Dictionary = await _authed_request("GET", _seeds.current_url(), "", false, true)
 	if result.ok:
 		_shared_seed = _seeds.parse_seed(result.data)
 
@@ -334,7 +427,7 @@ func prefetch_ghosts(course_seed: int) -> void:
 		+ "&course_seed=eq.%d&course_version=eq.%d&physics_version=eq.%d&limit=%d"
 		% [course_seed, RR.COURSE_VERSION, RR.PHYSICS_VERSION, RR.GHOST_COUNT]
 	)
-	var result: Dictionary = await _client.request_json("GET", url, _rest_headers())
+	var result: Dictionary = await _authed_request("GET", url, "", false, true)
 	if result.ok and result.data is Array:
 		_ghost_cache[str(course_seed)] = result.data
 
@@ -374,11 +467,12 @@ func _upload_ghost_run(run) -> void:
 		"physics_version": run.physics_version,
 		"course_version": run.course_version,
 	}
-	var result: Dictionary = await _client.request_json(
+	var result: Dictionary = await _authed_request(
 		"POST",
 		ConfigScript.project_url() + "/rest/v1/ghost_runs",
-		_rest_headers(),
-		JSON.stringify(body)
+		JSON.stringify(body),
+		false,
+		true
 	)
 	if not result.ok:
 		push_warning("[backend] ghost upload skipped: %s" % str(result.error))
@@ -395,3 +489,119 @@ func _rest_headers() -> PackedStringArray:
 	var headers: PackedStringArray = _client.auth_headers(auth.access_token)
 	headers.append("Prefer: return=minimal")
 	return headers
+
+
+func fetch_leaderboards() -> void:
+	if _lb_busy or not is_configured() or not has_session():
+		leaderboards_ready.emit()
+		return
+	if not _pre_match_network_allowed():
+		leaderboards_ready.emit()
+		return
+	_fetch_leaderboards()
+
+
+func submit_leaderboard_score(score: int, display_name: String) -> void:
+	print("[LB TEST] BACKEND SUBMIT ENTERED")
+	var token_present := auth != null and not str(auth.access_token).strip_edges().is_empty() \
+		and not str(auth.access_token).begins_with("sb_publishable_")
+	var blocked := ""
+	if score <= 0:
+		blocked = "score<=0"
+	elif not is_configured():
+		blocked = "not_configured"
+	elif not has_session():
+		blocked = "no_session"
+	elif not token_present:
+		blocked = "no_access_token"
+	print("[LEADERBOARD]")
+	print("submit called: YES")
+	print("score: %d" % score)
+	print("name: %s" % display_name)
+	print("has_session: %s" % ("YES" if has_session() else "NO"))
+	print("access_token: %s" % ("PRESENT" if token_present else "MISSING"))
+	if not blocked.is_empty():
+		print("request sent: NO")
+		print("HTTP status: -")
+		print("result: BLOCKED")
+		print("error: %s" % blocked)
+		return
+	_submit_leaderboard_score(score, display_name)
+
+
+func _fetch_leaderboards() -> void:
+	_lb_busy = true
+	var week: Dictionary = await _authed_request(
+		"POST",
+		_leaderboards.list_url(),
+		JSON.stringify({"p_period": "weekly"}),
+		false,
+		false
+	)
+	var month: Dictionary = await _authed_request(
+		"POST",
+		_leaderboards.list_url(),
+		JSON.stringify({"p_period": "monthly"}),
+		false,
+		false
+	)
+	print("[LB] get_leaderboard weekly raw=%s ok=%s status=%s" % [
+		_leaderboards.describe_raw(week.data),
+		week.ok,
+		str(week.status),
+	])
+	print("[LB] get_leaderboard monthly raw=%s ok=%s status=%s" % [
+		_leaderboards.describe_raw(month.data),
+		month.ok,
+		str(month.status),
+	])
+	if week.ok:
+		global_weekly = _leaderboards.parse_rows(week.data)
+	if month.ok:
+		global_monthly = _leaderboards.parse_rows(month.data)
+	var w0 := _sample_entry(global_weekly)
+	var m0 := _sample_entry(global_monthly)
+	print("[LB] global_weekly size=%d first=%s" % [global_weekly.size(), w0])
+	print("[LB] global_monthly size=%d first=%s" % [global_monthly.size(), m0])
+	_lb_busy = false
+	leaderboards_ready.emit()
+
+
+func _sample_entry(board: Array) -> String:
+	if board.is_empty():
+		return "(empty)"
+	var row: Variant = board[0]
+	if typeof(row) != TYPE_DICTIONARY:
+		return "(not_dict)"
+	return "%s %s" % [str(row.get("name", "")), str(row.get("score", 0))]
+
+
+func _submit_leaderboard_score(score: int, display_name: String) -> void:
+	print("[LB TEST] RPC SUBMIT ENTERED")
+	# Allowed after the match even while game.tscn is still current.
+	var result: Dictionary = await _authed_request(
+		"POST",
+		_leaderboards.submit_url(),
+		JSON.stringify({
+			"p_score": score,
+			"p_display_name": display_name,
+		}),
+		true,
+		true,
+		true
+	)
+	var status := int(result.get("status", 0))
+	var http_res := int(result.get("godot_http_result", -1))
+	var err := _safe_auth_error(result)
+	if http_res >= 0 and http_res != HTTPRequest.RESULT_SUCCESS:
+		err = "%s godot_http=%s" % [err, _http_result_name(http_res)]
+	print("[LB TEST] HTTP STATUS=", status)
+	print("[LB TEST] RPC RESULT=", "SUCCESS" if result.ok else (err if not err.is_empty() else str(result.get("error", "unknown"))))
+	print("[LEADERBOARD]")
+	print("request sent: YES")
+	print("HTTP status: %s" % (str(status) if status > 0 else "-"))
+	if result.ok:
+		print("result: SUCCESS")
+	else:
+		print("result: FAIL")
+		print("error: %s" % (err if not err.is_empty() else str(result.get("error", "unknown"))))

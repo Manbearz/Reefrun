@@ -389,6 +389,7 @@ func start_match() -> void:
 
 
 func record_run(score: int, rank: int, alive_at_death: int) -> void:
+	print("[LB TEST] RECORD_RUN ENTERED score=", score)
 	last_score = score
 	last_rank = rank
 	last_alive_at_death = alive_at_death
@@ -403,6 +404,12 @@ func record_run(score: int, rank: int, alive_at_death: int) -> void:
 	_upsert(weekly, name, score)
 	_upsert(monthly, name, score)
 	_save()
+	var backend := get_node_or_null("/root/Backend")
+	print("[LB TEST] ABOUT TO SUBMIT TO BACKEND")
+	if backend and backend.has_method("submit_leaderboard_score"):
+		backend.submit_leaderboard_score(score, name)
+	else:
+		print("[LB TEST] BACKEND SUBMIT SKIPPED backend_missing_or_no_method")
 
 
 func refresh_boards() -> bool:

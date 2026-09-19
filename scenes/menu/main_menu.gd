@@ -104,8 +104,7 @@ func _process(delta: float) -> void:
 	if _check_t < 1.0:
 		return
 	_check_t = 0.0
-	if GameSession.refresh_boards():
-		_fill_scores()
+	GameSession.refresh_boards()
 
 
 func _input(event: InputEvent) -> void:
@@ -754,13 +753,28 @@ func _show_scores() -> void:
 	_scores.visible = true
 	if _ground:
 		_ground.visible = false
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("fetch_leaderboards"):
+		if backend.has_signal("leaderboards_ready") and not backend.leaderboards_ready.is_connected(_fill_scores):
+			backend.leaderboards_ready.connect(_fill_scores)
+		backend.fetch_leaderboards()
 
 
 func _fill_scores() -> void:
 	for child in _score_rows.get_children():
 		child.queue_free()
-	_fill_column(GameSession.weekly, WEEKLY_NAME, WEEKLY_SCORE)
-	_fill_column(GameSession.monthly, MONTHLY_NAME, MONTHLY_SCORE)
+	_fill_column(_global_board("weekly"), WEEKLY_NAME, WEEKLY_SCORE)
+	_fill_column(_global_board("monthly"), MONTHLY_NAME, MONTHLY_SCORE)
+
+
+func _global_board(period: String) -> Array:
+	var backend := get_node_or_null("/root/Backend")
+	if backend == null:
+		return []
+	var raw: Variant = backend.get("global_weekly") if period == "weekly" else backend.get("global_monthly")
+	if raw is Array:
+		return raw
+	return []
 
 
 func _fill_column(board: Array, name_col: Rect2, score_col: Rect2) -> void:
@@ -769,9 +783,12 @@ func _fill_column(board: Array, name_col: Rect2, score_col: Rect2) -> void:
 		var h: float = ROW_H[i]
 		var name := ""
 		var score := ""
-		if i < board.size():
-			name = str(board[i].get("name", ""))
-			score = str(int(board[i].get("score", 0)))
+		if i < board.size() and typeof(board[i]) == TYPE_DICTIONARY:
+			var row: Dictionary = board[i]
+			name = str(row.get("name", row.get("display_name", ""))).strip_edges()
+			if name == "<null>" or name == "null":
+				name = ""
+			score = str(int(row.get("score", 0)))
 		var name_box := Rect2(name_col.position.x, y + NAME_INSET + NAME_NUDGE_Y, name_col.size.x, h - NAME_INSET * 2.0)
 		var score_box := Rect2(score_col.position.x, y + SCORE_INSET, score_col.size.x, h - SCORE_INSET * 2.0)
 		_score_rows.add_child(_row_text(name, name_box, HORIZONTAL_ALIGNMENT_CENTER, false, _name_text_scale(name)))

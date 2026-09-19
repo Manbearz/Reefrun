@@ -616,9 +616,13 @@ func _on_ghost_died(ghost: ReefFish) -> void:
 
 
 func _on_player_died() -> void:
+	print("[LB TEST] PLAYER DEATH REACHED")
+	print("[LB TEST] death guards finished=", finished, " player_alive=", player != null and player.alive, " score=", score)
 	if finished:
+		print("[LB TEST] DEATH RETURN finished=true")
 		return
 	if player.alive:
+		print("[LB TEST] DEATH RETURN player.alive=true")
 		return
 	Sfx.play_death(-10.0)
 	swimming = maxi(swimming - 1, 0)
@@ -626,6 +630,7 @@ func _on_player_died() -> void:
 	var rank := remaining + 1
 	_save_ghost_run()
 	_log_perf()
+	print("[LB TEST] ABOUT TO RECORD RUN score=", score)
 	GameSession.record_run(score, rank, remaining)
 	get_tree().create_timer(0.85).timeout.connect(_after_death.bind(rank, remaining))
 
