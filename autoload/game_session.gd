@@ -5,6 +5,7 @@ var coins: int = 0
 var hat_index: int = -1
 var owned_hats: PackedInt32Array = PackedInt32Array()
 var player_name: String = ""
+var player_id: String = ""
 var course_seed: int = 0
 var last_score: int = 0
 var last_rank: int = 100
@@ -40,6 +41,8 @@ func _ready() -> void:
 		CourseBuilderScript.validate_determinism(827361)
 		CourseBuilderScript.validate_determinism(1)
 	_load()
+	if _ensure_player_id():
+		_save()
 	refresh_boards()
 
 
@@ -338,8 +341,18 @@ func equip_hat(index: int) -> void:
 	_save()
 
 
+func _ensure_player_id() -> bool:
+	if not player_id.is_empty():
+		return false
+	player_id = "local_%d_%d" % [Time.get_unix_time_from_system(), randi()]
+	return true
+
+
 func start_match() -> void:
-	if not (DEV_REUSE_COURSE_SEED and course_seed != 0):
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("has_shared_seed") and backend.has_shared_seed():
+		course_seed = backend.shared_course_seed()
+	elif not (DEV_REUSE_COURSE_SEED and course_seed != 0):
 		course_seed = randi()
 		if course_seed == 0:
 			course_seed = 1
@@ -435,6 +448,7 @@ func _load() -> void:
 		return
 	fish_index = int(cfg.get_value("player", "fish", 0))
 	player_name = str(cfg.get_value("player", "name", ""))
+	player_id = str(cfg.get_value("player", "player_id", ""))
 	coins = int(cfg.get_value("player", "coins", 0))
 	hat_index = int(cfg.get_value("player", "hat", -1))
 	owned_hats = PackedInt32Array()
@@ -460,6 +474,7 @@ func _save() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("player", "fish", fish_index)
 	cfg.set_value("player", "name", player_name)
+	cfg.set_value("player", "player_id", player_id)
 	cfg.set_value("player", "coins", coins)
 	cfg.set_value("player", "hat", hat_index)
 	cfg.set_value("player", "owned_hats", owned_hats)

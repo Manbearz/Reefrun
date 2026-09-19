@@ -51,7 +51,7 @@ const FISH_NAMES: PackedStringArray = [
 ]
 const HAT_COUNT := 40
 const HAT_PRICE := 50
-const HAT_SCALE := 0.155
+const HAT_SCALE := 0.185
 const HAT_BRIM := 0.46
 const COIN_EVERY := 5
 const PIPE_IDS: PackedStringArray = [

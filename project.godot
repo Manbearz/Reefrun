@@ -20,6 +20,7 @@ config/icon="res://icon.svg"
 [autoload]
 
 GameSession="*res://autoload/game_session.gd"
+Backend="*res://autoload/backend.gd"
 Sprites="*res://autoload/sprites.gd"
 Sfx="*res://autoload/sfx.gd"
 RewardedAds="*res://autoload/rewarded_ads.gd"
@@ -32,11 +33,6 @@ window/size/window_width_override=540
 window/size/window_height_override=960
 window/stretch/mode="viewport"
 window/handheld/orientation=1
-
-[input_devices]
-
-pointing/emulate_touch_from_mouse=false
-pointing/emulate_mouse_from_touch=false
 
 [input]
 
@@ -53,6 +49,10 @@ pause={
 "events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":4194305,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)
 ]
 }
+
+[input_devices]
+
+pointing/emulate_mouse_from_touch=false
 
 [layer_names]
 

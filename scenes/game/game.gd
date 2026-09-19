@@ -3,7 +3,7 @@ extends Node2D
 const HarpoonScript := preload("res://scenes/game/harpoon.gd")
 const SpriteTextScript := preload("res://scripts/sprite_text.gd")
 const GhostRunScript := preload("res://scripts/ghost_run.gd")
-const GhostBankScript := preload("res://scripts/ghost_bank.gd")
+const GhostMatchScript := preload("res://scripts/ghost_match.gd")
 const CourseBuilderScript := preload("res://scripts/course_builder.gd")
 const ShareServiceScript := preload("res://scripts/share/share_service.gd")
 
@@ -75,7 +75,7 @@ var _perf_sum := 0.0
 var _perf_worst := 0.0
 var _perf_phys_sum := 0.0
 var _perf_phys_worst := 0.0
-var _ghost_bank
+var _ghost_match
 var _coins: Array[Sprite2D] = []
 var _run_coins := 0
 var _over_rank := 0
@@ -100,7 +100,7 @@ func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_ON
 	cosmetic_rng.randomize()
-	_ghost_bank = GhostBankScript.new()
+	_ghost_match = GhostMatchScript.new()
 	world = ReefWorld.new()
 	world.process_mode = Node.PROCESS_MODE_PAUSABLE
 	add_child(world)
@@ -117,6 +117,9 @@ func _ready() -> void:
 	add_child(school)
 	_build_layout()
 	_spawn_school()
+	var backend: Node = get_node_or_null("/root/Backend")
+	if backend and backend.has_method("cancel_pre_match_requests"):
+		backend.cancel_pre_match_requests()
 	hud = GameHUD.new()
 	hud.process_mode = Node.PROCESS_MODE_PAUSABLE
 	add_child(hud)
@@ -151,48 +154,37 @@ func _spawn_school() -> void:
 	player.control = ReefFish.CTRL_PLAYER
 	player.died.connect(_on_player_died)
 	swimming = 1
-	var runs: Array = _ghost_bank.get_runs(GameSession.course_seed)
-	var vis_recorded := mini(runs.size(), RR.GHOST_DRAW)
-	for i in vis_recorded:
+	var runs: Array = _ghost_match.fill_competitors(
+		GameSession.course_seed,
+		layout,
+		GameSession.player_id
+	)
+	var vis_n := mini(runs.size(), RR.GHOST_DRAW)
+	var real_n := 0
+	var fallback_n := 0
+	for i in runs.size():
 		var run = runs[i]
-		var skin: String = run.fish_id if run.fish_id != "" else "fish_blue"
-		var origin := Vector2(RR.PLAYER_X + 20.0 + float(i % 4) * 8.0, RR.VIEW_H * 0.42)
-		var ghost := _make_fish(skin, false, origin, run.player_name)
-		ghost.control = ReefFish.CTRL_PLAYBACK
-		ghost.ghost_run = run
-		ghost.died.connect(_on_ghost_died.bind(ghost))
-		ghost.visible = false
-		ghosts.append(ghost)
-	var vis_ai := RR.GHOST_DRAW - vis_recorded
-	for skin in RR.FISH_IDS:
-		for i in vis_ai:
-			if RR.FISH_IDS[i % RR.FISH_IDS.size()] != skin:
-				continue
-			var origin := Vector2(
-				RR.PLAYER_X + cosmetic_rng.randf_range(-36.0, 28.0),
-				RR.VIEW_H * 0.42 + cosmetic_rng.randf_range(-93.0, 93.0)
-			)
-			var ghost := _make_fish(skin, false, origin, _ghost_name(ghosts.size()))
-			ghost.control = ReefFish.CTRL_AI
-			ghost.survive_pipes = _roll_death_pipe()
-			ghost.skill = clampf(cosmetic_rng.randfn(0.58, 0.18), 0.12, 0.95)
-			ghost.rng.seed = GameSession.course_seed + ghosts.size() * 97
+		if run.source == GhostRunScript.SOURCE_REAL:
+			real_n += 1
+		else:
+			fallback_n += 1
+		if i < vis_n:
+			var skin: String = run.fish_id if run.fish_id != "" else "fish_blue"
+			var origin := Vector2(RR.PLAYER_X + 20.0 + float(i % 4) * 8.0, RR.VIEW_H * 0.42)
+			var ghost := _make_fish(skin, false, origin, run.label())
+			ghost.control = ReefFish.CTRL_PLAYBACK
+			ghost.ghost_run = run
+			ghost.apply_hat(run.hat_id)
 			ghost.died.connect(_on_ghost_died.bind(ghost))
 			ghost.visible = false
 			ghosts.append(ghost)
-	for i in range(vis_recorded, runs.size()):
-		if logical_death.size() >= RR.GHOST_COUNT - ghosts.size():
-			break
-		var run = runs[i]
-		logical_death.append(run.death_tick)
-		logical_alive.append(1)
-		logical_names.append(run.player_name)
-	var slots_left := RR.GHOST_COUNT - ghosts.size() - logical_death.size()
-	for i in slots_left:
-		phantoms.append(_roll_death_pipe())
+		else:
+			logical_death.append(run.death_tick)
+			logical_alive.append(1)
+			logical_names.append(run.label())
 	print(
-		"[ghosts] seed=%d vis=%d playback=%d logical=%d phantoms=%d"
-		% [GameSession.course_seed, ghosts.size(), vis_recorded, logical_death.size(), phantoms.size()]
+		"[ghosts] seed=%d total=%d vis=%d logical=%d real=%d fallback=%d"
+		% [GameSession.course_seed, runs.size(), ghosts.size(), logical_death.size(), real_n, fallback_n]
 	)
 
 
@@ -371,11 +363,7 @@ func _begin_run() -> void:
 	player.reset_for_match()
 	player.started = true
 	for ghost in ghosts:
-		if ghost.control == ReefFish.CTRL_PLAYBACK:
-			ghost.reset_for_match()
-		else:
-			ghost.position.y = ghost.rest_y
-			ghost.velocity = Vector2.ZERO
+		ghost.reset_for_match()
 		ghost.started = true
 		ghost.rest_y = ghost.position.y
 	_advance_playback()
@@ -398,7 +386,7 @@ func _begin_lobby() -> void:
 	_shown_ghosts = 0
 	swimming = 1
 	hud.set_lobby(true, ceili(_lobby_len))
-	hud.set_coins(GameSession.coins)
+	hud.set_coins(0)
 
 
 func _tick_lobby(delta: float) -> void:
@@ -550,32 +538,7 @@ func _cull_pipes() -> void:
 
 
 func _guide_ghosts() -> void:
-	var px := RR.PLAYER_X + scroll
-	var gap := _upcoming_gap()
-	if _harpoon_beat >= 2:
-		gap = _lane_center(_safe_lane)
-	var near_pipe := false
-	for pair in pipes:
-		if absf(pair.position.x - px) < 30.0:
-			near_pipe = true
-			break
-	for ghost in ghosts:
-		if not ghost.alive:
-			continue
-		if ghost.control == ReefFish.CTRL_PLAYBACK:
-			continue
-		ghost.look_ahead = gap
-		ghost.pipes_cleared = score
-		if ghost.position.y < RR.PLAY_TOP - 6.0 or ghost.position.y > RR.PLAY_BOTTOM + 16.0:
-			ghost.kill()
-			continue
-		if near_pipe and score >= ghost.survive_pipes:
-			ghost.kill()
-	if near_pipe:
-		for i in range(phantoms.size() - 1, -1, -1):
-			if score >= phantoms[i]:
-				phantoms.remove_at(i)
-				swimming = maxi(swimming - 1, 0)
+	pass
 
 
 func _upcoming_gap() -> float:
@@ -620,7 +583,7 @@ func _collect_coins() -> void:
 		GameSession.add_coins(1)
 		Sfx.play("coin", -10.0)
 		if hud:
-			hud.set_coins(GameSession.coins)
+			hud.set_coins(_run_coins)
 
 
 func _score_pipes() -> void:
@@ -1451,12 +1414,18 @@ func _save_ghost_run() -> void:
 	run.physics_version = RR.PHYSICS_VERSION
 	run.course_version = RR.COURSE_VERSION
 	run.course_seed = GameSession.course_seed
-	run.player_name = _player_label()
+	run.display_name = _player_label()
+	run.player_name = run.display_name
 	run.fish_id = GameSession.selected_fish()
+	run.hat_id = GameSession.hat_index
 	run.flap_ticks = _recorded_flaps
 	run.death_tick = match_tick
 	run.score = score
-	_ghost_bank.save_run(run)
+	run.source = GhostRunScript.SOURCE_REAL
+	run.player_id = GameSession.player_id
+	run.created_at = int(Time.get_unix_time_from_system())
+	run.run_id = "%s-%d-%d" % [GameSession.player_id, GameSession.course_seed, run.created_at]
+	_ghost_match.save_local_run(run)
 
 
 func _sample_perf() -> void:
@@ -1473,23 +1442,18 @@ func _sample_perf() -> void:
 
 func _log_perf() -> void:
 	var vis_play := 0
-	var vis_ai := 0
 	for ghost in ghosts:
 		if ghost.control == ReefFish.CTRL_PLAYBACK:
 			vis_play += 1
-		else:
-			vis_ai += 1
 	var avg := _perf_sum / float(maxi(_perf_n, 1))
 	var avg_phys := _perf_phys_sum / float(maxi(_perf_n, 1))
 	print(
-		"[ghost-perf] seed=%d tick=%d vis_rec=%d vis_ai=%d logical=%d phantoms=%d nodes=%d avg_ms=%.2f worst_ms=%.2f avg_phys_ms=%.2f worst_phys_ms=%.2f fps=%.0f"
+		"[ghost-perf] seed=%d tick=%d vis=%d logical=%d nodes=%d avg_ms=%.2f worst_ms=%.2f avg_phys_ms=%.2f worst_phys_ms=%.2f fps=%.0f"
 		% [
 			GameSession.course_seed,
 			match_tick,
 			vis_play,
-			vis_ai,
 			logical_death.size(),
-			phantoms.size(),
 			int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)),
 			avg,
 			_perf_worst,

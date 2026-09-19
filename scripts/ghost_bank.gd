@@ -12,18 +12,16 @@ func get_runs(course_seed: int) -> Array:
 	var count := int(cfg.get_value("meta", "count", 0))
 	for i in count:
 		var run = _read_run(cfg, "run_%d" % i)
-		if run == null or not run.is_compatible():
+		if run == null or not run.is_valid():
 			continue
 		if run.course_seed != course_seed:
 			continue
 		out.append(run)
-		if out.size() >= RR.GHOST_COUNT:
-			break
 	return out
 
 
 func save_run(run) -> void:
-	if run == null or not run.is_compatible():
+	if run == null or not run.is_valid():
 		return
 	_ensure_dir()
 	var path := _path(run.course_seed)
@@ -48,12 +46,20 @@ func _read_run(cfg: ConfigFile, sec: String):
 	run.course_version = int(cfg.get_value(sec, "course_version", 1))
 	run.course_seed = int(cfg.get_value(sec, "course_seed", 0))
 	run.player_name = str(cfg.get_value(sec, "player_name", "YOU"))
+	run.display_name = str(cfg.get_value(sec, "display_name", run.player_name))
 	run.fish_id = str(cfg.get_value(sec, "fish_id", "fish_blue"))
+	run.hat_id = int(cfg.get_value(sec, "hat_id", -1))
 	run.death_tick = int(cfg.get_value(sec, "death_tick", -1))
 	run.score = int(cfg.get_value(sec, "score", 0))
+	run.source = str(cfg.get_value(sec, "source", GhostRunScript.SOURCE_REAL))
+	run.run_id = str(cfg.get_value(sec, "run_id", ""))
+	run.player_id = str(cfg.get_value(sec, "player_id", ""))
+	run.created_at = int(cfg.get_value(sec, "created_at", 0))
 	var flaps: Variant = cfg.get_value(sec, "flap_ticks", PackedInt32Array())
 	if flaps is PackedInt32Array:
 		run.flap_ticks = flaps
+	if run.display_name.is_empty():
+		run.display_name = run.player_name
 	return run
 
 
@@ -63,10 +69,16 @@ func _write_run(cfg: ConfigFile, sec: String, run) -> void:
 	cfg.set_value(sec, "course_version", run.course_version)
 	cfg.set_value(sec, "course_seed", run.course_seed)
 	cfg.set_value(sec, "player_name", run.player_name)
+	cfg.set_value(sec, "display_name", run.label())
 	cfg.set_value(sec, "fish_id", run.fish_id)
+	cfg.set_value(sec, "hat_id", run.hat_id)
 	cfg.set_value(sec, "death_tick", run.death_tick)
 	cfg.set_value(sec, "score", run.score)
 	cfg.set_value(sec, "flap_ticks", run.flap_ticks)
+	cfg.set_value(sec, "source", run.source)
+	cfg.set_value(sec, "run_id", run.run_id)
+	cfg.set_value(sec, "player_id", run.player_id)
+	cfg.set_value(sec, "created_at", run.created_at)
 
 
 func _compact_oldest(cfg: ConfigFile, count: int) -> void:

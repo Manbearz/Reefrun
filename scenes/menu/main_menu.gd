@@ -18,6 +18,7 @@ const NAME_NUDGE_Y := 3.0
 const SCORE_INSET := 2.0
 const NAME_TEXT_SCALE := 1.28
 const SCORE_NUM_SCALE := 0.78
+const DEV_AUTH_DEBUG := true
 
 var _home: Control
 var _scores: Control
@@ -61,6 +62,7 @@ var _card_scale := 1.0
 var _score_pos := Vector2.ZERO
 var _score_scale := 1.0
 var _check_t := 0.0
+var _auth_debug: Label
 
 
 func _ready() -> void:
@@ -80,6 +82,10 @@ func _ready() -> void:
 	_scores.visible = false
 	_build_home(card_size)
 	_build_scores(score_size)
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("prepare_menu"):
+		backend.prepare_menu()
+	_mount_auth_debug()
 
 
 func _process(delta: float) -> void:
@@ -190,6 +196,50 @@ func _backdrop() -> void:
 	_ground.size = Vector2(RR.VIEW_W, RR.GROUND_H)
 	_ground.modulate = Color(1, 1, 1, 0.52)
 	add_child(_ground)
+
+
+func _dev_auth_enabled() -> bool:
+	return DEV_AUTH_DEBUG and (OS.has_feature("editor") or OS.is_debug_build())
+
+
+func _mount_auth_debug() -> void:
+	if not _dev_auth_enabled():
+		return
+	_auth_debug = Label.new()
+	_auth_debug.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_auth_debug.position = Vector2(10, 8)
+	_auth_debug.size = Vector2(RR.VIEW_W - 20, 96)
+	_auth_debug.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_auth_debug.add_theme_font_size_override("font_size", 12)
+	_auth_debug.add_theme_color_override("font_color", Color(0.82, 0.94, 1.0, 0.92))
+	_auth_debug.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	_auth_debug.add_theme_constant_override("outline_size", 3)
+	add_child(_auth_debug)
+	var backend := get_node_or_null("/root/Backend")
+	if backend:
+		if backend.has_signal("identity_ready"):
+			backend.identity_ready.connect(_refresh_auth_debug)
+		if backend.has_signal("signed_in"):
+			backend.signed_in.connect(func(_id: String): _refresh_auth_debug())
+	_refresh_auth_debug()
+
+
+func _refresh_auth_debug() -> void:
+	if _auth_debug == null:
+		return
+	var backend := get_node_or_null("/root/Backend")
+	var source := "Local Fallback"
+	var status := "Not Connected"
+	if backend:
+		if backend.has_method("auth_source_label"):
+			source = str(backend.auth_source_label())
+		if backend.has_method("supabase_status_label"):
+			status = str(backend.supabase_status_label())
+	_auth_debug.text = "PLAYER ID:\n%s\nAUTH TYPE:\n%s\nSUPABASE:\n%s" % [
+		GameSession.player_id,
+		source,
+		status,
+	]
 
 
 func _layer() -> Control:
