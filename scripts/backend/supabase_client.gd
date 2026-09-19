@@ -21,12 +21,14 @@ func is_ready() -> bool:
 
 func auth_headers(access_token: String = "") -> PackedStringArray:
 	var key := ConfigScript.anon_key()
-	var token := access_token if not access_token.is_empty() else key
-	return PackedStringArray([
+	var headers := PackedStringArray([
 		"Content-Type: application/json",
 		"apikey: %s" % key,
-		"Authorization: Bearer %s" % token,
 	])
+	var token := access_token.strip_edges()
+	if not token.is_empty() and not token.begins_with("sb_publishable_"):
+		headers.append("Authorization: Bearer %s" % token)
+	return headers
 
 
 func request_json(method: String, url: String, headers: PackedStringArray, body: String = "") -> Dictionary:
@@ -35,6 +37,8 @@ func request_json(method: String, url: String, headers: PackedStringArray, body:
 		"status": 0,
 		"data": null,
 		"error": "unavailable",
+		"godot_request_error": 0,
+		"godot_http_result": -1,
 	}
 	if not is_ready():
 		result.error = "not_configured"
@@ -44,15 +48,17 @@ func request_json(method: String, url: String, headers: PackedStringArray, body:
 	_http.timeout = 8.0
 	_host.add_child(_http)
 	var err := _http.request(url, headers, _http_method(method), body)
+	result.godot_request_error = err
 	if err != OK:
 		_http.queue_free()
 		_http = null
-		result.error = "request_failed"
+		result.error = "godot_request_%s" % error_string(err)
 		return result
 	var completed: Array = await _http.request_completed
 	if _http != null and is_instance_valid(_http):
 		_http.queue_free()
 	_http = null
+	result.godot_http_result = int(completed[0])
 	var status := int(completed[1])
 	var raw: PackedByteArray = completed[3]
 	result.status = status

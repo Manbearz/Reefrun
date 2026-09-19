@@ -208,7 +208,7 @@ func _mount_auth_debug() -> void:
 	_auth_debug = Label.new()
 	_auth_debug.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_auth_debug.position = Vector2(10, 8)
-	_auth_debug.size = Vector2(RR.VIEW_W - 20, 96)
+	_auth_debug.size = Vector2(RR.VIEW_W - 20, 240)
 	_auth_debug.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_auth_debug.add_theme_font_size_override("font_size", 12)
 	_auth_debug.add_theme_color_override("font_color", Color(0.82, 0.94, 1.0, 0.92))
@@ -235,10 +235,40 @@ func _refresh_auth_debug() -> void:
 			source = str(backend.auth_source_label())
 		if backend.has_method("supabase_status_label"):
 			status = str(backend.supabase_status_label())
-	_auth_debug.text = "PLAYER ID:\n%s\nAUTH TYPE:\n%s\nSUPABASE:\n%s" % [
+	var url_cfg := "NO"
+	var key_cfg := "NO"
+	var sent := "NO"
+	var http_status := "-"
+	var auth_result := "not_attempted"
+	var auth_error := ""
+	var godot_error := ""
+	if backend != null:
+		var raw: Variant = backend.get("last_auth_diag")
+		var diag: Dictionary = {}
+		if typeof(raw) == TYPE_DICTIONARY:
+			diag = raw
+		url_cfg = str(diag.get("url_configured", "NO"))
+		key_cfg = str(diag.get("key_configured", "NO"))
+		sent = str(diag.get("request_sent", "NO"))
+		http_status = str(diag.get("http_status", "-"))
+		auth_result = str(diag.get("auth_result", "not_attempted"))
+		auth_error = str(diag.get("auth_error", ""))
+		godot_error = str(diag.get("godot_error", ""))
+	var extra := "SUPABASE URL CONFIGURED: %s\nPUBLISHABLE KEY CONFIGURED: %s\nAUTH REQUEST SENT: %s\nHTTP STATUS: %s\nAUTH RESULT: %s\nAUTH ERROR: %s" % [
+		url_cfg,
+		key_cfg,
+		sent,
+		http_status,
+		auth_result,
+		auth_error if not auth_error.is_empty() else "-",
+	]
+	if not godot_error.is_empty():
+		extra += "\nGODOT ERROR: %s" % godot_error
+	_auth_debug.text = "PLAYER ID:\n%s\nAUTH:\n%s\nSUPABASE:\n%s\n%s" % [
 		GameSession.player_id,
 		source,
 		status,
+		extra,
 	]
 
 

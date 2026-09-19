@@ -23,6 +23,7 @@ var _vk_restoring := false
 var _stable_win := Vector2i.ZERO
 
 const CourseBuilderScript := preload("res://scripts/course_builder.gd")
+const ConfigScript := preload("res://scripts/backend/supabase_config.gd")
 const SAVE_PATH := "user://reefrun.cfg"
 # Local ghost testing: Continue / Play reuse the last course so recorded fish replay.
 # Set false for production so each match gets a new seed.
@@ -341,8 +342,32 @@ func equip_hat(index: int) -> void:
 	_save()
 
 
+func is_local_player_id(id: String = "") -> bool:
+	var check := player_id if id.is_empty() else id
+	return check.is_empty() or check.begins_with("local_")
+
+
+func adopt_supabase_id(id: String) -> bool:
+	var uid := id.strip_edges()
+	if uid.is_empty() or uid.begins_with("local_"):
+		return false
+	player_id = uid
+	_save()
+	return true
+
+
+func ensure_local_fallback_id() -> void:
+	if not is_local_player_id():
+		return
+	if player_id.is_empty():
+		player_id = "local_%d_%d" % [Time.get_unix_time_from_system(), randi()]
+		_save()
+
+
 func _ensure_player_id() -> bool:
 	if not player_id.is_empty():
+		return false
+	if ConfigScript.is_configured():
 		return false
 	player_id = "local_%d_%d" % [Time.get_unix_time_from_system(), randi()]
 	return true
@@ -474,7 +499,15 @@ func _save() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("player", "fish", fish_index)
 	cfg.set_value("player", "name", player_name)
-	cfg.set_value("player", "player_id", player_id)
+	var id_to_store := player_id
+	if id_to_store.is_empty():
+		var prev := ConfigFile.new()
+		if prev.load(SAVE_PATH) == OK:
+			var existing := str(prev.get_value("player", "player_id", ""))
+			if not existing.is_empty() and not existing.begins_with("local_"):
+				id_to_store = existing
+				player_id = existing
+	cfg.set_value("player", "player_id", id_to_store)
 	cfg.set_value("player", "coins", coins)
 	cfg.set_value("player", "hat", hat_index)
 	cfg.set_value("player", "owned_hats", owned_hats)

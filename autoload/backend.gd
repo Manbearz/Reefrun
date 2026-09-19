@@ -21,6 +21,16 @@ var _pending_uploads: Array = []
 var _shared_seed := 0
 var _busy := false
 var _auth_logged := false
+var _diag_printed := false
+var last_auth_diag: Dictionary = {
+	"url_configured": "NO",
+	"key_configured": "NO",
+	"request_sent": "NO",
+	"http_status": "-",
+	"auth_result": "not_attempted",
+	"auth_error": "",
+	"godot_error": "",
+}
 
 
 func _ready() -> void:
@@ -29,8 +39,8 @@ func _ready() -> void:
 	_client = ClientScript.new(self)
 	_profiles = ProfileScript.new()
 	_seeds = CourseSeedScript.new()
+	_reset_auth_diag()
 	if not ConfigScript.is_configured():
-		print("[backend] Supabase not configured; using local/fallback only")
 		_resolve_identity()
 		return
 	_bootstrap()
@@ -52,6 +62,70 @@ func supabase_status_label() -> String:
 	return "Connected" if has_session() else "Not Connected"
 
 
+func _reset_auth_diag() -> void:
+	last_auth_diag["url_configured"] = "YES" if not ConfigScript.project_url().is_empty() else "NO"
+	last_auth_diag["key_configured"] = "YES" if not ConfigScript.anon_key().is_empty() else "NO"
+	last_auth_diag["request_sent"] = "NO"
+	last_auth_diag["http_status"] = "-"
+	last_auth_diag["auth_result"] = "not_attempted"
+	last_auth_diag["auth_error"] = ""
+	last_auth_diag["godot_error"] = ""
+
+
+func _record_auth_diag(result: Dictionary, applied: bool) -> void:
+	last_auth_diag["request_sent"] = "YES"
+	last_auth_diag["http_status"] = str(int(result.get("status", 0)))
+	last_auth_diag["auth_result"] = "success" if applied and has_session() else "failed"
+	last_auth_diag["auth_error"] = "" if applied else _safe_auth_error(result)
+	var req_err := int(result.get("godot_request_error", 0))
+	var http_res := int(result.get("godot_http_result", -1))
+	var godot_bits: PackedStringArray = PackedStringArray()
+	if req_err != OK:
+		godot_bits.append("request %s (%d)" % [error_string(req_err), req_err])
+	if http_res >= 0 and http_res != HTTPRequest.RESULT_SUCCESS:
+		godot_bits.append("http %s (%d)" % [_http_result_name(http_res), http_res])
+	last_auth_diag["godot_error"] = ", ".join(godot_bits)
+
+
+func _http_result_name(code: int) -> String:
+	match code:
+		HTTPRequest.RESULT_SUCCESS:
+			return "RESULT_SUCCESS"
+		HTTPRequest.RESULT_CANT_CONNECT:
+			return "RESULT_CANT_CONNECT"
+		HTTPRequest.RESULT_CANT_RESOLVE:
+			return "RESULT_CANT_RESOLVE"
+		HTTPRequest.RESULT_CONNECTION_ERROR:
+			return "RESULT_CONNECTION_ERROR"
+		HTTPRequest.RESULT_TLS_HANDSHAKE_ERROR:
+			return "RESULT_TLS_HANDSHAKE_ERROR"
+		HTTPRequest.RESULT_NO_RESPONSE:
+			return "RESULT_NO_RESPONSE"
+		HTTPRequest.RESULT_TIMEOUT:
+			return "RESULT_TIMEOUT"
+		HTTPRequest.RESULT_REQUEST_FAILED:
+			return "RESULT_REQUEST_FAILED"
+		_:
+			return "RESULT_%d" % code
+
+
+func _print_auth_diag_once() -> void:
+	if _diag_printed:
+		return
+	_diag_printed = true
+	print("[AUTH-DIAG] SUPABASE URL CONFIGURED: %s" % last_auth_diag["url_configured"])
+	print("[AUTH-DIAG] PUBLISHABLE KEY CONFIGURED: %s" % last_auth_diag["key_configured"])
+	print("[AUTH-DIAG] AUTH REQUEST SENT: %s" % last_auth_diag["request_sent"])
+	print("[AUTH-DIAG] HTTP STATUS: %s" % last_auth_diag["http_status"])
+	print("[AUTH-DIAG] AUTH RESULT: %s" % last_auth_diag["auth_result"])
+	var err := str(last_auth_diag["auth_error"])
+	if not err.is_empty():
+		print("[AUTH-DIAG] AUTH ERROR: %s" % err)
+	var godot_err := str(last_auth_diag["godot_error"])
+	if not godot_err.is_empty():
+		print("[AUTH-DIAG] GODOT ERROR: %s" % godot_err)
+
+
 func has_shared_seed() -> bool:
 	return _shared_seed != 0
 
@@ -61,12 +135,59 @@ func shared_course_seed() -> int:
 
 
 func _resolve_identity() -> void:
+	if not has_session():
+		GameSession.ensure_local_fallback_id()
 	if _auth_logged:
+		_print_auth_diag_once()
+		identity_ready.emit()
 		return
 	_auth_logged = true
 	print("[AUTH] Player ID: %s" % GameSession.player_id)
 	print("[AUTH] Source: %s" % auth_source_label())
+	_print_auth_diag_once()
 	identity_ready.emit()
+
+
+func _adopt_supabase_user(uid: String) -> void:
+	if uid.is_empty() or uid.begins_with("local_"):
+		return
+	GameSession.adopt_supabase_id(uid)
+	signed_in.emit(uid)
+
+
+func _log_auth_result(status: Variant, success: bool, supabase_id: String, error_text: String = "") -> void:
+	print("[AUTH] HTTP status: %s" % str(status))
+	print("[AUTH] Success: %s" % ("YES" if success else "NO"))
+	if success:
+		print("[AUTH] Supabase user.id: %s" % supabase_id)
+	print("[AUTH] GameSession.player_id: %s" % (GameSession.player_id if not GameSession.player_id.is_empty() else "(empty)"))
+	if not success and not error_text.is_empty():
+		print("[AUTH] Error: %s" % error_text)
+		if str(error_text).findn("Anonymous sign-ins are disabled") >= 0:
+			print("[AUTH] Enable Authentication → Sign In / Providers → Anonymous in the Supabase dashboard.")
+
+
+func _safe_auth_error(result: Dictionary) -> String:
+	var parts: PackedStringArray = PackedStringArray()
+	if int(result.get("status", 0)) != 0:
+		parts.append("http_%d" % int(result.status))
+	var data: Variant = result.get("data", null)
+	if typeof(data) == TYPE_DICTIONARY:
+		for key in ["error", "error_description", "message", "msg", "msg_code"]:
+			var value := str(data.get(key, "")).strip_edges()
+			if value.is_empty():
+				continue
+			if value.begins_with("eyJ") or value.contains("sb_secret") or value.contains("service_role"):
+				continue
+			parts.append(value)
+	elif typeof(data) == TYPE_STRING:
+		var text := str(data).strip_edges()
+		if not text.is_empty() and not text.begins_with("eyJ") and text.length() < 240:
+			parts.append(text)
+	var fallback := str(result.get("error", "")).strip_edges()
+	if not fallback.is_empty() and not fallback.begins_with("eyJ"):
+		parts.append(fallback)
+	return ", ".join(parts)
 
 
 func cached_ghost_runs(course_seed: int) -> Array:
@@ -91,42 +212,26 @@ func cancel_pre_match_requests() -> void:
 func prepare_menu() -> void:
 	if not is_configured():
 		return
-	_prepare_menu()
-
-
-func _prepare_menu() -> void:
-	if _busy:
+	if _busy or has_session() or _auth_logged:
 		return
-	if auth == null or not auth.has_session():
-		_bootstrap()
-		return
-	if not _pre_match_network_allowed():
-		return
-	_busy = true
-	await _refresh_shared_seed()
-	if _pre_match_network_allowed():
-		await prefetch_ghosts(_menu_seed())
-	_busy = false
+	_bootstrap()
 
 
 func _bootstrap() -> void:
 	if _busy:
 		return
 	_busy = true
-	if auth.load_session() and _pre_match_network_allowed():
-		await _refresh_if_needed()
+	if auth.load_session():
+		if not auth.user_id.is_empty() and not auth.user_id.begins_with("local_"):
+			_adopt_supabase_user(auth.user_id)
+			print("[AUTH] Request started")
+			_log_auth_result("restored", true, auth.user_id)
+		if _pre_match_network_allowed() and not auth.has_session():
+			await _refresh_if_needed()
 	if not auth.has_session() and _pre_match_network_allowed():
 		await _sign_in_anonymous()
 	if auth.has_session():
-		GameSession.player_id = auth.user_id
-		GameSession._save()
-		signed_in.emit(auth.user_id)
-		if _pre_match_network_allowed():
-			await _ensure_profile()
-		if _pre_match_network_allowed():
-			await _refresh_shared_seed()
-		if _pre_match_network_allowed():
-			await prefetch_ghosts(_menu_seed())
+		_adopt_supabase_user(auth.user_id)
 	_busy = false
 	_resolve_identity()
 
@@ -134,20 +239,50 @@ func _bootstrap() -> void:
 func _sign_in_anonymous() -> void:
 	if not _pre_match_network_allowed():
 		return
+	print("[AUTH] Request started")
+	last_auth_diag["request_sent"] = "YES"
 	var result: Dictionary = await _client.request_json(
 		"POST",
 		auth.signup_url(),
 		_client.auth_headers(),
 		JSON.stringify({"data": {}})
 	)
-	if not result.ok or not auth.apply_payload(result.data):
-		push_warning("[backend] anonymous sign-in skipped: %s" % str(result.error))
+	var applied: bool = bool(result.ok) and auth.apply_payload(result.data)
+	if result.ok and not applied and auth != null and not auth.access_token.is_empty():
+		await _fetch_auth_user()
+		applied = auth.has_session()
+	if applied:
+		_adopt_supabase_user(auth.user_id)
+	_record_auth_diag(result, applied and has_session())
+	var uid := ""
+	if auth:
+		uid = str(auth.user_id)
+	_log_auth_result(
+		result.status,
+		applied and has_session(),
+		uid,
+		"" if applied else _safe_auth_error(result)
+	)
+
+
+func _fetch_auth_user() -> void:
+	if auth == null or auth.access_token.is_empty():
+		return
+	var result: Dictionary = await _client.request_json(
+		"GET",
+		auth.user_url(),
+		_client.auth_headers(auth.access_token)
+	)
+	if not result.ok or typeof(result.data) != TYPE_DICTIONARY:
+		return
+	var uid := str(result.data.get("id", "")).strip_edges()
+	auth.apply_user_id(uid)
 
 
 func _refresh_if_needed() -> void:
 	if not _pre_match_network_allowed():
 		return
-	if auth.expires_at > int(Time.get_unix_time_from_system()) + 30:
+	if auth.has_session() and auth.expires_at > int(Time.get_unix_time_from_system()) + 30:
 		return
 	if auth.refresh_token.is_empty():
 		return
@@ -157,8 +292,9 @@ func _refresh_if_needed() -> void:
 		_client.auth_headers(),
 		JSON.stringify({"refresh_token": auth.refresh_token})
 	)
-	if result.ok:
-		auth.apply_payload(result.data)
+	var applied: bool = bool(result.ok) and auth.apply_payload(result.data)
+	if applied:
+		_adopt_supabase_user(auth.user_id)
 
 
 func _ensure_profile() -> void:
