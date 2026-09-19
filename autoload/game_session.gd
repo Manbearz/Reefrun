@@ -29,7 +29,7 @@ const ConfigScript := preload("res://scripts/backend/supabase_config.gd")
 const SAVE_PATH := "user://reefrun.cfg"
 # Local ghost testing: Continue / Play reuse the last course so recorded fish replay.
 # Set false for production so each match gets a new seed.
-const DEV_REUSE_COURSE_SEED := true
+const DEV_REUSE_COURSE_SEED := false
 
 
 func _ready() -> void:
@@ -348,6 +348,13 @@ func clamp_player_name(value: String) -> String:
 	return value.strip_edges().substr(0, NAME_MAX_LEN)
 
 
+func visible_player_name() -> String:
+	var name := clamp_player_name(player_name).to_upper()
+	if name.is_empty():
+		return "GUEST"
+	return name
+
+
 func is_local_player_id(id: String = "") -> bool:
 	var check := player_id if id.is_empty() else id
 	return check.is_empty() or check.begins_with("local_")
@@ -403,9 +410,7 @@ func record_run(score: int, rank: int, alive_at_death: int) -> void:
 	if rank < best_rank:
 		best_rank = rank
 	refresh_boards()
-	var name := clamp_player_name(player_name).to_upper()
-	if name.is_empty():
-		name = "YOU"
+	var name := visible_player_name()
 	_upsert(weekly, name, score)
 	_upsert(monthly, name, score)
 	_save()

@@ -57,7 +57,8 @@ static func validate_determinism(seed: int, pipe_count: int = 100) -> bool:
 	if ha != hb:
 		push_error("Harpoon sequence mismatch seed=%d" % seed)
 		return false
-	print("[course] seed %d: %d pipes + %d harpoon lanes identical" % [seed, la.size(), ha.size()])
+	if OS.has_feature("editor") or OS.is_debug_build():
+		print("[course] seed %d: %d pipes + %d harpoon lanes identical" % [seed, la.size(), ha.size()])
 	return true
 
 

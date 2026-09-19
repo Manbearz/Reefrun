@@ -182,10 +182,11 @@ func _spawn_school() -> void:
 			logical_death.append(run.death_tick)
 			logical_alive.append(1)
 			logical_names.append(run.label())
-	print(
-		"[ghosts] seed=%d total=%d vis=%d logical=%d real=%d fallback=%d"
-		% [GameSession.course_seed, runs.size(), ghosts.size(), logical_death.size(), real_n, fallback_n]
-	)
+	if _dev_diag():
+		print(
+			"[ghosts] seed=%d total=%d vis=%d logical=%d real=%d fallback=%d"
+			% [GameSession.course_seed, runs.size(), ghosts.size(), logical_death.size(), real_n, fallback_n]
+		)
 
 
 func _make_fish(skin: String, is_player: bool, origin: Vector2, p_name: String) -> ReefFish:
@@ -201,10 +202,7 @@ func _ghost_name(i: int) -> String:
 
 
 func _player_label() -> String:
-	var name := GameSession.player_name.strip_edges()
-	if name.is_empty():
-		return "YOU"
-	return name
+	return GameSession.visible_player_name()
 
 
 func _roll_death_pipe() -> int:
@@ -457,7 +455,7 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
-	if PIPE_SPIKE_PROFILE:
+	if PIPE_SPIKE_PROFILE and _dev_diag():
 		_sample_pipe_spike(delta)
 	if _warmup_frames > 0:
 		_warmup_frames -= 1
@@ -1440,7 +1438,13 @@ func _sample_perf() -> void:
 		_perf_phys_worst = phys_ms
 
 
+func _dev_diag() -> bool:
+	return OS.has_feature("editor") or OS.is_debug_build()
+
+
 func _log_perf() -> void:
+	if not _dev_diag():
+		return
 	var vis_play := 0
 	for ghost in ghosts:
 		if ghost.control == ReefFish.CTRL_PLAYBACK:
@@ -1480,6 +1484,8 @@ func _sample_pipe_spike(delta: float) -> void:
 			_spike_phase = "score2"
 			return
 		_spike_reported = true
+		if not _dev_diag():
+			return
 		print(
 			"[pipe-spike] start=%.1f pipe1=%.1f score1=%.1f pipe2=%.1f score2=%.1f"
 			% [
