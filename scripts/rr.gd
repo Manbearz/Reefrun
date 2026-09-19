@@ -52,6 +52,7 @@ const FISH_NAMES: PackedStringArray = [
 const HAT_COUNT := 40
 const HAT_PRICE := 50
 const HAT_SCALE := 0.185
+const GAME_HAT_SCALE := 0.24
 const HAT_BRIM := 0.46
 const COIN_EVERY := 5
 const PIPE_IDS: PackedStringArray = [
@@ -89,7 +90,7 @@ static func hat_anchor(skin: String) -> Vector2:
 
 
 static func hat_local_scale(fish_sprite_scale: float) -> float:
-	return HAT_SCALE / maxf(fish_sprite_scale, 0.001)
+	return GAME_HAT_SCALE / maxf(fish_sprite_scale, 0.001)
 
 
 static func hat_brim_offset(hat_tex: Texture2D) -> Vector2:

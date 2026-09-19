@@ -28,21 +28,6 @@ func parse_rows(data: Variant) -> Array:
 	return out
 
 
-func describe_raw(data: Variant) -> String:
-	if data == null:
-		return "null"
-	if data is Array:
-		if data.is_empty():
-			return "array(0)"
-		var first: Variant = data[0]
-		if typeof(first) == TYPE_DICTIONARY:
-			return "array(%d) keys=%s sample=%s" % [data.size(), str(first.keys()), _safe_sample(first)]
-		return "array(%d) first_type=%s" % [data.size(), type_string(typeof(first))]
-	if typeof(data) == TYPE_DICTIONARY:
-		return "object keys=%s sample=%s" % [str(data.keys()), _safe_sample(data)]
-	return type_string(typeof(data))
-
-
 func _as_rows(data: Variant) -> Array:
 	if data is Array:
 		return data
@@ -74,11 +59,3 @@ func _usable_name(value: String) -> bool:
 	if value.find("-") >= 0 and value.length() >= 32:
 		return false
 	return true
-
-
-func _safe_sample(row: Dictionary) -> String:
-	return "{display_name=%s name=%s score=%s}" % [
-		str(row.get("display_name", "")),
-		str(row.get("name", "")),
-		str(row.get("score", row.get("best_score", ""))),
-	]

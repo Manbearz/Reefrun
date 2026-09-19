@@ -18,7 +18,6 @@ const NAME_NUDGE_Y := 3.0
 const SCORE_INSET := 2.0
 const NAME_TEXT_SCALE := 1.28
 const SCORE_NUM_SCALE := 0.78
-const DEV_AUTH_DEBUG := true
 
 var _home: Control
 var _scores: Control
@@ -62,7 +61,6 @@ var _card_scale := 1.0
 var _score_pos := Vector2.ZERO
 var _score_scale := 1.0
 var _check_t := 0.0
-var _auth_debug: Label
 
 
 func _ready() -> void:
@@ -85,7 +83,6 @@ func _ready() -> void:
 	var backend := get_node_or_null("/root/Backend")
 	if backend and backend.has_method("prepare_menu"):
 		backend.prepare_menu()
-	_mount_auth_debug()
 
 
 func _process(delta: float) -> void:
@@ -197,80 +194,6 @@ func _backdrop() -> void:
 	add_child(_ground)
 
 
-func _dev_auth_enabled() -> bool:
-	return DEV_AUTH_DEBUG and (OS.has_feature("editor") or OS.is_debug_build())
-
-
-func _mount_auth_debug() -> void:
-	if not _dev_auth_enabled():
-		return
-	_auth_debug = Label.new()
-	_auth_debug.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_auth_debug.position = Vector2(10, 8)
-	_auth_debug.size = Vector2(RR.VIEW_W - 20, 240)
-	_auth_debug.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_auth_debug.add_theme_font_size_override("font_size", 12)
-	_auth_debug.add_theme_color_override("font_color", Color(0.82, 0.94, 1.0, 0.92))
-	_auth_debug.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	_auth_debug.add_theme_constant_override("outline_size", 3)
-	add_child(_auth_debug)
-	var backend := get_node_or_null("/root/Backend")
-	if backend:
-		if backend.has_signal("identity_ready"):
-			backend.identity_ready.connect(_refresh_auth_debug)
-		if backend.has_signal("signed_in"):
-			backend.signed_in.connect(func(_id: String): _refresh_auth_debug())
-	_refresh_auth_debug()
-
-
-func _refresh_auth_debug() -> void:
-	if _auth_debug == null:
-		return
-	var backend := get_node_or_null("/root/Backend")
-	var source := "Local Fallback"
-	var status := "Not Connected"
-	if backend:
-		if backend.has_method("auth_source_label"):
-			source = str(backend.auth_source_label())
-		if backend.has_method("supabase_status_label"):
-			status = str(backend.supabase_status_label())
-	var url_cfg := "NO"
-	var key_cfg := "NO"
-	var sent := "NO"
-	var http_status := "-"
-	var auth_result := "not_attempted"
-	var auth_error := ""
-	var godot_error := ""
-	if backend != null:
-		var raw: Variant = backend.get("last_auth_diag")
-		var diag: Dictionary = {}
-		if typeof(raw) == TYPE_DICTIONARY:
-			diag = raw
-		url_cfg = str(diag.get("url_configured", "NO"))
-		key_cfg = str(diag.get("key_configured", "NO"))
-		sent = str(diag.get("request_sent", "NO"))
-		http_status = str(diag.get("http_status", "-"))
-		auth_result = str(diag.get("auth_result", "not_attempted"))
-		auth_error = str(diag.get("auth_error", ""))
-		godot_error = str(diag.get("godot_error", ""))
-	var extra := "SUPABASE URL CONFIGURED: %s\nPUBLISHABLE KEY CONFIGURED: %s\nAUTH REQUEST SENT: %s\nHTTP STATUS: %s\nAUTH RESULT: %s\nAUTH ERROR: %s" % [
-		url_cfg,
-		key_cfg,
-		sent,
-		http_status,
-		auth_result,
-		auth_error if not auth_error.is_empty() else "-",
-	]
-	if not godot_error.is_empty():
-		extra += "\nGODOT ERROR: %s" % godot_error
-	_auth_debug.text = "PLAYER ID:\n%s\nAUTH:\n%s\nSUPABASE:\n%s\n%s" % [
-		GameSession.player_id,
-		source,
-		status,
-		extra,
-	]
-
-
 func _layer() -> Control:
 	var layer := Control.new()
 	layer.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
@@ -282,10 +205,10 @@ func _layer() -> Control:
 func _build_home(card_size: Vector2) -> void:
 	_home.add_child(_overlay_card(Sprites.tex("main_menu_overlay"), card_size, _card_pos, true))
 	_name_edit = LineEdit.new()
-	_name_edit.text = GameSession.player_name
+	_name_edit.text = GameSession.clamp_player_name(GameSession.player_name)
 	_name_edit.placeholder_text = "YOUR NAME..."
 	_name_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_name_edit.max_length = 14
+	_name_edit.max_length = GameSession.NAME_MAX_LEN
 	_name_edit.position = _card_pos + NAME_BOX.position * _card_scale
 	_name_edit.size = NAME_BOX.size * _card_scale
 	_name_edit.caret_blink = true
@@ -741,7 +664,7 @@ func _style_name(edit: LineEdit) -> void:
 
 
 func _on_name_changed(value: String) -> void:
-	GameSession.player_name = value.strip_edges()
+	GameSession.player_name = GameSession.clamp_player_name(value)
 	GameSession._save()
 
 

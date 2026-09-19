@@ -1,5 +1,7 @@
 extends Node
 
+const NAME_MAX_LEN := 7
+
 var fish_index: int = 0
 var coins: int = 0
 var hat_index: int = -1
@@ -342,6 +344,10 @@ func equip_hat(index: int) -> void:
 	_save()
 
 
+func clamp_player_name(value: String) -> String:
+	return value.strip_edges().substr(0, NAME_MAX_LEN)
+
+
 func is_local_player_id(id: String = "") -> bool:
 	var check := player_id if id.is_empty() else id
 	return check.is_empty() or check.begins_with("local_")
@@ -389,7 +395,6 @@ func start_match() -> void:
 
 
 func record_run(score: int, rank: int, alive_at_death: int) -> void:
-	print("[LB TEST] RECORD_RUN ENTERED score=", score)
 	last_score = score
 	last_rank = rank
 	last_alive_at_death = alive_at_death
@@ -398,18 +403,15 @@ func record_run(score: int, rank: int, alive_at_death: int) -> void:
 	if rank < best_rank:
 		best_rank = rank
 	refresh_boards()
-	var name := player_name.strip_edges().to_upper()
+	var name := clamp_player_name(player_name).to_upper()
 	if name.is_empty():
 		name = "YOU"
 	_upsert(weekly, name, score)
 	_upsert(monthly, name, score)
 	_save()
 	var backend := get_node_or_null("/root/Backend")
-	print("[LB TEST] ABOUT TO SUBMIT TO BACKEND")
 	if backend and backend.has_method("submit_leaderboard_score"):
 		backend.submit_leaderboard_score(score, name)
-	else:
-		print("[LB TEST] BACKEND SUBMIT SKIPPED backend_missing_or_no_method")
 
 
 func refresh_boards() -> bool:
@@ -479,7 +481,7 @@ func _load() -> void:
 	if cfg.load(SAVE_PATH) != OK:
 		return
 	fish_index = int(cfg.get_value("player", "fish", 0))
-	player_name = str(cfg.get_value("player", "name", ""))
+	player_name = clamp_player_name(str(cfg.get_value("player", "name", "")))
 	player_id = str(cfg.get_value("player", "player_id", ""))
 	coins = int(cfg.get_value("player", "coins", 0))
 	hat_index = int(cfg.get_value("player", "hat", -1))
