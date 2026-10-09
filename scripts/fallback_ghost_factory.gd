@@ -2,6 +2,7 @@ extends RefCounted
 
 const GhostRunScript := preload("res://scripts/ghost_run.gd")
 const DT := 1.0 / 60.0
+const RISE := RR.FLAP * RR.FLAP / (2.0 * RR.GRAVITY)
 
 
 static func make(course_seed: int, slot: int, layout: Array) -> GhostRun:
@@ -57,22 +58,36 @@ static func _flaps_for(layout: Array, death_tick: int, rng: RandomNumberGenerato
 	var pipe_i := 0
 	var skill := clampf(rng.randfn(0.58, 0.18), 0.18, 0.92)
 	for t in death_tick + 1:
-		var gap_y := RR.VIEW_H * 0.42
-		var world_x := RR.PIPE_SPEED * float(t) * DT
-		while pipe_i + 1 < layout.size() and float(layout[pipe_i]["x"]) < world_x + 20.0:
+		while pipe_i + 1 < layout.size() and float(layout[pipe_i]["x"]) < RR.PIPE_SPEED * float(t) * DT - 20.0:
 			pipe_i += 1
-		if pipe_i < layout.size():
-			gap_y = float(layout[pipe_i]["gap_y"])
-		var bias := (0.5 - skill) * 28.0
-		var want := cooldown <= 0 and (y > gap_y + 10.0 + bias or v > 360.0)
-		if t > 0 and y < RR.PLAY_TOP + 36.0:
-			want = false
-		if t == 0 or want:
+		var target := _gap_at(layout, pipe_i) + (0.5 - skill) * 24.0
+		var want := t == 0 or (cooldown <= 0 and _want_flap(y, v, target))
+		if want:
 			v = -RR.FLAP
 			flaps.append(t)
-			cooldown = 5 + int(round((1.0 - skill) * 5.0))
+			cooldown = 18 + int(round((1.0 - skill) * 10.0))
 		else:
 			cooldown = maxi(0, cooldown - 1)
 		v = minf(v + RR.GRAVITY * DT, RR.TERMINAL)
 		y += v * DT
 	return flaps
+
+
+static func _gap_at(layout: Array, pipe_i: int) -> float:
+	if pipe_i < layout.size():
+		return float(layout[pipe_i]["gap_y"])
+	return RR.VIEW_H * 0.42
+
+
+static func _want_flap(y: float, v: float, target: float) -> bool:
+	# A flap always rises RISE pixels. Refuse if that would leave the playfield.
+	if y - RISE < RR.PLAY_TOP + 4.0:
+		return false
+	var falling := v > 0.0
+	if not falling:
+		return false
+	# Floor save: schedule a hop before gravity carries us out.
+	if y > RR.PLAY_BOTTOM - 72.0:
+		return true
+	# Only hop once we have fallen back to/through the gap. No velocity-only override.
+	return y >= target + 8.0

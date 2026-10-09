@@ -20,7 +20,7 @@ create table if not exists public.leaderboard_scores (
 	player_id uuid not null references public.profiles (id) on delete cascade,
 	display_name text not null,
 	score integer not null,
-	period text not null check (period in ('weekly', 'monthly')),
+	period text not null check (period in ('daily', 'weekly', 'monthly')),
 	period_key text not null,
 	created_at timestamptz not null default now()
 );
@@ -37,9 +37,29 @@ alter table public.leaderboard_scores
 create unique index if not exists leaderboard_scores_player_period
 	on public.leaderboard_scores (player_id, period, period_key);
 
--- Helps get_leaderboard sort/filter the current week/month.
+-- Helps get_leaderboard sort/filter the current day/week/month.
 create index if not exists leaderboard_scores_period_lookup
 	on public.leaderboard_scores (period, period_key, score desc, created_at asc);
+
+-- Existing DBs still have weekly|monthly. Widen the check so daily rows can insert.
+do $$
+declare
+	r record;
+begin
+	for r in (
+		select c.conname
+		from pg_constraint c
+		where c.conrelid = 'public.leaderboard_scores'::regclass
+			and c.contype = 'c'
+			and pg_catalog.pg_get_constraintdef(c.oid) ilike '%period%'
+	) loop
+		execute format('alter table public.leaderboard_scores drop constraint %I', r.conname);
+	end loop;
+end $$;
+
+alter table public.leaderboard_scores
+	add constraint leaderboard_scores_period_check
+	check (period in ('daily', 'weekly', 'monthly'));
 
 -- ------------------------------------------------------------
 -- profiles: RLS required. Reefrun only GETs the signed-in row.
@@ -89,6 +109,7 @@ as $$
 declare
 	uid uuid := auth.uid();
 	clean_name text;
+	day_key text;
 	week_key text;
 	month_key text;
 begin
@@ -109,9 +130,16 @@ begin
 	end if;
 
 	-- Server UTC. Do not trust the device clock.
+	day_key := pg_catalog.to_char(pg_catalog.timezone('utc', pg_catalog.now()), 'YYYY-MM-DD');
 	week_key := pg_catalog.to_char(pg_catalog.date_trunc('week', pg_catalog.timezone('utc', pg_catalog.now())), 'YYYY-MM-DD');
 	month_key := pg_catalog.to_char(pg_catalog.timezone('utc', pg_catalog.now()), 'YYYY-MM');
 
+	insert into public.leaderboard_scores (player_id, display_name, score, period, period_key)
+	values (uid, clean_name, p_score, 'daily', day_key)
+	on conflict (player_id, period, period_key)
+	do update set
+		display_name = excluded.display_name,
+		score = pg_catalog.greatest(public.leaderboard_scores.score, excluded.score);
 	insert into public.leaderboard_scores (player_id, display_name, score, period, period_key)
 	values (uid, clean_name, p_score, 'weekly', week_key)
 	on conflict (player_id, period, period_key)
@@ -139,6 +167,7 @@ as $$
 	from public.leaderboard_scores as ls
 	where ls.period = p_period
 		and ls.period_key = case
+			when p_period = 'daily' then pg_catalog.to_char(pg_catalog.timezone('utc', pg_catalog.now()), 'YYYY-MM-DD')
 			when p_period = 'weekly' then pg_catalog.to_char(pg_catalog.date_trunc('week', pg_catalog.timezone('utc', pg_catalog.now())), 'YYYY-MM-DD')
 			when p_period = 'monthly' then pg_catalog.to_char(pg_catalog.timezone('utc', pg_catalog.now()), 'YYYY-MM')
 			else ''

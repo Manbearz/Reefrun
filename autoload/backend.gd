@@ -19,6 +19,7 @@ var _client = null
 var _profiles = null
 var _seeds = null
 var _leaderboards = null
+var global_daily: Array = []
 var global_weekly: Array = []
 var global_monthly: Array = []
 var _lb_busy := false
@@ -379,6 +380,13 @@ func submit_leaderboard_score(score: int, display_name: String) -> void:
 
 func _fetch_leaderboards() -> void:
 	_lb_busy = true
+	var day: Dictionary = await _authed_request(
+		"POST",
+		_leaderboards.list_url(),
+		JSON.stringify({"p_period": "daily"}),
+		false,
+		false
+	)
 	var week: Dictionary = await _authed_request(
 		"POST",
 		_leaderboards.list_url(),
@@ -393,6 +401,8 @@ func _fetch_leaderboards() -> void:
 		false,
 		false
 	)
+	if day.ok:
+		global_daily = _leaderboards.parse_rows(day.data)
 	if week.ok:
 		global_weekly = _leaderboards.parse_rows(week.data)
 	if month.ok:

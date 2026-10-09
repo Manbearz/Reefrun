@@ -99,6 +99,8 @@ func apply_hat(index: int) -> void:
 func reset_for_match() -> void:
 	position = start_origin
 	velocity = Vector2.ZERO
+	next_flap_index = 0
+	bob_t = 0.0
 	if _sprite:
 		_sprite.rotation = 0.0
 		_sprite.position = Vector2.ZERO

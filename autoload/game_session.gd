@@ -15,8 +15,10 @@ var last_alive_at_death: int = 99
 var best_score: int = 0
 var best_rank: int = 100
 var games_played: int = 0
+var daily: Array = []
 var weekly: Array = []
 var monthly: Array = []
+var day_key: String = ""
 var week_key: String = ""
 var month_key: String = ""
 var web_display := ""
@@ -411,6 +413,7 @@ func record_run(score: int, rank: int, alive_at_death: int) -> void:
 		best_rank = rank
 	refresh_boards()
 	var name := visible_player_name()
+	_upsert(daily, name, score)
 	_upsert(weekly, name, score)
 	_upsert(monthly, name, score)
 	_save()
@@ -420,9 +423,14 @@ func record_run(score: int, rank: int, alive_at_death: int) -> void:
 
 
 func refresh_boards() -> bool:
+	var dk := current_day_key()
 	var wk := current_week_key()
 	var mk := current_month_key()
 	var changed := false
+	if dk != day_key:
+		day_key = dk
+		daily.clear()
+		changed = true
 	if wk != week_key:
 		week_key = wk
 		weekly.clear()
@@ -434,6 +442,11 @@ func refresh_boards() -> bool:
 	if changed:
 		_save()
 	return changed
+
+
+func current_day_key() -> String:
+	var now := Time.get_datetime_dict_from_system()
+	return "%04d-%02d-%02d" % [int(now.year), int(now.month), int(now.day)]
 
 
 func current_week_key() -> String:
@@ -503,8 +516,10 @@ func _load() -> void:
 	best_rank = int(cfg.get_value("stats", "best_rank", 100))
 	games_played = int(cfg.get_value("stats", "games", 0))
 	course_seed = int(cfg.get_value("match", "course_seed", 0))
+	day_key = str(cfg.get_value("boards", "day_key", ""))
 	week_key = str(cfg.get_value("boards", "week_key", ""))
 	month_key = str(cfg.get_value("boards", "month_key", ""))
+	daily = _decode_board(cfg.get_value("boards", "daily", PackedStringArray()))
 	weekly = _decode_board(cfg.get_value("boards", "weekly", PackedStringArray()))
 	monthly = _decode_board(cfg.get_value("boards", "monthly", PackedStringArray()))
 
@@ -529,8 +544,10 @@ func _save() -> void:
 	cfg.set_value("stats", "best_rank", best_rank)
 	cfg.set_value("stats", "games", games_played)
 	cfg.set_value("match", "course_seed", course_seed)
+	cfg.set_value("boards", "day_key", day_key)
 	cfg.set_value("boards", "week_key", week_key)
 	cfg.set_value("boards", "month_key", month_key)
+	cfg.set_value("boards", "daily", _encode_board(daily))
 	cfg.set_value("boards", "weekly", _encode_board(weekly))
 	cfg.set_value("boards", "monthly", _encode_board(monthly))
 	cfg.save(SAVE_PATH)

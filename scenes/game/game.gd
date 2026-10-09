@@ -170,7 +170,7 @@ func _spawn_school() -> void:
 			fallback_n += 1
 		if i < vis_n:
 			var skin: String = run.fish_id if run.fish_id != "" else "fish_blue"
-			var origin := Vector2(RR.PLAYER_X + 20.0 + float(i % 4) * 8.0, RR.VIEW_H * 0.42)
+			var origin := Vector2(RR.PLAYER_X + float(i % 5) * 3.0, RR.VIEW_H * 0.42)
 			var ghost := _make_fish(skin, false, origin, run.label())
 			ghost.control = ReefFish.CTRL_PLAYBACK
 			ghost.ghost_run = run
@@ -452,6 +452,7 @@ func _physics_process(delta: float) -> void:
 		for ghost in ghosts:
 			if ghost.alive:
 				ghost.tick(delta)
+	_debug_ghost_playback()
 
 
 func _process(delta: float) -> void:
@@ -1394,7 +1395,10 @@ func _advance_playback() -> void:
 		if run == null:
 			continue
 		var flaps = run.flap_ticks
-		while ghost.next_flap_index < flaps.size() and flaps[ghost.next_flap_index] == match_tick:
+		# Consume missed ticks without replaying them; fire this tick's flap once.
+		while ghost.next_flap_index < flaps.size() and int(flaps[ghost.next_flap_index]) < match_tick:
+			ghost.next_flap_index += 1
+		if ghost.next_flap_index < flaps.size() and int(flaps[ghost.next_flap_index]) == match_tick:
 			ghost.flap(false)
 			ghost.next_flap_index += 1
 		if run.death_tick >= 0 and match_tick >= run.death_tick:
@@ -1436,6 +1440,26 @@ func _sample_perf() -> void:
 		_perf_worst = frame_ms
 	if phys_ms > _perf_phys_worst:
 		_perf_phys_worst = phys_ms
+
+
+func _debug_ghost_playback() -> void:
+	if not started or not _dev_diag() or ghosts.is_empty():
+		return
+	if match_tick > 90 or (match_tick > 1 and match_tick % 15 != 0):
+		return
+	var ghost: ReefFish = ghosts[0]
+	var run = ghost.ghost_run
+	var consumed := ghost.next_flap_index
+	var next_flap := -1
+	var total := 0
+	if run != null:
+		total = run.flap_ticks.size()
+		if consumed < total:
+			next_flap = int(run.flap_ticks[consumed])
+	print(
+		"[ghost-dbg] tick=%d y=%.1f vy=%.1f consumed=%d/%d next_flap=%d gravity=1"
+		% [match_tick, ghost.position.y, ghost.velocity.y, consumed, total, next_flap]
+	)
 
 
 func _dev_diag() -> bool:

@@ -9,6 +9,7 @@ var score_text: SpriteTextScript
 var hint_text: SpriteTextScript
 var lobby_text: SpriteTextScript
 var lobby_time: SpriteTextScript
+var jump_hint: TextureRect
 var feed_text: SpriteTextScript
 var crown: TextureRect
 var _coin_icon: TextureRect
@@ -47,6 +48,7 @@ func _ready() -> void:
 	hint_text.visible = false
 	lobby_text = _line("LOBBY", 22, Vector2(0, RR.VIEW_H * 0.30), Vector2(RR.VIEW_W, 32), HORIZONTAL_ALIGNMENT_CENTER)
 	lobby_time = _line("12", 64, Vector2(0, RR.VIEW_H * 0.36), Vector2(RR.VIEW_W, 80), HORIZONTAL_ALIGNMENT_CENTER, true)
+	_build_jump_hint()
 	feed_text = _line("", 14, Vector2(12, RR.VIEW_H - 92), Vector2(RR.VIEW_W - 24, 24), HORIZONTAL_ALIGNMENT_LEFT)
 	_prewarm_glyphs()
 
@@ -67,6 +69,24 @@ func _prewarm_glyphs() -> void:
 func hide_prewarm() -> void:
 	if _glyph_probe:
 		_glyph_probe.visible = false
+
+
+func _build_jump_hint() -> void:
+	jump_hint = TextureRect.new()
+	jump_hint.texture = Sprites.tex("jump_overlay")
+	jump_hint.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	jump_hint.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	jump_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	jump_hint.visible = false
+	var tex := jump_hint.texture
+	var aspect := 2.6
+	if tex:
+		aspect = float(tex.get_width()) / maxf(1.0, float(tex.get_height()))
+	var w := RR.VIEW_W * 0.62
+	var h := w / aspect
+	jump_hint.size = Vector2(w, h)
+	jump_hint.position = Vector2((RR.VIEW_W - w) * 0.5, lobby_time.position.y + lobby_time.size.y + 6.0)
+	add_child(jump_hint)
 
 
 func _line(text: String, height: float, pos: Vector2, box: Vector2, align: HorizontalAlignment, gold := false) -> SpriteTextScript:
@@ -94,6 +114,8 @@ func set_lobby(active: bool, starts_in: int) -> void:
 	lobby_text.visible = active
 	lobby_time.visible = active
 	score_text.visible = not active
+	if jump_hint:
+		jump_hint.visible = active
 	if active:
 		hint_text.visible = false
 		lobby_text.set_value("LOBBY")

@@ -65,7 +65,7 @@ create table if not exists public.leaderboard_scores (
 	player_id uuid not null references public.profiles (id) on delete cascade,
 	display_name text not null,
 	score integer not null,
-	period text not null check (period in ('weekly', 'monthly')),
+	period text not null check (period in ('daily', 'weekly', 'monthly')),
 	period_key text not null,
 	created_at timestamptz not null default now()
 );

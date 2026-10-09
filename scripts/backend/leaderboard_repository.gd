@@ -1,6 +1,6 @@
 extends RefCounted
 
-# Global weekly/monthly boards. Writes go through submit_leaderboard_score RPC
+# Global daily/weekly/monthly boards. Writes go through submit_leaderboard_score RPC
 # so player_id is auth.uid(), not a client-chosen UUID.
 
 const ConfigScript := preload("res://scripts/backend/supabase_config.gd")

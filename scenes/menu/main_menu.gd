@@ -3,16 +3,19 @@ extends Control
 const SpriteTextScript := preload("res://scripts/sprite_text.gd")
 const OVERLAY_W := 1145.0
 const OVERLAY_H := 1374.0
+const SCORE_W := 941.0
+const SCORE_H := 1672.0
 const NAME_BOX := Rect2(270, 742, 590, 82)
 const PLAY_BOX := Rect2(250, 900, 640, 185)
 const SCORE_BOX := Rect2(210, 1124, 730, 168)
-const BACK_BOX := Rect2(238, 1180, 669, 122)
-const ROW_Y := [336.0, 415.0, 495.0, 575.0, 655.0, 737.0, 817.0, 897.0, 977.0, 1058.0]
-const ROW_H := [41.0, 38.0, 39.0, 38.0, 39.0, 37.0, 36.0, 34.0, 38.0, 35.0]
-const WEEKLY_NAME := Rect2(190, 0, 210, 0)
-const WEEKLY_SCORE := Rect2(388, 0, 80, 0)
-const MONTHLY_NAME := Rect2(726, 0, 210, 0)
-const MONTHLY_SCORE := Rect2(924, 0, 80, 0)
+const BACK_BOX := Rect2(230, 1478, 480, 140)
+const ROW_Y := [428.0, 532.0, 636.0, 740.0, 844.0, 948.0, 1053.0, 1157.0, 1261.0, 1361.0]
+const ROW_H := [77.0, 77.0, 77.0, 77.0, 77.0, 77.0, 77.0, 77.0, 74.0, 76.0]
+const NAME_COL := Rect2(215, 0, 400, 0)
+const SCORE_COL := Rect2(655, 0, 150, 0)
+const SCORE_PAGES := ["daily", "weekly", "monthly"]
+const SWIPE_MIN := 48.0
+const ARROW_BOX := 96.0
 const NAME_INSET := 1.0
 const NAME_NUDGE_Y := 3.0
 const SCORE_INSET := 2.0
@@ -21,7 +24,13 @@ const SCORE_NUM_SCALE := 0.78
 
 var _home: Control
 var _scores: Control
+var _score_card: TextureRect
 var _score_rows: Control
+var _score_page := 0
+var _score_swiping := false
+var _score_press := Vector2.ZERO
+var _score_arrow_left_rect := Rect2()
+var _score_arrow_right_rect := Rect2()
 var _name_edit: LineEdit
 var _ground: TextureRect
 var _fish_icons: Array[TextureRect] = []
@@ -72,8 +81,8 @@ func _ready() -> void:
 	var card_size := Vector2(OVERLAY_W, OVERLAY_H) * _card_scale
 	var fish_strip := 210.0
 	_card_pos = Vector2((RR.VIEW_W - card_size.x) * 0.5, clampf((RR.VIEW_H - card_size.y - fish_strip) * 0.42, 10.0, 90.0))
-	_score_scale = minf(RR.VIEW_H / OVERLAY_H, RR.VIEW_W / 952.0) * 0.92
-	var score_size := Vector2(OVERLAY_W, OVERLAY_H) * _score_scale
+	_score_scale = minf(RR.VIEW_W / SCORE_W, RR.VIEW_H / SCORE_H)
+	var score_size := Vector2(SCORE_W, SCORE_H) * _score_scale
 	_score_pos = Vector2((RR.VIEW_W - score_size.x) * 0.5, (RR.VIEW_H - score_size.y) * 0.5)
 	_home = _layer()
 	_scores = _layer()
@@ -101,10 +110,13 @@ func _process(delta: float) -> void:
 	if _check_t < 1.0:
 		return
 	_check_t = 0.0
-	GameSession.refresh_boards()
+	if GameSession.refresh_boards():
+		_fill_scores()
 
 
 func _input(event: InputEvent) -> void:
+	if _scores.visible and _score_swipe_input(event):
+		return
 	if event is InputEventScreenTouch:
 		var touch := event as InputEventScreenTouch
 		if touch.pressed:
@@ -227,12 +239,14 @@ func _build_home(card_size: Vector2) -> void:
 
 
 func _build_scores(card_size: Vector2) -> void:
-	_scores.add_child(_overlay_card(Sprites.tex("highscore_overlay"), card_size, _score_pos))
+	_score_card = _overlay_card(Sprites.tex("daily_overlay"), card_size, _score_pos)
+	_scores.add_child(_score_card)
 	_score_rows = Control.new()
 	_score_rows.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_score_rows.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	_scores.add_child(_score_rows)
 	_scores.add_child(_hotspot(BACK_BOX, _show_home, _score_pos, _score_scale))
+	_build_score_arrows()
 	_fill_scores()
 
 
@@ -612,13 +626,17 @@ func _place_hat_on_fish(hat: TextureRect, skin: String, box: Vector2) -> void:
 	if hat_tex == null:
 		return
 	var fish_tex := Sprites.tex(skin)
-	var fish_h := 64.0
+	var fish_size := Vector2(64.0, 64.0)
 	if fish_tex:
-		fish_h = maxf(float(fish_tex.get_height()), 1.0)
-	var k := minf(box.x, box.y) / fish_h
-	var hat_size := hat_tex.get_size() * (RR.HAT_SCALE * k / RR.FISH_SCALE)
+		fish_size = fish_tex.get_size()
+	# Same scale KEEP_ASPECT_CENTERED uses on the fish icon.
+	var k := minf(box.x / maxf(fish_size.x, 1.0), box.y / maxf(fish_size.y, 1.0))
+	var hat_scale := RR.HAT_SCALE * k / RR.FISH_SCALE
+	var hat_size := hat_tex.get_size() * hat_scale
 	hat.size = hat_size
-	hat.position = box * 0.5 + RR.hat_anchor(skin) * k - hat_size * 0.5 + Vector2(0.0, -hat_size.y * RR.HAT_BRIM)
+	# Sprite2D path: origin at hat_anchor, then brim offset * hat scale.
+	var sit := box * 0.5 + RR.hat_anchor(skin) * k + RR.hat_brim_offset(hat_tex) * hat_scale
+	hat.position = sit - hat_size * 0.5 + Vector2(0.0, 3.0)
 
 
 func _bob_picker(delta: float) -> void:
@@ -670,6 +688,8 @@ func _on_name_changed(value: String) -> void:
 
 func _show_scores() -> void:
 	_on_name_changed(_name_edit.text)
+	_score_page = 0
+	_score_swiping = false
 	GameSession.refresh_boards()
 	_fill_scores()
 	_home.visible = false
@@ -684,20 +704,125 @@ func _show_scores() -> void:
 
 
 func _fill_scores() -> void:
+	if _score_card:
+		var tex := Sprites.tex("%s_overlay" % SCORE_PAGES[_score_page])
+		if tex:
+			_score_card.texture = tex
 	for child in _score_rows.get_children():
 		child.queue_free()
-	_fill_column(_global_board("weekly"), WEEKLY_NAME, WEEKLY_SCORE)
-	_fill_column(_global_board("monthly"), MONTHLY_NAME, MONTHLY_SCORE)
+	_fill_column(_global_board(SCORE_PAGES[_score_page]), NAME_COL, SCORE_COL)
 
 
 func _global_board(period: String) -> Array:
 	var backend := get_node_or_null("/root/Backend")
 	if backend == null:
 		return []
-	var raw: Variant = backend.get("global_weekly") if period == "weekly" else backend.get("global_monthly")
+	var raw: Variant = null
+	if period == "daily":
+		raw = backend.get("global_daily")
+	elif period == "weekly":
+		raw = backend.get("global_weekly")
+	else:
+		raw = backend.get("global_monthly")
 	if raw is Array:
 		return raw
 	return []
+
+
+func _score_swipe_input(event: InputEvent) -> bool:
+	if event is InputEventScreenTouch:
+		var touch := event as InputEventScreenTouch
+		if touch.pressed:
+			if _score_back_hit(touch.position) or _score_arrow_hit(touch.position):
+				return false
+			_begin_score_swipe(touch.position)
+			return true
+		if _score_swiping:
+			_end_score_swipe(touch.position)
+			return true
+		return false
+	if event is InputEventScreenDrag and _score_swiping:
+		_mark_input_handled()
+		return true
+	if event is InputEventMouseButton and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+		var mouse := event as InputEventMouseButton
+		if mouse.pressed:
+			if _score_back_hit(mouse.position) or _score_arrow_hit(mouse.position):
+				return false
+			_begin_score_swipe(mouse.position)
+			return true
+		if _score_swiping:
+			_end_score_swipe(mouse.position)
+			return true
+		return false
+	if event is InputEventMouseMotion and _score_swiping:
+		_mark_input_handled()
+		return true
+	return false
+
+
+func _begin_score_swipe(pos: Vector2) -> void:
+	_score_press = pos
+	_score_swiping = true
+	_mark_input_handled()
+
+
+func _end_score_swipe(pos: Vector2) -> void:
+	_score_swiping = false
+	_mark_input_handled()
+	var dx := pos.x - _score_press.x
+	if absf(dx) < SWIPE_MIN:
+		return
+	_cycle_score_page(-1 if dx > 0.0 else 1)
+
+
+func _cycle_score_page(dir: int) -> void:
+	_score_page = posmod(_score_page + dir, SCORE_PAGES.size())
+	_fill_scores()
+
+
+func _score_back_hit(pos: Vector2) -> bool:
+	var box := Rect2(_score_pos + BACK_BOX.position * _score_scale, BACK_BOX.size * _score_scale)
+	return box.has_point(pos)
+
+
+func _score_arrow_hit(pos: Vector2) -> bool:
+	return _score_arrow_left_rect.has_point(pos) or _score_arrow_right_rect.has_point(pos)
+
+
+func _build_score_arrows() -> void:
+	var size := Vector2(ARROW_BOX, ARROW_BOX)
+	var back := Rect2(_score_pos + BACK_BOX.position * _score_scale, BACK_BOX.size * _score_scale)
+	var y := back.position.y + (back.size.y - size.y) * 0.5
+	var left := Rect2(4.0, y, size.x, size.y)
+	var right := Rect2(RR.VIEW_W - 4.0 - size.x, y, size.x, size.y)
+	_score_arrow_left_rect = left.grow(6.0)
+	_score_arrow_right_rect = right.grow(6.0)
+	_score_arrow_icon("btn_score_left", left)
+	_score_arrow_icon("btn_score_right", right)
+	_scores.add_child(_screen_hotspot(_score_arrow_left_rect, _cycle_score_page.bind(-1)))
+	_scores.add_child(_screen_hotspot(_score_arrow_right_rect, _cycle_score_page.bind(1)))
+
+
+func _score_arrow_icon(id: String, box: Rect2) -> void:
+	var icon := TextureRect.new()
+	icon.texture = Sprites.tex(id)
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	icon.position = box.position
+	icon.size = box.size
+	_scores.add_child(icon)
+
+
+func _screen_hotspot(box: Rect2, pressed: Callable) -> Button:
+	var btn := Button.new()
+	btn.flat = true
+	btn.position = box.position
+	btn.size = box.size
+	btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	btn.pressed.connect(pressed)
+	return btn
 
 
 func _fill_column(board: Array, name_col: Rect2, score_col: Rect2) -> void:
@@ -736,6 +861,7 @@ func _row_text(text: String, src: Rect2, align: HorizontalAlignment, gold: bool,
 
 
 func _show_home() -> void:
+	_score_swiping = false
 	_scores.visible = false
 	_home.visible = true
 	if _ground:

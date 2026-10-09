@@ -38,8 +38,9 @@ func _load_known() -> void:
 		"harpoon_00", "harpoon_01", "harpoon_02", "harpoon_03", "harpoon_04",
 		"harpoon_05", "harpoon_06", "harpoon_07", "harpoon_08", "harpoon_09",
 		"harpoon_10",
-		"death_overlay", "main_menu_overlay", "highscore_overlay", "btn_main_menu", "coin_ad_overlay",
-		"share_overlay", "btn_share_small",
+		"death_overlay", "main_menu_overlay", "highscore_overlay", "daily_overlay", "weekly_overlay",
+		"monthly_overlay", "btn_main_menu", "btn_score_left", "btn_score_right", "coin_ad_overlay",
+		"share_overlay", "btn_share_small", "jump_overlay",
 		"coin",
 	]
 	for id in IDS:
