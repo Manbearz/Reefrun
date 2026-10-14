@@ -43,13 +43,24 @@ const HARPOON_SCALE_Y := 0.32
 const HARPOON_FRAME := 0.02
 const HARPOON_HOLD := 0.5
 
+const FREE_FISH := 6
+const FISH_PRICE := 50
+const FISH_COUNT := 70
 const FISH_IDS: PackedStringArray = [
-	"fish_blue", "fish_clown", "fish_yellow", "fish_green", "fish_pink", "fish_purple"
+	"fish_blue", "fish_clown", "fish_yellow", "fish_green", "fish_pink", "fish_purple",
+	"fish_06", "fish_07", "fish_08", "fish_09", "fish_10", "fish_11", "fish_12", "fish_13",
+	"fish_14", "fish_15", "fish_16", "fish_17", "fish_18", "fish_19", "fish_20", "fish_21",
+	"fish_22", "fish_23", "fish_24", "fish_25", "fish_26", "fish_27", "fish_28", "fish_29",
+	"fish_30", "fish_31", "fish_32", "fish_33", "fish_34", "fish_35", "fish_36", "fish_37",
+	"fish_38", "fish_39", "fish_40", "fish_41", "fish_42", "fish_43", "fish_44", "fish_45",
+	"fish_46", "fish_47", "fish_48", "fish_49", "fish_50", "fish_51", "fish_52", "fish_53",
+	"fish_54", "fish_55", "fish_56", "fish_57", "fish_58", "fish_59", "fish_60", "fish_61",
+	"fish_62", "fish_63", "fish_64", "fish_65", "fish_66", "fish_67", "fish_68", "fish_69",
 ]
 const FISH_NAMES: PackedStringArray = [
 	"Blue Tang", "Clown", "Goldie", "Kelp", "Pinkfin", "Violet"
 ]
-const HAT_COUNT := 40
+const HAT_COUNT := 88
 const HAT_PRICE := 50
 const HAT_SCALE := 0.185
 const GAME_HAT_SCALE := 0.24
@@ -71,7 +82,7 @@ static func hat_id(index: int) -> String:
 	return "hat_%02d" % index
 
 
-static func hat_anchor(skin: String) -> Vector2:
+static func hat_anchor(skin: String, tex_size: Vector2 = Vector2.ZERO) -> Vector2:
 	match skin:
 		"fish_blue":
 			return Vector2(21.0, -25.0)
@@ -85,8 +96,14 @@ static func hat_anchor(skin: String) -> Vector2:
 			return Vector2(17.0, -24.0)
 		"fish_purple":
 			return Vector2(16.0, -25.0)
+		"fish_18":
+			return Vector2(-12.0, -28.0)
+		"fish_22":
+			return Vector2(8.0, -18.0)
 		_:
-			return Vector2(16.0, -25.0)
+			var w := tex_size.x if tex_size.x > 1.0 else 150.0
+			var h := tex_size.y if tex_size.y > 1.0 else 130.0
+			return Vector2(w * 0.15, -h * 0.20)
 
 
 static func hat_local_scale(fish_sprite_scale: float) -> float:

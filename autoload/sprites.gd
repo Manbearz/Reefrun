@@ -39,13 +39,15 @@ func _load_known() -> void:
 		"harpoon_05", "harpoon_06", "harpoon_07", "harpoon_08", "harpoon_09",
 		"harpoon_10",
 		"death_overlay", "main_menu_overlay", "highscore_overlay", "daily_overlay", "weekly_overlay",
-		"monthly_overlay", "btn_main_menu", "btn_score_left", "btn_score_right", "coin_ad_overlay",
+		"monthly_overlay", "mode_overlay", "mode_unlocked", "mode_locked", "btn_main_menu", "btn_score_left", "btn_score_right", "coin_ad_overlay",
 		"share_overlay", "btn_share_small", "jump_overlay",
 		"coin",
 	]
 	for id in IDS:
 		_ensure_tex(id)
-	for i in 40:
+	for id in RR.FISH_IDS:
+		_ensure_tex(id)
+	for i in 88:
 		_ensure_tex("hat_%02d" % i)
 	for d in 10:
 		_ensure_tex("num_gold_%d" % d)

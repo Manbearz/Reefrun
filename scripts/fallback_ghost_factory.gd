@@ -5,13 +5,14 @@ const DT := 1.0 / 60.0
 const RISE := RR.FLAP * RR.FLAP / (2.0 * RR.GRAVITY)
 
 
-static func make(course_seed: int, slot: int, layout: Array) -> GhostRun:
+static func make(course_seed: int, slot: int, layout: Array, challenge_id: String = "") -> GhostRun:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = int(course_seed) * 10007 + slot * 131 + 17
 	var run = GhostRunScript.new()
 	run.physics_version = RR.PHYSICS_VERSION
 	run.course_version = RR.COURSE_VERSION
 	run.course_seed = course_seed
+	run.challenge_id = challenge_id
 	run.source = GhostRunScript.SOURCE_FALLBACK
 	run.run_id = "fallback:%d:%d" % [course_seed, slot]
 	run.player_id = ""

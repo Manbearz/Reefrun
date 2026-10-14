@@ -18,11 +18,11 @@ func is_busy() -> bool:
 	return _provider != null and _provider.is_busy()
 
 
-func share_image(bytes: PackedByteArray) -> String:
+func share_image(bytes: PackedByteArray, message: String = "") -> String:
 	if _provider == null:
 		share_finished.emit("failed")
 		return "failed"
-	return _provider.share_image(bytes)
+	return _provider.share_image(bytes, message)
 
 
 func _make_provider() -> ShareProvider:

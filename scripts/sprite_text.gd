@@ -21,6 +21,33 @@ func configure(p_text: String, height: float, box: Vector2, align := HORIZONTAL_
 	set_value(p_text)
 
 
+func layout_width(value: String, height: float, gold_digits := false) -> float:
+	var text := value.to_upper()
+	var glyphs: Array = []
+	var max_h := 1.0
+	for i in text.length():
+		var ch := text.substr(i, 1)
+		if ch == " ":
+			glyphs.append(null)
+			continue
+		var tex := Sprites.digit(ch) if gold_digits and ch >= "0" and ch <= "9" else Sprites.glyph(ch)
+		glyphs.append(tex)
+		if tex:
+			max_h = maxf(max_h, float(tex.get_height()))
+	var scale := height / max_h
+	var total := 0.0
+	var kern := 1.12
+	for i in glyphs.size():
+		var tex: Texture2D = glyphs[i]
+		var w := max_h * scale * 0.34
+		if tex:
+			w = float(tex.get_width()) * scale
+		if tex and i > 0 and glyphs[i - 1] != null:
+			total -= w * (1.0 - kern)
+		total += w
+	return total
+
+
 func set_value(value: String) -> void:
 	var next := value.to_upper()
 	if _text == next and get_child_count() > 0:

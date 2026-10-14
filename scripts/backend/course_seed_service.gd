@@ -4,6 +4,15 @@ extends RefCounted
 # Unconfigured / failed fetch: GameSession keeps its existing local seed behavior.
 
 const ConfigScript := preload("res://scripts/backend/supabase_config.gd")
+const DailyChallengeScript := preload("res://scripts/daily_challenge.gd")
+
+
+func challenge_url() -> String:
+	return ConfigScript.project_url() + "/rest/v1/rpc/get_daily_challenge"
+
+
+func parse_challenge(data: Variant) -> Dictionary:
+	return DailyChallengeScript.from_server(data)
 
 
 func current_url() -> String:

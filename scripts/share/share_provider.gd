@@ -8,6 +8,6 @@ func is_busy() -> bool:
 	return false
 
 
-func share_image(_bytes: PackedByteArray) -> String:
+func share_image(_bytes: PackedByteArray, _message: String = "") -> String:
 	share_finished.emit("failed")
 	return "failed"

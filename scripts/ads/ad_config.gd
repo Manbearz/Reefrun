@@ -22,4 +22,7 @@ static func ios_placement_id() -> String:
 
 
 static func use_mock_provider() -> bool:
-	return OS.has_feature("editor") or OS.is_debug_build()
+	# The mock provider grants a reward. Keep it in the editor only.
+	# A debug iOS export is still an exported build, and TestFlight must not
+	# treat a missing ad SDK as a completed rewarded ad.
+	return OS.has_feature("editor")

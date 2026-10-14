@@ -11,6 +11,7 @@ var version: int = VERSION
 var physics_version: int = PHYSICS_VERSION
 var course_version: int = COURSE_VERSION
 var course_seed: int = 0
+var challenge_id: String = ""
 var display_name: String = "YOU"
 var player_name: String = "YOU"
 var fish_id: String = "fish_blue"

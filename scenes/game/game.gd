@@ -6,12 +6,14 @@ const GhostRunScript := preload("res://scripts/ghost_run.gd")
 const GhostMatchScript := preload("res://scripts/ghost_match.gd")
 const CourseBuilderScript := preload("res://scripts/course_builder.gd")
 const ShareServiceScript := preload("res://scripts/share/share_service.gd")
+const ReferralRulesScript := preload("res://scripts/share/referral_rules.gd")
 
 const SHARE_CARD_CROP_H := 798
 const SHARE_PLACE_RECT := Rect2(700, 398, 300, 100)
 const SHARE_CHECK_RECT := Rect2(700, 528, 300, 100)
 const SHARE_CLOSE_RECT := Rect2(190, 798, 400, 165)
 const SHARE_SHARE_RECT := Rect2(575, 798, 500, 170)
+const SHARE_REWARD_RECT := Rect2(250, 762, 653, 32)
 const DEATH_SAND_BOTTOM := 1448.0
 
 var world: ReefWorld
@@ -90,16 +92,19 @@ var _pending_start_flap := false
 var _share_service: Node
 var _share_layer: CanvasLayer
 var _share_share_btn: Button
+var _share_progress: SpriteText
 var _wipe_again: Button
 var _wipe_share: TextureButton
 var _wipe_menu: TextureButton
 var _share_busy := false
+var _roster_ready := false
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_ON
 	cosmetic_rng.randomize()
+	GameSession.ensure_challenge()
 	_ghost_match = GhostMatchScript.new()
 	world = ReefWorld.new()
 	world.process_mode = Node.PROCESS_MODE_PAUSABLE
@@ -116,7 +121,14 @@ func _ready() -> void:
 	school.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_ON
 	add_child(school)
 	_build_layout()
-	_spawn_school()
+	if GameSession.match_mode == GameSession.MODE_DAILY:
+		print("[daily] gameplay mode=daily seed=%d pipes=%d harpoons=%d attempt_id=%s" % [
+			GameSession.course_seed,
+			layout.size(),
+			_harpoon_lanes.size(),
+			str(GameSession.current_challenge().get("attempt_id", "")),
+		])
+	_spawn_player()
 	var backend: Node = get_node_or_null("/root/Backend")
 	if backend and backend.has_method("cancel_pre_match_requests"):
 		backend.cancel_pre_match_requests()
@@ -138,6 +150,11 @@ func _ready() -> void:
 	vp.snap_2d_transforms_to_pixel = false
 	vp.snap_2d_vertices_to_pixel = false
 	vp.canvas_item_default_texture_filter = Viewport.DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_LINEAR
+	var runs: Array = await _load_roster()
+	if not is_inside_tree():
+		return
+	_attach_ghosts(runs)
+	_roster_ready = true
 
 
 func _build_layout() -> void:
@@ -149,16 +166,33 @@ func _build_layout() -> void:
 	_harpoon_lane_i = 0
 
 
-func _spawn_school() -> void:
+func _spawn_player() -> void:
 	player = _make_fish(GameSession.selected_fish(), true, Vector2(RR.PLAYER_X, RR.VIEW_H * 0.42), _player_label())
 	player.control = ReefFish.CTRL_PLAYER
 	player.died.connect(_on_player_died)
 	swimming = 1
-	var runs: Array = _ghost_match.fill_competitors(
+
+
+func _load_roster() -> Array:
+	var daily := GameSession.match_mode == GameSession.MODE_DAILY
+	var challenge: Dictionary = GameSession.current_challenge() if daily else {}
+	var backend := get_node_or_null("/root/Backend")
+	if daily and backend and backend.has_method("prepared_roster"):
+		var ready: Array = backend.prepared_roster(challenge)
+		if ready.size() >= RR.GHOST_COUNT:
+			return ready
+	var challenge_id := str(challenge.get("challenge_id", "")) if daily else ""
+	return await _ghost_match.fill_spread(
+		get_tree(),
 		GameSession.course_seed,
 		layout,
-		GameSession.player_id
+		GameSession.player_id,
+		"",
+		challenge_id
 	)
+
+
+func _attach_ghosts(runs: Array) -> void:
 	var vis_n := mini(runs.size(), RR.GHOST_DRAW)
 	var real_n := 0
 	var fallback_n := 0
@@ -184,8 +218,16 @@ func _spawn_school() -> void:
 			logical_names.append(run.label())
 	if _dev_diag():
 		print(
-			"[ghosts] seed=%d total=%d vis=%d logical=%d real=%d fallback=%d"
-			% [GameSession.course_seed, runs.size(), ghosts.size(), logical_death.size(), real_n, fallback_n]
+			"[ghosts] seed=%d challenge=%s total=%d vis=%d logical=%d real=%d fallback=%d"
+			% [
+				GameSession.course_seed,
+				GameSession.current_challenge_id(),
+				runs.size(),
+				ghosts.size(),
+				logical_death.size(),
+				real_n,
+				fallback_n,
+			]
 		)
 
 
@@ -355,6 +397,8 @@ func _begin_run() -> void:
 	if started or finished:
 		return
 	started = true
+	if GameSession.match_mode == GameSession.MODE_DAILY:
+		print("[daily] gameplay run_started seed=%d pipes=%d" % [GameSession.course_seed, layout.size()])
 	match_tick = 0
 	_eat_emulated_mouse = false
 	visual_scroll = scroll
@@ -396,7 +440,9 @@ func _tick_lobby(delta: float) -> void:
 	swimming = filled
 	_reveal_ghosts(mini(ghosts.size(), filled - 1))
 	hud.set_lobby(true, maxi(1, ceili(_lobby_len - _lobby_t)))
-	if _lobby_t < _lobby_len:
+	if _lobby_t < _lobby_len or not _roster_ready:
+		if _lobby_t >= _lobby_len and not _roster_ready:
+			hud.set_lobby(true, 1)
 		return
 	_in_lobby = false
 	swimming = 1 + RR.GHOST_COUNT
@@ -408,7 +454,8 @@ func _tick_lobby(delta: float) -> void:
 
 
 func _reveal_ghosts(count: int) -> void:
-	while _shown_ghosts < count:
+	var n := mini(count, ghosts.size())
+	while _shown_ghosts < n:
 		ghosts[_shown_ghosts].visible = true
 		_shown_ghosts += 1
 
@@ -579,7 +626,8 @@ func _collect_coins() -> void:
 			continue
 		spr.visible = false
 		_run_coins += 1
-		GameSession.add_coins(1)
+		if not GameSession.practice_daily:
+			GameSession.add_coins(1)
 		Sfx.play("coin", -10.0)
 		if hud:
 			hud.set_coins(_run_coins)
@@ -623,9 +671,10 @@ func _on_player_died() -> void:
 	swimming = maxi(swimming - 1, 0)
 	var remaining := swimming
 	var rank := remaining + 1
-	_save_ghost_run()
+	if not GameSession.practice_daily:
+		_save_ghost_run()
+		GameSession.record_run(score, rank, remaining)
 	_log_perf()
-	GameSession.record_run(score, rank, remaining)
 	get_tree().create_timer(0.85).timeout.connect(_after_death.bind(rank, remaining))
 
 
@@ -634,7 +683,10 @@ func _after_death(rank: int, remaining: int) -> void:
 		return
 	_over_rank = rank
 	_over_remaining = remaining
-	if _run_coins > 0:
+	if GameSession.practice_daily:
+		_run_coins = 0
+		_show_over(rank, remaining)
+	elif _run_coins > 0:
 		_show_coin_ad()
 	else:
 		_show_over(rank, remaining)
@@ -884,17 +936,18 @@ func _show_over(rank: int, remaining: int) -> void:
 	_wipe_menu.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	_wipe_menu.pressed.connect(_menu)
 	overlay.add_child(_wipe_menu)
-	var share_h := 124.0
-	var share_w := share_h * (share_src.x / share_src.y)
-	_wipe_share = TextureButton.new()
-	_wipe_share.texture_normal = share_tex
-	_wipe_share.ignore_texture_size = true
-	_wipe_share.stretch_mode = TextureButton.STRETCH_KEEP_ASPECT_CENTERED
-	_wipe_share.position = Vector2((RR.VIEW_W - share_w) * 0.5, card_pos.y + DEATH_SAND_BOTTOM * card_scale + 2.0)
-	_wipe_share.size = Vector2(share_w, share_h)
-	_wipe_share.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	_wipe_share.pressed.connect(_open_share_overlay)
-	overlay.add_child(_wipe_share)
+	if not GameSession.practice_daily:
+		var share_h := 124.0
+		var share_w := share_h * (share_src.x / share_src.y)
+		_wipe_share = TextureButton.new()
+		_wipe_share.texture_normal = share_tex
+		_wipe_share.ignore_texture_size = true
+		_wipe_share.stretch_mode = TextureButton.STRETCH_KEEP_ASPECT_CENTERED
+		_wipe_share.position = Vector2((RR.VIEW_W - share_w) * 0.5, card_pos.y + DEATH_SAND_BOTTOM * card_scale + 2.0)
+		_wipe_share.size = Vector2(share_w, share_h)
+		_wipe_share.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		_wipe_share.pressed.connect(_open_share_overlay)
+		overlay.add_child(_wipe_share)
 
 
 func _over_digits(card_pos: Vector2, card_scale: float, src: Rect2, parts: Array) -> Control:
@@ -1049,11 +1102,29 @@ func _open_share_overlay() -> void:
 	_share_share_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	_share_share_btn.pressed.connect(_share_card_pressed)
 	_share_layer.add_child(_share_share_btn)
+	_share_progress = SpriteTextScript.new()
+	_share_progress.z_index = 2
+	_share_progress.position = card_pos + SHARE_REWARD_RECT.position * card_scale
+	_share_progress.configure(
+		ReferralRulesScript.progress_label(GameSession.share_reward_qualified),
+		SHARE_REWARD_RECT.size.y * card_scale,
+		SHARE_REWARD_RECT.size * card_scale,
+		HORIZONTAL_ALIGNMENT_CENTER,
+		false,
+		true
+	)
+	_share_layer.add_child(_share_progress)
+	_bind_share_rewards()
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("refresh_share_rewards"):
+		backend.refresh_share_rewards()
 
 
 func _close_share_overlay(restore_wipe := true) -> void:
 	_share_busy = false
 	_share_share_btn = null
+	_share_progress = null
+	_unbind_share_rewards()
 	if _share_layer and is_instance_valid(_share_layer):
 		_share_layer.queue_free()
 	_share_layer = null
@@ -1172,9 +1243,29 @@ func _share_card_pressed() -> void:
 	if _share_service == null:
 		_on_share_finished("failed")
 		return
-	var status := str(_share_service.share_image(png))
+	var message := ReferralRulesScript.share_message(GameSession.referral_code)
+	var status := str(_share_service.share_image(png, message))
 	if status == "busy" or status.is_empty():
 		_on_share_finished(status)
+
+
+func _bind_share_rewards() -> void:
+	var backend := get_node_or_null("/root/Backend")
+	if backend == null or not backend.has_signal("share_rewards_changed"):
+		return
+	if not backend.share_rewards_changed.is_connected(_on_share_rewards_changed):
+		backend.share_rewards_changed.connect(_on_share_rewards_changed)
+
+
+func _unbind_share_rewards() -> void:
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_signal("share_rewards_changed") and backend.share_rewards_changed.is_connected(_on_share_rewards_changed):
+		backend.share_rewards_changed.disconnect(_on_share_rewards_changed)
+
+
+func _on_share_rewards_changed() -> void:
+	if _share_progress and is_instance_valid(_share_progress):
+		_share_progress.set_value(ReferralRulesScript.progress_label(GameSession.share_reward_qualified))
 
 
 func _on_share_finished(_status: String) -> void:
@@ -1185,12 +1276,21 @@ func _on_share_finished(_status: String) -> void:
 
 func _retry() -> void:
 	get_tree().paused = false
-	GameSession.start_match()
+	if GameSession.practice_daily:
+		get_tree().reload_current_scene.call_deferred()
+		return
+	if GameSession.match_mode == GameSession.MODE_DAILY:
+		# The attempt was consumed at start. Another swim would be a second attempt.
+		_menu()
+		return
+	GameSession.start_match(GameSession.MODE_UNLIMITED)
 	get_tree().reload_current_scene.call_deferred()
 
 
 func _menu() -> void:
 	get_tree().paused = false
+	if GameSession.practice_daily:
+		GameSession.end_practice_daily()
 	get_tree().change_scene_to_file.call_deferred("res://scenes/menu/main_menu.tscn")
 
 
@@ -1413,9 +1513,12 @@ func _advance_playback() -> void:
 
 func _save_ghost_run() -> void:
 	var run = GhostRunScript.new()
-	run.physics_version = RR.PHYSICS_VERSION
-	run.course_version = RR.COURSE_VERSION
+	var daily := GameSession.match_mode == GameSession.MODE_DAILY
+	var challenge: Dictionary = GameSession.current_challenge() if daily else {}
+	run.physics_version = int(challenge.get("physics_version", RR.PHYSICS_VERSION))
+	run.course_version = int(challenge.get("course_version", RR.COURSE_VERSION))
 	run.course_seed = GameSession.course_seed
+	run.challenge_id = str(challenge.get("challenge_id", "")) if daily else ""
 	run.display_name = _player_label()
 	run.player_name = run.display_name
 	run.fish_id = GameSession.selected_fish()

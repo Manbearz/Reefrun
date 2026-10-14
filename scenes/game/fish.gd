@@ -50,7 +50,14 @@ func _ready() -> void:
 	_sprite = Sprite2D.new()
 	_sprite.texture = _tex(skin)
 	_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-	var s := RR.FISH_SCALE * (1.16 if is_player else 0.92)
+	var tex_size := Vector2(116.0, 104.0)
+	if _sprite.texture:
+		tex_size = _sprite.texture.get_size()
+	# Classic fish stay on their tuned width. Every other fish matches their height.
+	var fit := 104.0 / maxf(tex_size.y, 1.0)
+	if RR.FISH_IDS.find(skin) < RR.FREE_FISH:
+		fit = 116.0 / maxf(tex_size.x, 1.0)
+	var s := RR.FISH_SCALE * fit * (1.16 if is_player else 0.92)
 	_sprite.scale = Vector2.ONE * s
 	_sprite.z_index = 20 if is_player else 8
 	add_child(_sprite)
@@ -91,7 +98,10 @@ func apply_hat(index: int) -> void:
 	_hat.texture = _tex(RR.hat_id(index))
 	_hat.visible = _hat.texture != null
 	_hat.centered = true
-	_hat.position = RR.hat_anchor(skin)
+	var tex_size := Vector2.ZERO
+	if _sprite and _sprite.texture:
+		tex_size = _sprite.texture.get_size()
+	_hat.position = RR.hat_anchor(skin, tex_size)
 	_hat.offset = RR.hat_brim_offset(_hat.texture)
 	_hat.scale = Vector2.ONE * RR.hat_local_scale(_sprite.scale.x)
 

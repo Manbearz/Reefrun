@@ -9,7 +9,7 @@ func is_busy() -> bool:
 	return _busy
 
 
-func share_image(bytes: PackedByteArray) -> String:
+func share_image(bytes: PackedByteArray, message: String = "") -> String:
 	if _busy:
 		return "busy"
 	if bytes.is_empty():
@@ -25,6 +25,7 @@ func share_image(bytes: PackedByteArray) -> String:
 		_busy = false
 		return _download_local(bytes)
 	window.__reefrunSharePng = Marshalls.raw_to_base64(bytes)
+	window.__reefrunShareText = message
 	var result: Variant = js.eval("window.__reefrunDoShare()", true)
 	var status := str(result)
 	if status.is_empty():
@@ -60,6 +61,7 @@ func _install_js() -> void:
 			if (window.__reefrunShareInstalled) return;
 			window.__reefrunShareInstalled = true;
 			window.__reefrunSharePng = '';
+			window.__reefrunShareText = '';
 			function b64ToBytes(b64){
 				var binary = atob(b64);
 				var len = binary.length;
@@ -95,7 +97,9 @@ func _install_js() -> void:
 			}
 			window.__reefrunDoShare = function(){
 				var b64 = window.__reefrunSharePng || '';
+				var text = window.__reefrunShareText || '';
 				window.__reefrunSharePng = '';
+				window.__reefrunShareText = '';
 				if (!b64) return 'failed';
 				try {
 					if (typeof navigator === 'undefined' || typeof navigator.share !== 'function') {
@@ -107,9 +111,13 @@ func _install_js() -> void:
 					if (!canShareFiles(file)) {
 						return downloadPng(b64);
 					}
-					navigator.share({
-						files: [file]
-					}).then(function(){
+					var payload = { files: [file] };
+					if (text) {
+						try {
+							if (navigator.canShare({ files: [file], text: text })) payload.text = text;
+						} catch (e) {}
+					}
+					navigator.share(payload).then(function(){
 						done('ok');
 					}).catch(function(){
 						done('cancel');

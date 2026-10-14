@@ -1,6 +1,8 @@
 extends Control
 
 const SpriteTextScript := preload("res://scripts/sprite_text.gd")
+const DailyAttemptScript := preload("res://scripts/daily_attempt.gd")
+const DailyTestModeScript := preload("res://scripts/daily_test_mode.gd")
 const OVERLAY_W := 1145.0
 const OVERLAY_H := 1374.0
 const SCORE_W := 941.0
@@ -9,23 +11,31 @@ const NAME_BOX := Rect2(270, 742, 590, 82)
 const PLAY_BOX := Rect2(250, 900, 640, 185)
 const SCORE_BOX := Rect2(210, 1124, 730, 168)
 const BACK_BOX := Rect2(230, 1478, 480, 140)
-const ROW_Y := [428.0, 532.0, 636.0, 740.0, 844.0, 948.0, 1053.0, 1157.0, 1261.0, 1361.0]
-const ROW_H := [77.0, 77.0, 77.0, 77.0, 77.0, 77.0, 77.0, 77.0, 74.0, 76.0]
-const NAME_COL := Rect2(215, 0, 400, 0)
-const SCORE_COL := Rect2(655, 0, 150, 0)
+# Inner light-blue bars on the 941-wide scoreboard art, to the right of the painted ranks.
+const SCORE_ROWS_Y := [427.0, 531.0, 635.0, 739.0, 843.0, 947.0, 1052.0, 1157.0, 1261.0, 1361.0]
+const SCORE_ROWS_H := [88.0, 87.0, 87.0, 87.0, 88.0, 88.0, 88.0, 87.0, 83.0, 85.0]
+const SCORE_NAME_X := 286.0
+const SCORE_NAME_W := 310.0
+const SCORE_VALUE_X := 554.0
+const SCORE_VALUE_W := 150.0
 const SCORE_PAGES := ["daily", "weekly", "monthly"]
+const MODE_W := 950.0
+const MODE_H := 1656.0
+const MODE_UNLIMITED := Rect2(52, 518, 846, 386)
+const MODE_DAILY := Rect2(52, 920, 846, 490)
+const MODE_BACK := Rect2(190, 1428, 570, 132)
+const MODE_NOTE := Rect2(140, 1320, 670, 70)
+const MODE_RESET_LINE := Rect2(150, 1304, 650, 48)
 const SWIPE_MIN := 48.0
 const ARROW_BOX := 96.0
-const NAME_INSET := 1.0
-const NAME_NUDGE_Y := 3.0
-const SCORE_INSET := 2.0
-const NAME_TEXT_SCALE := 1.28
-const SCORE_NUM_SCALE := 0.78
 
 var _home: Control
 var _scores: Control
 var _score_card: TextureRect
 var _score_rows: Control
+var _score_names: Array[SpriteTextScript] = []
+var _score_values: Array[SpriteTextScript] = []
+var _score_status: SpriteTextScript
 var _score_page := 0
 var _score_swiping := false
 var _score_press := Vector2.ZERO
@@ -36,9 +46,22 @@ var _ground: TextureRect
 var _fish_icons: Array[TextureRect] = []
 var _fish_rings: Array[Panel] = []
 var _fish_hats: Array[TextureRect] = []
+var _fish_prices: Array[Control] = []
+var _fish_cells: Array[Control] = []
 var _fish_rest: Array[Vector2] = []
 var _fish_phase := PackedFloat32Array()
 var _fish_speed := PackedFloat32Array()
+var _fish_order: PackedInt32Array = PackedInt32Array()
+var _fish_clip: Control
+var _fish_row: Control
+var _fish_scroll_x := 0.0
+var _fish_max_scroll := 0.0
+var _fish_cell := 76.0
+var _fish_gap := 8.0
+var _fish_pressing := false
+var _fish_dragged := false
+var _fish_press := Vector2.ZERO
+var _fish_press_scroll := 0.0
 var _hat_icons: Array[TextureRect] = []
 var _hat_rings: Array[Panel] = []
 var _hat_prices: Array[Control] = []
@@ -70,6 +93,22 @@ var _card_scale := 1.0
 var _score_pos := Vector2.ZERO
 var _score_scale := 1.0
 var _check_t := 0.0
+var _modes: Control
+var _mode_origin := Vector2.ZERO
+var _mode_scale := 1.0
+var _mode_card: TextureRect
+var _mode_reset_cover: Control
+var _mode_note: SpriteTextScript
+var _mode_reset: SpriteTextScript
+var _daily_button: Button
+var _mode_token := 0
+var _mode_busy := false
+var _daily_locked := false
+var _status_course: Dictionary = {}
+var _daily_checking := false
+var _status_busy := false
+var _status_again := false
+var _daily_resets_unix := 0
 
 
 func _ready() -> void:
@@ -89,9 +128,18 @@ func _ready() -> void:
 	_scores.visible = false
 	_build_home(card_size)
 	_build_scores(score_size)
+	_build_mode_overlay()
 	var backend := get_node_or_null("/root/Backend")
 	if backend and backend.has_method("prepare_menu"):
 		backend.prepare_menu()
+	if backend and backend.has_method("on_menu_ready"):
+		backend.on_menu_ready()
+	if backend and backend.has_signal("leaderboards_ready") and not backend.leaderboards_ready.is_connected(_fill_scores):
+		backend.leaderboards_ready.connect(_fill_scores)
+	if backend and backend.has_signal("identity_ready") and not backend.identity_ready.is_connected(_on_identity_ready):
+		backend.identity_ready.connect(_on_identity_ready)
+	if backend and backend.has_signal("share_rewards_changed") and not backend.share_rewards_changed.is_connected(_refresh_wallet):
+		backend.share_rewards_changed.connect(_refresh_wallet)
 
 
 func _process(delta: float) -> void:
@@ -104,14 +152,25 @@ func _process(delta: float) -> void:
 				_wallet_text.modulate = Color(1.0, pulse, pulse, 1.0)
 				if _wallet_flash <= 0.0:
 					_wallet_text.modulate = Color.WHITE
-	if not _scores.visible:
-		return
 	_check_t += delta
 	if _check_t < 1.0:
 		return
 	_check_t = 0.0
+	if _mode_shows_locked() and _modes and _modes.visible:
+		_set_mode_reset(DailyAttemptScript.reset_label(_daily_resets_unix, int(Time.get_unix_time_from_system())))
+	var backend := get_node_or_null("/root/Backend")
+	if _mode_busy:
+		backend = null
+	if backend and backend.has_method("daily_refresh_due") and backend.daily_refresh_due():
+		backend.call_deferred("refresh_daily_after_rollover")
+		if _modes and _modes.visible:
+			_refresh_daily_status()
+	if not _scores.visible:
+		return
 	if GameSession.refresh_boards():
 		_fill_scores()
+	if backend and backend.has_method("leaderboard_period_stale") and backend.leaderboard_period_stale():
+		backend.call_deferred("fetch_leaderboards")
 
 
 func _input(event: InputEvent) -> void:
@@ -138,6 +197,12 @@ func _mark_input_handled() -> void:
 
 
 func _on_menu_touch_press(pos: Vector2) -> void:
+	if _modes and _modes.visible:
+		if not _press_button_in(_modes, pos):
+			_mark_input_handled()
+		else:
+			_mark_input_handled()
+		return
 	if _home.visible and _hat_clip != null and _hat_contains(pos):
 		_begin_hat_drag(_hat_local(pos))
 		_mark_input_handled()
@@ -240,11 +305,14 @@ func _build_home(card_size: Vector2) -> void:
 
 func _build_scores(card_size: Vector2) -> void:
 	_score_card = _overlay_card(Sprites.tex("daily_overlay"), card_size, _score_pos)
+	_score_card.z_index = 0
 	_scores.add_child(_score_card)
 	_score_rows = Control.new()
 	_score_rows.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_score_rows.z_index = 8
 	_score_rows.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	_scores.add_child(_score_rows)
+	_build_score_labels()
 	_scores.add_child(_hotspot(BACK_BOX, _show_home, _score_pos, _score_scale))
 	_build_score_arrows()
 	_fill_scores()
@@ -284,47 +352,90 @@ func _hat_row_y() -> float:
 
 func _build_fish_picker() -> void:
 	var count := RR.FISH_IDS.size()
-	var pad := 18.0
-	var gap := 6.0
+	var pad := 12.0
+	var cell := _fish_cell
+	var gap := _fish_gap
+	var icon_h := 68.0
+	var price_h := 22.0
+	var row_h := icon_h + price_h + 4.0
+	var bob := 10.0
+	var hat_room := 16.0
+	# Extra room so the selection stroke stays inside the clip at both ends of the bob.
+	var edge := 14.0
+	var clip_h := row_h + hat_room + bob + edge * 2.0
 	var hs_bottom := _card_pos.y + (SCORE_BOX.position.y + SCORE_BOX.size.y) * _card_scale
-	var row_h := 88.0
-	var row_y := hs_bottom + 28.0
-	row_y = minf(row_y, _hat_row_y() - row_h - 36.0)
-	var avail := RR.VIEW_W - pad * 2.0
-	var cell := (avail - gap * float(count - 1)) / float(count)
-	for i in count:
-		var x := pad + float(i) * (cell + gap)
+	var gap_top := hs_bottom + 6.0
+	var gap_bottom := _hat_row_y() - 6.0
+	var row_y := gap_top + maxf(0.0, gap_bottom - gap_top - clip_h) * 0.5
+	row_y = minf(row_y, gap_bottom - clip_h)
+	_fish_clip = Control.new()
+	_fish_clip.position = Vector2(pad, row_y)
+	_fish_clip.size = Vector2(RR.VIEW_W - pad * 2.0, clip_h)
+	_fish_clip.mouse_filter = Control.MOUSE_FILTER_STOP
+	_fish_clip.clip_contents = true
+	_fish_clip.z_index = 30
+	_fish_clip.gui_input.connect(_on_fish_gui)
+	_home.add_child(_fish_clip)
+	var inner_w := 4.0 + float(count) * (cell + gap) - gap
+	_fish_max_scroll = maxf(0.0, inner_w - _fish_clip.size.x)
+	_fish_row = Control.new()
+	_fish_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_fish_row.custom_minimum_size = Vector2(inner_w, _fish_clip.size.y)
+	_fish_row.size = Vector2(inner_w, _fish_clip.size.y)
+	_fish_clip.add_child(_fish_row)
+	_fish_order = _fish_display_order()
+	for n in count:
+		var fish_i := _fish_order[n]
+		var x := 4.0 + float(n) * (cell + gap)
+		var y := edge + hat_room + bob * 0.5
+		var holder := Control.new()
+		holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		holder.position = Vector2(x, y)
+		holder.size = Vector2(cell, row_h)
+		_fish_row.add_child(holder)
+		_fish_cells.append(holder)
+		_fish_rest.append(holder.position)
+		_fish_phase.append(float(n) * 0.37 + 0.2)
+		_fish_speed.append(1.35 + fmod(float(n) * 0.17, 0.9))
+		var icon_pos := Vector2(2.0, 0.0)
+		var icon_size := Vector2(cell - 4.0, icon_h)
 		var ring := Panel.new()
 		ring.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		ring.position = Vector2(x, row_y)
-		ring.size = Vector2(cell, row_h)
+		ring.position = icon_pos - Vector2(6.0, 20.0)
+		ring.size = icon_size + Vector2(12.0, 40.0)
+		ring.z_index = 8
 		_fish_rings.append(ring)
-		_home.add_child(ring)
+		holder.add_child(ring)
 		var icon := TextureRect.new()
-		icon.texture = Sprites.tex(RR.FISH_IDS[i])
+		icon.texture = Sprites.tex(RR.FISH_IDS[fish_i])
 		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		icon.position = Vector2(x, row_y)
-		icon.size = Vector2(cell, row_h)
+		icon.position = icon_pos
+		icon.size = icon_size
 		_fish_icons.append(icon)
-		_fish_rest.append(icon.position)
-		_fish_phase.append(float(i) * 1.17 + 0.31)
-		_fish_speed.append(1.52 + float(i) * 0.27)
-		_home.add_child(icon)
+		holder.add_child(icon)
 		var hat := TextureRect.new()
 		hat.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		hat.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		hat.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		icon.add_child(hat)
 		_fish_hats.append(hat)
-		var btn := Button.new()
-		btn.flat = true
-		btn.position = Vector2(x, row_y)
-		btn.size = Vector2(cell, row_h)
-		btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-		btn.pressed.connect(_choose_fish.bind(i))
-		_home.add_child(btn)
+		var price := _make_hat_price(cell, price_h, RR.FISH_PRICE)
+		price.position = Vector2(0.0, icon_h + 1.0)
+		price.visible = fish_i >= RR.FREE_FISH
+		_fish_prices.append(price)
+		holder.add_child(price)
+		holder.move_child(ring, holder.get_child_count() - 1)
+	var stride := cell + gap
+	var focus_slot := 0
+	for n in _fish_order.size():
+		if _fish_order[n] == GameSession.fish_index:
+			focus_slot = n
+			break
+	var focus_center := 4.0 + float(focus_slot) * stride + cell * 0.5
+	_fish_scroll_x = clampf(focus_center - _fish_clip.size.x * 0.5, 0.0, _fish_max_scroll)
+	_apply_fish_scroll()
 	_refresh_fish_pick()
 
 
@@ -336,33 +447,33 @@ func _build_hat_picker() -> void:
 	var price_h := 24.0
 	var row_h := icon_h + price_h + 6.0
 	var bob := 12.0
+	var edge := 14.0
+	var clip_h := row_h + bob + edge * 2.0
 	var row_y := _hat_row_y()
-	row_y = minf(row_y, RR.VIEW_H - row_h - bob - 6.0)
+	row_y = minf(row_y, RR.VIEW_H - clip_h - 6.0)
 	var wallet_w := 92.0
-	_build_wallet(Vector2(pad, row_y + 18.0), Vector2(wallet_w, 48.0))
+	_build_wallet(Vector2(pad, row_y + edge + 18.0), Vector2(wallet_w, 48.0))
 	_hat_clip = Control.new()
 	_hat_clip.position = Vector2(pad + wallet_w + 6.0, row_y)
-	_hat_clip.size = Vector2(RR.VIEW_W - pad * 2.0 - wallet_w - 6.0, row_h + bob)
+	_hat_clip.size = Vector2(RR.VIEW_W - pad * 2.0 - wallet_w - 6.0, clip_h)
 	_hat_clip.mouse_filter = Control.MOUSE_FILTER_STOP
 	_hat_clip.clip_contents = true
 	_hat_clip.z_index = 40
 	_hat_clip.gui_input.connect(_on_hat_gui)
 	_home.add_child(_hat_clip)
-	_hat_ids.append(-1)
-	for i in RR.HAT_COUNT:
-		_hat_ids.append(i)
+	_hat_ids = _hat_display_order()
 	var count := _hat_ids.size()
 	var inner_w := 4.0 + float(count) * (cell + gap) - gap
 	_hat_max_scroll = maxf(0.0, inner_w - _hat_clip.size.x)
 	_hat_row = Control.new()
 	_hat_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_hat_row.custom_minimum_size = Vector2(inner_w, row_h + bob)
-	_hat_row.size = Vector2(inner_w, row_h + bob)
+	_hat_row.custom_minimum_size = Vector2(inner_w, clip_h)
+	_hat_row.size = Vector2(inner_w, clip_h)
 	_hat_clip.add_child(_hat_row)
 	for n in count:
 		var hat_i := _hat_ids[n]
 		var x := 4.0 + float(n) * (cell + gap)
-		var y := bob * 0.5
+		var y := edge + bob * 0.5
 		var holder := Control.new()
 		holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		holder.position = Vector2(x, y)
@@ -373,10 +484,12 @@ func _build_hat_picker() -> void:
 		_hat_rest.append(holder.position)
 		_hat_phase.append(float(n) * 0.41 + 0.18)
 		_hat_speed.append(1.38 + fmod(float(n) * 0.19, 1.1))
+		var icon_pos := Vector2(8.0, 2.0)
+		var icon_size := Vector2(cell - 16.0, icon_h)
 		var ring := Panel.new()
 		ring.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		ring.position = Vector2.ZERO
-		ring.size = holder.size
+		ring.position = icon_pos - Vector2(4.0, 6.0)
+		ring.size = icon_size + Vector2(8.0, 12.0)
 		ring.z_index = 8
 		_hat_rings.append(ring)
 		holder.add_child(ring)
@@ -384,8 +497,8 @@ func _build_hat_picker() -> void:
 		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		icon.position = Vector2(8.0, 2.0)
-		icon.size = Vector2(cell - 16.0, icon_h)
+		icon.position = icon_pos
+		icon.size = icon_size
 		icon.z_index = 1
 		if hat_i >= 0:
 			icon.texture = Sprites.tex(RR.hat_id(hat_i))
@@ -406,7 +519,7 @@ func _build_hat_picker() -> void:
 	_refresh_hat_pick()
 
 
-func _make_hat_price(cell_w: float, price_h: float) -> Control:
+func _make_hat_price(cell_w: float, price_h: float, amount: int = RR.HAT_PRICE) -> Control:
 	var wrap := Control.new()
 	wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	wrap.size = Vector2(cell_w, price_h)
@@ -420,7 +533,7 @@ func _make_hat_price(cell_w: float, price_h: float) -> Control:
 	wrap.add_child(coin)
 	var num := SpriteTextScript.new()
 	num.position = Vector2(cell_w * 0.5 - 8.0, 1.0)
-	num.configure(str(RR.HAT_PRICE), 16, Vector2(40, price_h - 2.0), HORIZONTAL_ALIGNMENT_LEFT, true)
+	num.configure(str(amount), 16, Vector2(40, price_h - 2.0), HORIZONTAL_ALIGNMENT_LEFT, true)
 	wrap.add_child(num)
 	return wrap
 
@@ -546,7 +659,71 @@ func _flash_wallet() -> void:
 	_wallet_flash = 0.7
 
 
+func _hat_display_order() -> PackedInt32Array:
+	var order := PackedInt32Array()
+	order.append(-1)
+	var seen := {}
+	seen[-1] = true
+	for i in range(GameSession.owned_hats.size() - 1, -1, -1):
+		var id := int(GameSession.owned_hats[i])
+		if id < 0 or id >= RR.HAT_COUNT or seen.has(id):
+			continue
+		seen[id] = true
+		order.append(id)
+	for i in RR.HAT_COUNT:
+		if seen.has(i):
+			continue
+		order.append(i)
+	return order
+
+
+func _relayout_hats() -> void:
+	var order := _hat_display_order()
+	if order.size() != _hat_ids.size():
+		return
+	var same := true
+	for n in order.size():
+		if order[n] != _hat_ids[n]:
+			same = false
+			break
+	if same:
+		return
+	var slot_of := {}
+	for n in _hat_ids.size():
+		slot_of[_hat_ids[n]] = n
+	var ids := PackedInt32Array()
+	var cells: Array[Control] = []
+	var rests: Array[Vector2] = []
+	var phases := PackedFloat32Array()
+	var speeds := PackedFloat32Array()
+	var rings: Array[Panel] = []
+	var icons: Array[TextureRect] = []
+	var prices: Array[Control] = []
+	var stride := _hat_cell + _hat_gap
+	var rest_y := _hat_rest[0].y if not _hat_rest.is_empty() else 6.0
+	for n in order.size():
+		var src: int = int(slot_of[order[n]])
+		ids.append(order[n])
+		cells.append(_hat_cells[src])
+		rests.append(Vector2(4.0 + float(n) * stride, rest_y))
+		phases.append(_hat_phase[src])
+		speeds.append(_hat_speed[src])
+		rings.append(_hat_rings[src])
+		icons.append(_hat_icons[src])
+		prices.append(_hat_prices[src])
+		_hat_cells[src].position = rests[n]
+	_hat_ids = ids
+	_hat_cells = cells
+	_hat_rest = rests
+	_hat_phase = phases
+	_hat_speed = speeds
+	_hat_rings = rings
+	_hat_icons = icons
+	_hat_prices = prices
+
+
 func _choose_hat(index: int) -> void:
+	var owned_before := GameSession.owned_hats.size()
 	if index < 0:
 		GameSession.equip_hat(-1)
 	elif GameSession.owns_hat(index):
@@ -557,6 +734,10 @@ func _choose_hat(index: int) -> void:
 	elif not GameSession.buy_hat(index):
 		_flash_wallet()
 		return
+	if GameSession.owned_hats.size() > owned_before:
+		_relayout_hats()
+		_hat_scroll_x = 0.0
+		_apply_hat_scroll()
 	_refresh_wallet()
 	_refresh_hat_pick()
 	_refresh_fish_hats()
@@ -582,28 +763,203 @@ func _refresh_hat_pick() -> void:
 		_hat_prices[n].visible = hat_i >= 0 and not owned
 
 
+func _on_fish_gui(event: InputEvent) -> void:
+	if event is InputEventMouseButton:
+		var mouse := event as InputEventMouseButton
+		if mouse.button_index == MOUSE_BUTTON_WHEEL_DOWN or mouse.button_index == MOUSE_BUTTON_WHEEL_RIGHT:
+			_scroll_fish(_fish_cell + _fish_gap)
+			_fish_clip.accept_event()
+			return
+		if mouse.button_index == MOUSE_BUTTON_WHEEL_UP or mouse.button_index == MOUSE_BUTTON_WHEEL_LEFT:
+			_scroll_fish(-(_fish_cell + _fish_gap))
+			_fish_clip.accept_event()
+			return
+		if mouse.button_index == MOUSE_BUTTON_LEFT:
+			if mouse.pressed:
+				_begin_fish_drag(mouse.position)
+			else:
+				_end_fish_drag(mouse.position)
+			_fish_clip.accept_event()
+			return
+	if event is InputEventMouseMotion:
+		var motion := event as InputEventMouseMotion
+		if _fish_pressing and (motion.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
+			_move_fish_drag(motion.position)
+			_fish_clip.accept_event()
+		return
+	if event is InputEventScreenTouch:
+		var touch := event as InputEventScreenTouch
+		var pos := _fish_local(touch.position)
+		if touch.pressed:
+			_begin_fish_drag(pos)
+		else:
+			_end_fish_drag(pos)
+		_fish_clip.accept_event()
+		return
+	if event is InputEventScreenDrag:
+		var drag := event as InputEventScreenDrag
+		_move_fish_drag(_fish_local(drag.position))
+		_fish_clip.accept_event()
+
+
+func _fish_local(global_pos: Vector2) -> Vector2:
+	return _fish_clip.get_global_transform_with_canvas().affine_inverse() * global_pos
+
+
+func _begin_fish_drag(pos: Vector2) -> void:
+	_fish_pressing = true
+	_fish_dragged = false
+	_fish_press = pos
+	_fish_press_scroll = _fish_scroll_x
+
+
+func _move_fish_drag(pos: Vector2) -> void:
+	if not _fish_pressing:
+		return
+	var dx := pos.x - _fish_press.x
+	if absf(dx) > 6.0:
+		_fish_dragged = true
+	_fish_scroll_x = clampf(_fish_press_scroll - dx, 0.0, _fish_max_scroll)
+	_apply_fish_scroll()
+
+
+func _end_fish_drag(pos: Vector2) -> void:
+	if not _fish_pressing:
+		return
+	_fish_pressing = false
+	if _fish_dragged:
+		return
+	_click_fish_at(pos)
+
+
+func _scroll_fish(delta_x: float) -> void:
+	_fish_scroll_x = clampf(_fish_scroll_x + delta_x, 0.0, _fish_max_scroll)
+	_apply_fish_scroll()
+
+
+func _apply_fish_scroll() -> void:
+	if _fish_row:
+		_fish_row.position.x = -_fish_scroll_x
+
+
+func _click_fish_at(pos: Vector2) -> void:
+	var x := pos.x + _fish_scroll_x - 4.0
+	if x < 0.0:
+		return
+	var stride := _fish_cell + _fish_gap
+	var index := int(x / stride)
+	if index < 0 or index >= RR.FISH_IDS.size():
+		return
+	if x - float(index) * stride > _fish_cell:
+		return
+	_choose_fish(_fish_order[index])
+
+
 func _choose_fish(index: int) -> void:
-	GameSession.fish_index = clampi(index, 0, RR.FISH_IDS.size() - 1)
-	GameSession._save()
+	var owned_before := GameSession.owned_fish.size()
+	if not GameSession.buy_fish(index):
+		_flash_wallet()
+		return
+	if GameSession.owned_fish.size() > owned_before:
+		_relayout_fish()
+		_fish_scroll_x = 0.0
+		_apply_fish_scroll()
+	_refresh_wallet()
 	_refresh_fish_pick()
 	_refresh_fish_hats()
+
+
+func _fish_display_order() -> PackedInt32Array:
+	var order := PackedInt32Array()
+	var seen := {}
+	for i in range(GameSession.owned_fish.size() - 1, -1, -1):
+		var id := int(GameSession.owned_fish[i])
+		if id < RR.FREE_FISH or id >= RR.FISH_IDS.size() or seen.has(id):
+			continue
+		seen[id] = true
+		order.append(id)
+	for i in RR.FREE_FISH:
+		order.append(i)
+		seen[i] = true
+	for i in RR.FISH_IDS.size():
+		if seen.has(i):
+			continue
+		order.append(i)
+	return order
+
+
+func _relayout_fish() -> void:
+	var order := _fish_display_order()
+	if order.size() != _fish_order.size():
+		return
+	var same := true
+	for n in order.size():
+		if order[n] != _fish_order[n]:
+			same = false
+			break
+	if same:
+		return
+	var slot_of := {}
+	for n in _fish_order.size():
+		slot_of[_fish_order[n]] = n
+	var ids := PackedInt32Array()
+	var cells: Array[Control] = []
+	var rests: Array[Vector2] = []
+	var phases := PackedFloat32Array()
+	var speeds := PackedFloat32Array()
+	var rings: Array[Panel] = []
+	var icons: Array[TextureRect] = []
+	var hats: Array[TextureRect] = []
+	var prices: Array[Control] = []
+	var stride := _fish_cell + _fish_gap
+	var rest_y := _fish_rest[0].y if not _fish_rest.is_empty() else 16.0
+	for n in order.size():
+		var src: int = int(slot_of[order[n]])
+		ids.append(order[n])
+		cells.append(_fish_cells[src])
+		rests.append(Vector2(4.0 + float(n) * stride, rest_y))
+		phases.append(_fish_phase[src])
+		speeds.append(_fish_speed[src])
+		rings.append(_fish_rings[src])
+		icons.append(_fish_icons[src])
+		hats.append(_fish_hats[src])
+		prices.append(_fish_prices[src])
+		_fish_cells[src].position = rests[n]
+	_fish_order = ids
+	_fish_cells = cells
+	_fish_rest = rests
+	_fish_phase = phases
+	_fish_speed = speeds
+	_fish_rings = rings
+	_fish_icons = icons
+	_fish_hats = hats
+	_fish_prices = prices
 
 
 func _refresh_fish_pick() -> void:
 	var chosen := clampi(GameSession.fish_index, 0, RR.FISH_IDS.size() - 1)
 	for i in _fish_icons.size():
-		var on := i == chosen
+		var fish_i := _fish_order[i]
+		var owned := GameSession.owns_fish(fish_i)
+		var on := fish_i == chosen and owned
 		var ring_style := StyleBoxFlat.new()
 		ring_style.bg_color = Color(0.12, 0.42, 0.62, 0.22 if on else 0.0)
 		ring_style.set_border_width_all(3 if on else 0)
 		ring_style.border_color = Color(1.0, 0.92, 0.42, 0.95)
 		ring_style.set_corner_radius_all(18)
 		_fish_rings[i].add_theme_stylebox_override("panel", ring_style)
-		_fish_icons[i].modulate = Color.WHITE if on else Color(0.82, 0.88, 0.92, 0.78)
+		if on:
+			_fish_icons[i].modulate = Color.WHITE
+		elif owned:
+			_fish_icons[i].modulate = Color(0.82, 0.88, 0.92, 0.78)
+		else:
+			_fish_icons[i].modulate = Color(0.55, 0.62, 0.7, 0.9)
 		_fish_icons[i].scale = Vector2.ONE
 		var grow := 1.08 if on else 1.0
 		_fish_icons[i].pivot_offset = _fish_icons[i].size * 0.5
 		_fish_icons[i].scale = Vector2(grow, grow)
+		if i < _fish_prices.size():
+			_fish_prices[i].visible = not owned
 	_refresh_fish_hats()
 
 
@@ -618,7 +974,7 @@ func _refresh_fish_hats() -> void:
 		hat.visible = hat_tex != null
 		if hat_tex == null:
 			continue
-		_place_hat_on_fish(hat, RR.FISH_IDS[i], _fish_icons[i].size)
+		_place_hat_on_fish(hat, RR.FISH_IDS[_fish_order[i]], _fish_icons[i].size)
 
 
 func _place_hat_on_fish(hat: TextureRect, skin: String, box: Vector2) -> void:
@@ -635,17 +991,15 @@ func _place_hat_on_fish(hat: TextureRect, skin: String, box: Vector2) -> void:
 	var hat_size := hat_tex.get_size() * hat_scale
 	hat.size = hat_size
 	# Sprite2D path: origin at hat_anchor, then brim offset * hat scale.
-	var sit := box * 0.5 + RR.hat_anchor(skin) * k + RR.hat_brim_offset(hat_tex) * hat_scale
+	var sit := box * 0.5 + RR.hat_anchor(skin, fish_size) * k + RR.hat_brim_offset(hat_tex) * hat_scale
 	hat.position = sit - hat_size * 0.5 + Vector2(0.0, 3.0)
 
 
 func _bob_picker(delta: float) -> void:
 	_bob_t += delta
-	for i in _fish_icons.size():
-		var y := sin(_bob_t * _fish_speed[i] + _fish_phase[i]) * 11.0
-		var pos := _fish_rest[i] + Vector2(0.0, y)
-		_fish_icons[i].position = pos
-		_fish_rings[i].position = pos
+	for i in _fish_cells.size():
+		var y := sin(_bob_t * _fish_speed[i] + _fish_phase[i]) * 8.0
+		_fish_cells[i].position = _fish_rest[i] + Vector2(0.0, y)
 	for i in _hat_cells.size():
 		var y := sin(_bob_t * _hat_speed[i] + _hat_phase[i]) * 8.0
 		_hat_cells[i].position = _hat_rest[i] + Vector2(0.0, y)
@@ -704,13 +1058,37 @@ func _show_scores() -> void:
 
 
 func _fill_scores() -> void:
+	var period: String = SCORE_PAGES[_score_page]
 	if _score_card:
-		var tex := Sprites.tex("%s_overlay" % SCORE_PAGES[_score_page])
+		var tex := Sprites.tex("%s_overlay" % period)
 		if tex:
 			_score_card.texture = tex
-	for child in _score_rows.get_children():
-		child.queue_free()
-	_fill_column(_global_board(SCORE_PAGES[_score_page]), NAME_COL, SCORE_COL)
+	var board := _global_board(period)
+	var populated := 0
+	var first_name := ""
+	var first_score := ""
+	for i in _score_names.size():
+		var name := ""
+		var score := ""
+		if i < board.size() and typeof(board[i]) == TYPE_DICTIONARY:
+			var row: Dictionary = board[i]
+			name = GameSession.clamp_player_name(str(row.get("name", row.get("display_name", "")))).to_upper()
+			if name == "<NULL>" or name == "NULL":
+				name = ""
+			var value := int(row.get("score", 0))
+			if value > 0:
+				score = str(value)
+			if name != "" or score != "":
+				populated += 1
+				if first_name == "" and first_score == "":
+					first_name = name
+					first_score = score
+		if i < _score_names.size():
+			_score_names[i].set_value(name)
+		if i < _score_values.size():
+			_score_values[i].set_value(score)
+	_sync_score_status(period, board.size())
+	print("[leaderboard] ui period=%s rows=%d labels=%d first=%s score=%s" % [period, board.size(), populated, first_name, first_score])
 
 
 func _global_board(period: String) -> Array:
@@ -778,7 +1156,11 @@ func _end_score_swipe(pos: Vector2) -> void:
 
 func _cycle_score_page(dir: int) -> void:
 	_score_page = posmod(_score_page + dir, SCORE_PAGES.size())
+	print("[leaderboard] ui period=%s" % SCORE_PAGES[_score_page])
 	_fill_scores()
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("fetch_leaderboards"):
+		backend.fetch_leaderboards()
 
 
 func _score_back_hit(pos: Vector2) -> bool:
@@ -825,39 +1207,72 @@ func _screen_hotspot(box: Rect2, pressed: Callable) -> Button:
 	return btn
 
 
-func _fill_column(board: Array, name_col: Rect2, score_col: Rect2) -> void:
-	for i in ROW_Y.size():
-		var y: float = ROW_Y[i]
-		var h: float = ROW_H[i]
-		var name := ""
-		var score := ""
-		if i < board.size() and typeof(board[i]) == TYPE_DICTIONARY:
-			var row: Dictionary = board[i]
-			name = str(row.get("name", row.get("display_name", ""))).strip_edges()
-			if name == "<null>" or name == "null":
-				name = ""
-			score = str(int(row.get("score", 0)))
-		var name_box := Rect2(name_col.position.x, y + NAME_INSET + NAME_NUDGE_Y, name_col.size.x, h - NAME_INSET * 2.0)
-		var score_box := Rect2(score_col.position.x, y + SCORE_INSET, score_col.size.x, h - SCORE_INSET * 2.0)
-		_score_rows.add_child(_row_text(name, name_box, HORIZONTAL_ALIGNMENT_CENTER, false, _name_text_scale(name)))
-		_score_rows.add_child(_row_text(score, score_box, HORIZONTAL_ALIGNMENT_RIGHT, true, SCORE_NUM_SCALE))
+func _build_score_labels() -> void:
+	_score_names.clear()
+	_score_values.clear()
+	var glyph_h := _score_glyph_height()
+	var name_h := _score_name_height()
+	for i in SCORE_ROWS_Y.size():
+		_score_names.append(_add_score_text(_row_content_rect(i, SCORE_NAME_X, SCORE_NAME_W, 2.0), HORIZONTAL_ALIGNMENT_LEFT, false, name_h, true))
+		_score_values.append(_add_score_text(_row_content_rect(i, SCORE_VALUE_X, SCORE_VALUE_W), HORIZONTAL_ALIGNMENT_RIGHT, true, glyph_h, true))
+	_score_status = _add_score_text(Rect2(210.0, 352.0, 520.0, 68.0), HORIZONTAL_ALIGNMENT_CENTER, false, 0.0, true)
+	_score_status.visible = false
 
 
-func _name_text_scale(name: String) -> float:
-	var n := name.strip_edges().length()
-	if n <= 4:
-		return NAME_TEXT_SCALE
-	var t := clampf(float(n - 4) / 10.0, 0.0, 1.0)
-	return lerpf(NAME_TEXT_SCALE, NAME_TEXT_SCALE * 0.55, t)
+func _score_glyph_height() -> float:
+	var row_h: float = SCORE_ROWS_H[0]
+	for raw in SCORE_ROWS_H:
+		row_h = minf(row_h, float(raw))
+	# Kept under the row height so a three-digit score still fits the column.
+	return row_h * _score_scale * 0.54
 
 
-func _row_text(text: String, src: Rect2, align: HorizontalAlignment, gold: bool, text_scale: float) -> SpriteTextScript:
+func _score_name_height() -> float:
+	var row_h: float = SCORE_ROWS_H[0]
+	for raw in SCORE_ROWS_H:
+		row_h = minf(row_h, float(raw))
+	# The row width is what actually sets the size. A wide name shrinks to the column.
+	return row_h * _score_scale
+
+
+func _row_content_rect(index: int, x: float, width: float, inset: float = 10.0) -> Rect2:
+	var y: float = SCORE_ROWS_Y[index]
+	var h: float = SCORE_ROWS_H[index]
+	return Rect2(x, y + inset, width, maxf(24.0, h - inset * 2.0))
+
+
+func _add_score_text(src: Rect2, align: HorizontalAlignment, gold_digits: bool, glyph_h: float, fit_box: bool) -> SpriteTextScript:
 	var line := SpriteTextScript.new()
+	line.z_index = 2
 	var box := src.size * _score_scale
-	var tall := Vector2(box.x, box.y * text_scale)
-	line.position = _score_pos + src.position * _score_scale + Vector2(0.0, (box.y - tall.y) * 0.25)
-	line.configure(text, tall.y, tall, align, gold, true)
+	line.position = _score_pos + src.position * _score_scale
+	var height := glyph_h if glyph_h > 0.0 else box.y * 0.92
+	line.configure("", height, box, align, gold_digits, fit_box)
+	if not fit_box:
+		line.clip_contents = true
+	_score_rows.add_child(line)
 	return line
+
+
+func _sync_score_status(period: String, row_count: int) -> void:
+	if _score_status == null:
+		return
+	var note := ""
+	if row_count <= 0:
+		var backend := get_node_or_null("/root/Backend")
+		var meta: Dictionary = {}
+		if backend and backend.get("leaderboard_meta") is Dictionary:
+			var all: Dictionary = backend.leaderboard_meta
+			var got: Variant = all.get(period, {})
+			if typeof(got) == TYPE_DICTIONARY:
+				meta = got
+		var busy: bool = backend != null and backend.has_method("leaderboard_busy") and backend.leaderboard_busy()
+		if meta.is_empty() or busy:
+			note = "LOADING"
+		elif not bool(meta.get("ok", false)):
+			note = "COULD NOT LOAD"
+	_score_status.set_value(note)
+	_score_status.visible = note != ""
 
 
 func _show_home() -> void:
@@ -869,6 +1284,377 @@ func _show_home() -> void:
 
 
 func _play() -> void:
-	_on_name_changed(_name_edit.text)
-	GameSession.start_match()
+	if _name_edit:
+		_on_name_changed(_name_edit.text)
+		_name_edit.release_focus()
+	GameSession.end_virtual_keyboard_lock()
+	_open_modes()
+
+
+func _build_mode_overlay() -> void:
+	_modes = Control.new()
+	_modes.visible = false
+	_modes.z_index = 80
+	_modes.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	_modes.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_modes)
+	var dim := ColorRect.new()
+	dim.color = Palette.SHADOW
+	dim.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	_modes.add_child(dim)
+	_mode_scale = minf(RR.VIEW_W / MODE_W, RR.VIEW_H / MODE_H)
+	var card_size := Vector2(MODE_W, MODE_H) * _mode_scale
+	_mode_origin = Vector2((RR.VIEW_W - card_size.x) * 0.5, (RR.VIEW_H - card_size.y) * 0.5)
+	_mode_card = _overlay_card(Sprites.tex("mode_unlocked"), card_size, _mode_origin)
+	_modes.add_child(_mode_card)
+	_mode_reset_cover = _mode_cover()
+	_modes.add_child(_mode_reset_cover)
+	var unlimited := _hotspot(MODE_UNLIMITED, _choose_unlimited, _mode_origin, _mode_scale)
+	var daily := _hotspot(MODE_DAILY, _choose_daily, _mode_origin, _mode_scale)
+	var back := _hotspot(MODE_BACK, _close_modes, _mode_origin, _mode_scale)
+	for btn in [unlimited, daily, back]:
+		btn.focus_mode = Control.FOCUS_NONE
+		_modes.add_child(btn)
+	_daily_button = daily
+	_mode_note = SpriteTextScript.new()
+	_mode_note.modulate = Palette.GOLD
+	_mode_note.visible = false
+	_mode_note.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_modes.add_child(_mode_note)
+	_mode_reset = SpriteTextScript.new()
+	_mode_reset.modulate = Palette.SAND
+	_mode_reset.visible = false
+	_mode_reset.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_modes.add_child(_mode_reset)
+	_layout_mode_status()
+
+
+func _mode_cover() -> Panel:
+	var cover := Panel.new()
+	cover.visible = false
+	cover.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var box := StyleBoxFlat.new()
+	box.bg_color = Color8(22, 53, 73)
+	box.set_corner_radius_all(10)
+	cover.add_theme_stylebox_override("panel", box)
+	return cover
+
+
+func _mode_view_rect(src: Rect2) -> Rect2:
+	return Rect2(_mode_origin + src.position * _mode_scale, src.size * _mode_scale)
+
+
+func _layout_mode_status() -> void:
+	_apply_mode_art()
+	var line := _mode_view_rect(MODE_RESET_LINE)
+	if _mode_reset_cover:
+		_mode_reset_cover.position = line.position
+		_mode_reset_cover.size = line.size
+		_mode_reset_cover.visible = _mode_shows_locked() and _mode_reset != null and _mode_reset.visible
+
+
+func _mode_shows_locked() -> bool:
+	if DailyTestModeScript.enabled():
+		return false
+	return _daily_locked
+
+
+func _apply_mode_art() -> void:
+	if _mode_card == null:
+		return
+	var tex := Sprites.tex("mode_locked" if _mode_shows_locked() else "mode_unlocked")
+	if tex:
+		_mode_card.texture = tex
+
+
+func _open_modes() -> void:
+	if _modes == null:
+		return
+	_mode_busy = false
+	_modes.visible = true
+	if _daily_locked:
+		_show_daily_completed(_daily_resets_unix)
+	else:
+		_set_mode_note("")
+		_set_mode_reset("")
+	_refresh_daily_status()
+
+
+func _close_modes() -> void:
+	_mode_token += 1
+	_mode_busy = false
+	if _modes:
+		_modes.visible = false
+	_set_mode_note("")
+	_set_mode_reset("")
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("cancel_pre_match_requests"):
+		backend.cancel_pre_match_requests()
+
+
+func _set_mode_note(text: String) -> void:
+	if _mode_note == null:
+		return
+	# Locked art already paints the completed line. Errors stay on the open card.
+	var show := text != "" and not (_mode_shows_locked() and text == DailyAttemptScript.COMPLETED_LABEL)
+	_mode_note.visible = show
+	if show:
+		var note := _mode_view_rect(MODE_NOTE)
+		_mode_note.position = note.position
+		_mode_note.configure(text, 16.0, note.size, HORIZONTAL_ALIGNMENT_CENTER, false, true)
+	_layout_mode_status()
+
+
+func _set_mode_reset(text: String) -> void:
+	if _mode_reset == null:
+		return
+	var show := text != "" and _mode_shows_locked()
+	_mode_reset.visible = show
+	if show:
+		var line := _mode_view_rect(MODE_RESET_LINE)
+		_mode_reset.position = line.position
+		_mode_reset.configure(text, 14.0, line.size, HORIZONTAL_ALIGNMENT_CENTER, false, true)
+	_layout_mode_status()
+
+
+func _on_identity_ready() -> void:
+	if _modes and _modes.visible:
+		_refresh_daily_status()
+
+
+func _show_daily_completed(resets_unix: int) -> void:
+	_daily_locked = true
+	_daily_checking = false
+	_daily_resets_unix = resets_unix
+	if DailyTestModeScript.enabled():
+		_apply_daily_test_override()
+		return
+	if _daily_button:
+		_daily_button.disabled = true
+		_daily_button.modulate = Color(1, 1, 1, 0.45)
+	_set_mode_note(DailyAttemptScript.COMPLETED_LABEL)
+	_set_mode_reset(DailyAttemptScript.reset_label(resets_unix, int(Time.get_unix_time_from_system())))
+
+
+func _clear_daily_lock() -> void:
+	_daily_locked = false
+	_daily_checking = false
+	_daily_resets_unix = 0
+	if _daily_button:
+		_daily_button.disabled = false
+		_daily_button.modulate = Color.WHITE
+	if _modes and _modes.visible and not _mode_busy:
+		_set_mode_note("")
+		_set_mode_reset("")
+	if DailyTestModeScript.enabled():
+		_apply_daily_test_override()
+
+
+func _refresh_daily_status() -> void:
+	if _status_busy:
+		_status_again = true
+		return
+	if _mode_busy:
+		return
+	var backend := get_node_or_null("/root/Backend")
+	if backend == null or not backend.has_method("fetch_daily_attempt_status"):
+		print("[daily] status_ui skipped error=no_backend")
+		return
+	if not backend.has_method("has_session") or not backend.has_session():
+		print("[daily] status_ui skipped error=no_session button_disabled=%s" % str(_daily_button != null and _daily_button.disabled))
+		return
+	_status_busy = true
+	_daily_checking = true
+	if _daily_button and not _daily_locked and not DailyTestModeScript.enabled():
+		_daily_button.disabled = true
+	var token := _mode_token
+	var status: Dictionary = await backend.fetch_daily_attempt_status()
+	_status_busy = false
+	if _status_again:
+		_status_again = false
+		_daily_checking = false
+		_refresh_daily_status()
+		return
+	if not is_inside_tree() or token != _mode_token or _modes == null or not _modes.visible:
+		_daily_checking = false
+		return
+	var course: Variant = status.get("course", {})
+	if typeof(course) == TYPE_DICTIONARY and int(course.get("course_seed", 0)) != 0:
+		_status_course = course
+	if status.get("attempted", false):
+		_show_daily_completed(int(status.get("resets_at_unix", 0)))
+	elif status.get("ok", false):
+		_clear_daily_lock()
+	else:
+		_daily_checking = false
+		if _daily_button and not _daily_locked and not DailyTestModeScript.enabled():
+			_daily_button.disabled = false
+			if int(status.get("status", 0)) == 404:
+				_set_mode_note("DAILY UNAVAILABLE")
+	if DailyTestModeScript.enabled():
+		_apply_daily_test_override()
+	print("[daily] status_ui status=%d ok=%s attempted=%s error=%s button_disabled=%s test_mode=%s" % [
+		int(status.get("status", 0)),
+		str(bool(status.get("ok", false))),
+		str(bool(status.get("attempted", false))),
+		str(status.get("error", "")),
+		str(_daily_button != null and _daily_button.disabled),
+		DailyTestModeScript.status_label(),
+	])
+
+
+func _daily_backend_ready() -> bool:
+	var backend := get_node_or_null("/root/Backend")
+	if backend == null:
+		return false
+	return (
+		backend.has_method("daily_challenge_ready")
+		and backend.daily_challenge_ready()
+		and backend.has_method("claim_daily_attempt")
+		and backend.has_method("prepare_claimed_daily")
+		and backend.has_method("start_daily_attempt")
+		and backend.has_method("finalize_daily_attempt")
+	)
+
+
+func _apply_daily_test_override() -> void:
+	if not DailyTestModeScript.enabled():
+		return
+	if _daily_button:
+		_daily_button.disabled = false
+		_daily_button.modulate = Color.WHITE
+	_set_mode_note("")
+	_set_mode_reset("")
+
+
+func _start_practice_daily() -> void:
+	if not DailyTestModeScript.enabled() or _mode_busy:
+		return
+	_mode_busy = true
+	_mode_token += 1
+	var token := _mode_token
+	if _name_edit:
+		_on_name_changed(_name_edit.text)
+	var course := DailyTestModeScript.practice_course(_status_course)
+	if int(course.get("course_seed", 0)) == 0:
+		var backend := get_node_or_null("/root/Backend")
+		if backend and backend.has_method("fetch_practice_course"):
+			course = await backend.fetch_practice_course()
+	if not is_inside_tree() or token != _mode_token:
+		_mode_busy = false
+		return
+	if not GameSession.begin_practice_daily(course):
+		_mode_busy = false
+		_set_mode_note("PRACTICE COURSE UNAVAILABLE")
+		return
+	print("[daily] practice seed=%d id=%s" % [GameSession.course_seed, GameSession.current_challenge_id()])
+	get_tree().change_scene_to_file.call_deferred("res://scenes/game/game.tscn")
+
+
+func _choose_unlimited() -> void:
+	if _mode_busy:
+		return
+	_begin_game(GameSession.MODE_UNLIMITED)
+
+
+func _choose_daily() -> void:
+	if DailyTestModeScript.enabled():
+		_start_practice_daily()
+		return
+	if _mode_busy or _daily_checking:
+		print("[daily] choose blocked busy=%s checking=%s button_disabled=%s" % [
+			str(_mode_busy),
+			str(_daily_checking),
+			str(_daily_button != null and _daily_button.disabled),
+		])
+		return
+	if _daily_locked:
+		print("[daily] choose blocked locked=true")
+		_show_daily_completed(_daily_resets_unix)
+		return
+	if not _daily_backend_ready():
+		print("[daily] choose blocked error=backend_not_ready")
+		_set_mode_note("UNAVAILABLE UNTIL INTEGRATION IS COMPLETE")
+		return
+	_mode_busy = true
+	_mode_token += 1
+	var token := _mode_token
+	_set_mode_note("LOADING")
+	_set_mode_reset("")
+	var backend := get_node_or_null("/root/Backend")
+	var claim: Dictionary = {}
+	if backend:
+		claim = await backend.claim_daily_attempt()
+	if not is_inside_tree() or token != _mode_token or _modes == null or not _modes.visible:
+		if claim.get("already_used", false):
+			_daily_locked = true
+			_daily_resets_unix = int(claim.get("resets_at_unix", 0))
+		_mode_busy = false
+		return
+	if not claim.get("ok", false):
+		_mode_busy = false
+		print("[daily] choose claim_failed status=%d already_used=%s error=%s" % [
+			int(claim.get("status", 0)),
+			str(bool(claim.get("already_used", false))),
+			str(claim.get("error", "")),
+		])
+		if claim.get("already_used", false):
+			_show_daily_completed(int(claim.get("resets_at_unix", 0)))
+		elif int(claim.get("status", 0)) == 404:
+			_set_mode_note("DAILY UNAVAILABLE")
+		else:
+			_set_mode_note("COULD NOT START DAILY CHALLENGE")
+		return
+	var challenge: Dictionary = claim.get("challenge", {})
+	_set_mode_note("LOADING")
+	if backend:
+		await backend.prepare_claimed_daily(challenge)
+	if not is_inside_tree() or token != _mode_token or _modes == null or not _modes.visible:
+		_mode_busy = false
+		return
+	var started: Dictionary = {}
+	if backend:
+		started = await backend.start_daily_attempt(str(challenge.get("attempt_id", "")))
+	if not is_inside_tree() or token != _mode_token or _modes == null or not _modes.visible:
+		_mode_busy = false
+		return
+	if not bool(started.get("started", false)):
+		_mode_busy = false
+		print("[daily] choose start_failed attempt_id=%s status=%d already_started=%s error=%s" % [
+			str(challenge.get("attempt_id", "")),
+			int(started.get("status", 0)),
+			str(bool(started.get("already_started", false))),
+			str(started.get("error", "")),
+		])
+		if bool(started.get("already_started", false)):
+			_show_daily_completed(int(claim.get("resets_at_unix", 0)))
+		elif int(started.get("status", 0)) == 404:
+			_set_mode_note("DAILY UNAVAILABLE")
+		else:
+			_set_mode_note("COULD NOT START DAILY CHALLENGE")
+		return
+	print("[daily] choose enter_game attempt_id=%s seed=%d" % [
+		str(challenge.get("attempt_id", "")),
+		int(challenge.get("course_seed", 0)),
+	])
+	_begin_claimed_game(challenge)
+
+
+func _begin_claimed_game(challenge: Dictionary) -> void:
+	if str(challenge.get("attempt_id", "")).strip_edges() == "":
+		_mode_busy = false
+		print("[daily] choose enter_game error=missing_attempt")
+		_set_mode_note("COULD NOT START DAILY CHALLENGE")
+		return
+	if _name_edit:
+		_on_name_changed(_name_edit.text)
+	GameSession.begin_claimed_daily(challenge)
+	get_tree().change_scene_to_file.call_deferred("res://scenes/game/game.tscn")
+
+
+func _begin_game(mode: String) -> void:
+	if _name_edit:
+		_on_name_changed(_name_edit.text)
+	GameSession.start_match(mode)
 	get_tree().change_scene_to_file.call_deferred("res://scenes/game/game.tscn")

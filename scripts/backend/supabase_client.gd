@@ -86,7 +86,61 @@ func _request_json(method: String, url: String, headers: PackedStringArray, body
 	result.data = parsed
 	result.ok = status >= 200 and status < 300
 	result.error = "" if result.ok else "http_%d" % status
+	if not result.ok:
+		result.body_text = _public_body(text)
+		result.content_type = _content_type_label(headers)
+		result.authorization = _authorization_label(headers)
+		result.apikey = "present" if _has_header(headers, "apikey") else "missing"
 	return result
+
+
+func _has_header(headers: PackedStringArray, name: String) -> bool:
+	var prefix := name.to_lower() + ":"
+	for header in headers:
+		if str(header).strip_edges().to_lower().begins_with(prefix):
+			return true
+	return false
+
+
+func _header_value(headers: PackedStringArray, name: String) -> String:
+	var prefix := name.to_lower() + ":"
+	for header in headers:
+		var text := str(header).strip_edges()
+		if text.to_lower().begins_with(prefix):
+			return text.substr(prefix.length()).strip_edges()
+	return ""
+
+
+func _content_type_label(headers: PackedStringArray) -> String:
+	var value := _header_value(headers, "Content-Type").to_lower()
+	if value.begins_with("application/json"):
+		return "application/json"
+	if value.is_empty():
+		return "missing"
+	return "other"
+
+
+func _authorization_label(headers: PackedStringArray) -> String:
+	var value := _header_value(headers, "Authorization")
+	if value.is_empty():
+		return "missing"
+	if value.to_lower().begins_with("bearer ") and value.length() > 7:
+		return "bearer"
+	return "other"
+
+
+func _public_body(text: String) -> String:
+	var clean := text.strip_edges()
+	if clean.is_empty():
+		return ""
+	var jwt := RegEx.new()
+	if jwt.compile("eyJ[A-Za-z0-9_\\-]+(?:\\.[A-Za-z0-9_\\-]+){1,2}") == OK:
+		clean = jwt.sub(clean, "[redacted]", true)
+	if clean.contains("sb_secret") or clean.to_lower().contains("service_role"):
+		return "[redacted]"
+	if clean.length() > 800:
+		clean = clean.substr(0, 800)
+	return clean
 
 
 func _http_method(method: String) -> HTTPClient.Method:

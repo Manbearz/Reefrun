@@ -1,17 +1,33 @@
 extends RefCounted
 
-# Global daily/weekly/monthly boards. Writes go through submit_leaderboard_score RPC
-# so player_id is auth.uid(), not a client-chosen UUID.
+# Daily board: Daily Challenge rows, written by finalize_daily_attempt.
+# Weekly and monthly boards: Unlimited rows, written by submit_leaderboard_score.
 
 const ConfigScript := preload("res://scripts/backend/supabase_config.gd")
 
 
-func submit_url() -> String:
-	return ConfigScript.project_url() + "/rest/v1/rpc/submit_leaderboard_score"
+func claim_url() -> String:
+	return ConfigScript.project_url() + "/rest/v1/rpc/claim_daily_attempt"
+
+
+func status_url() -> String:
+	return ConfigScript.project_url() + "/rest/v1/rpc/get_daily_attempt_status"
+
+
+func start_url() -> String:
+	return ConfigScript.project_url() + "/rest/v1/rpc/start_daily_attempt"
+
+
+func finalize_url() -> String:
+	return ConfigScript.project_url() + "/rest/v1/rpc/finalize_daily_attempt"
 
 
 func list_url() -> String:
 	return ConfigScript.project_url() + "/rest/v1/rpc/get_leaderboard"
+
+
+func submit_url() -> String:
+	return ConfigScript.project_url() + "/rest/v1/rpc/submit_leaderboard_score"
 
 
 func parse_rows(data: Variant) -> Array:

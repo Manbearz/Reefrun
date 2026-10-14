@@ -4,18 +4,35 @@ const GhostRunScript := preload("res://scripts/ghost_run.gd")
 
 
 func get_runs_for_seed(course_seed: int) -> Array:
+	return _cached(course_seed, "")
+
+
+func get_runs_for_challenge(course_seed: int, challenge_id: String) -> Array:
+	return _cached(course_seed, challenge_id)
+
+
+func _cached(course_seed: int, challenge_id: String) -> Array:
 	var tree := Engine.get_main_loop() as SceneTree
 	if tree == null:
 		return []
 	var backend: Node = tree.root.get_node_or_null("/root/Backend")
-	if backend == null or not backend.has_method("cached_ghost_runs"):
+	if backend == null:
 		return []
-	var rows: Array = backend.cached_ghost_runs(course_seed)
+	var rows: Array = []
+	if challenge_id != "" and backend.has_method("cached_ghost_runs_for_challenge"):
+		rows = backend.cached_ghost_runs_for_challenge(challenge_id)
+	elif backend.has_method("cached_ghost_runs"):
+		rows = backend.cached_ghost_runs(course_seed)
 	var out: Array = []
 	for row in rows:
 		var run = _from_row(row)
-		if run and run.is_valid() and run.course_seed == course_seed:
-			out.append(run)
+		if run == null or not run.is_valid() or run.course_seed != course_seed:
+			continue
+		if challenge_id != "" and run.challenge_id != challenge_id:
+			continue
+		if run.course_version != RR.COURSE_VERSION or run.physics_version != RR.PHYSICS_VERSION:
+			continue
+		out.append(run)
 	return out
 
 
@@ -24,6 +41,7 @@ func _from_row(row: Variant):
 		return null
 	var run = GhostRunScript.new()
 	run.course_seed = int(row.get("course_seed", 0))
+	run.challenge_id = str(row.get("challenge_id", ""))
 	run.physics_version = int(row.get("physics_version", 1))
 	run.course_version = int(row.get("course_version", 1))
 	run.display_name = str(row.get("display_name", "YOU"))

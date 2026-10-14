@@ -2,13 +2,32 @@ extends Node
 
 const NAME_MAX_LEN := 7
 
+const MODE_UNLIMITED := "unlimited"
+const MODE_DAILY := "daily"
+
 var fish_index: int = 0
 var coins: int = 0
+var owned_fish: PackedInt32Array = PackedInt32Array()
 var hat_index: int = -1
 var owned_hats: PackedInt32Array = PackedInt32Array()
 var player_name: String = ""
 var player_id: String = ""
 var course_seed: int = 0
+var match_mode: String = ""
+var practice_daily: bool = false
+var active_challenge: Dictionary = {}
+var pending_finalize_attempt: String = ""
+var pending_finalize_score: int = 0
+var pending_finalize_name: String = ""
+var pending_unlimited_score: int = 0
+var pending_unlimited_name: String = ""
+var pending_claim_key: String = ""
+var pending_referral_code: String = ""
+var pending_first_run: bool = false
+var share_run_synced: bool = false
+var applied_share_reward_coins: int = 0
+var referral_code: String = ""
+var share_reward_qualified: int = 0
 var last_score: int = 0
 var last_rank: int = 100
 var last_alive_at_death: int = 99
@@ -25,13 +44,16 @@ var web_display := ""
 var _vk_lock := false
 var _vk_restoring := false
 var _stable_win := Vector2i.ZERO
+var _practice_saved_seed := 0
 
 const CourseBuilderScript := preload("res://scripts/course_builder.gd")
+const DailyChallengeScript := preload("res://scripts/daily_challenge.gd")
+const DailyAttemptScript := preload("res://scripts/daily_attempt.gd")
+const DailyTestModeScript := preload("res://scripts/daily_test_mode.gd")
+const ReferralRulesScript := preload("res://scripts/share/referral_rules.gd")
+const ReferralLinksScript := preload("res://scripts/share/referral_links.gd")
 const ConfigScript := preload("res://scripts/backend/supabase_config.gd")
 const SAVE_PATH := "user://reefrun.cfg"
-# Local ghost testing: Continue / Play reuse the last course so recorded fish replay.
-# Set false for production so each match gets a new seed.
-const DEV_REUSE_COURSE_SEED := false
 
 
 func _ready() -> void:
@@ -48,6 +70,9 @@ func _ready() -> void:
 	_load()
 	if _ensure_player_id():
 		_save()
+	var incoming := ReferralLinksScript.capture()
+	if incoming != "":
+		remember_referral_code(incoming)
 	refresh_boards()
 
 
@@ -303,7 +328,35 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func selected_fish() -> String:
-	return RR.FISH_IDS[fish_index]
+	var index := clampi(fish_index, 0, RR.FISH_IDS.size() - 1)
+	return RR.FISH_IDS[index]
+
+
+func owns_fish(index: int) -> bool:
+	if index < 0 or index >= RR.FISH_IDS.size():
+		return false
+	if index < RR.FREE_FISH:
+		return true
+	for owned in owned_fish:
+		if owned == index:
+			return true
+	return false
+
+
+func buy_fish(index: int) -> bool:
+	if index < 0 or index >= RR.FISH_IDS.size():
+		return false
+	if owns_fish(index):
+		fish_index = index
+		_save()
+		return true
+	if coins < RR.FISH_PRICE:
+		return false
+	coins -= RR.FISH_PRICE
+	owned_fish.append(index)
+	fish_index = index
+	_save()
+	return true
 
 
 func owns_hat(index: int) -> bool:
@@ -388,14 +441,24 @@ func _ensure_player_id() -> bool:
 	return true
 
 
-func start_match() -> void:
-	var backend := get_node_or_null("/root/Backend")
-	if backend and backend.has_method("has_shared_seed") and backend.has_shared_seed():
-		course_seed = backend.shared_course_seed()
-	elif not (DEV_REUSE_COURSE_SEED and course_seed != 0):
-		course_seed = randi()
-		if course_seed == 0:
-			course_seed = 1
+func start_match(mode: String = "") -> void:
+	end_practice_daily()
+	var picked := mode if mode != "" else match_mode
+	if picked == MODE_DAILY:
+		push_warning("[rpc] claim_daily_attempt status=0 error=start_without_claim")
+		return
+	picked = MODE_UNLIMITED
+	match_mode = picked
+	var seed := randi()
+	if seed == 0:
+		seed = 1
+	active_challenge = {
+		"mode": MODE_UNLIMITED,
+		"challenge_id": "",
+		"course_seed": seed,
+		"server_confirmed": false,
+	}
+	course_seed = seed
 	last_score = 0
 	last_rank = RR.GHOST_COUNT + 1
 	last_alive_at_death = RR.GHOST_COUNT
@@ -403,7 +466,88 @@ func start_match() -> void:
 	_save()
 
 
+func begin_practice_daily(challenge: Dictionary) -> bool:
+	if not DailyTestModeScript.enabled():
+		return false
+	var course := DailyTestModeScript.practice_course(challenge)
+	if int(course.get("course_seed", 0)) == 0 or str(course.get("challenge_id", "")) == "":
+		return false
+	if not practice_daily:
+		_practice_saved_seed = course_seed
+	practice_daily = true
+	match_mode = MODE_DAILY
+	commit_match_challenge(course)
+	return true
+
+
+func end_practice_daily() -> void:
+	if not practice_daily:
+		return
+	practice_daily = false
+	match_mode = MODE_UNLIMITED
+	active_challenge = {}
+	course_seed = _practice_saved_seed
+
+
+func is_practice_daily() -> bool:
+	return practice_daily and match_mode == MODE_DAILY
+
+
+func begin_claimed_daily(challenge: Dictionary) -> void:
+	end_practice_daily()
+	if str(challenge.get("attempt_id", "")).strip_edges() == "":
+		push_warning("[rpc] claim_daily_attempt status=0 error=missing_attempt")
+		return
+	match_mode = MODE_DAILY
+	commit_match_challenge(challenge)
+	clear_claim_key()
+	last_score = 0
+	last_rank = RR.GHOST_COUNT + 1
+	last_alive_at_death = RR.GHOST_COUNT
+	games_played += 1
+	_save()
+
+
+func ensure_challenge() -> void:
+	if match_mode == MODE_DAILY:
+		return
+	if match_mode == MODE_UNLIMITED and course_seed != 0:
+		return
+	start_match(MODE_UNLIMITED)
+
+
+func commit_match_challenge(challenge: Dictionary) -> void:
+	active_challenge = challenge.duplicate(true)
+	course_seed = int(active_challenge.get("course_seed", 0))
+	if course_seed == 0:
+		course_seed = 1
+		active_challenge["course_seed"] = course_seed
+
+
+func current_challenge() -> Dictionary:
+	return active_challenge
+
+
+func current_challenge_id() -> String:
+	return str(active_challenge.get("challenge_id", ""))
+
+
+func preview_next_challenge(candidate: Dictionary) -> Dictionary:
+	return candidate.duplicate(true)
+
+
+func _next_challenge() -> Dictionary:
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("challenge_for_new_match"):
+		var got: Variant = backend.challenge_for_new_match()
+		if typeof(got) == TYPE_DICTIONARY and int(got.get("course_seed", 0)) != 0:
+			return got
+	return DailyChallengeScript.unverified_local(int(Time.get_unix_time_from_system()))
+
+
 func record_run(score: int, rank: int, alive_at_death: int) -> void:
+	if practice_daily:
+		return
 	last_score = score
 	last_rank = rank
 	last_alive_at_death = alive_at_death
@@ -416,10 +560,24 @@ func record_run(score: int, rank: int, alive_at_death: int) -> void:
 	_upsert(daily, name, score)
 	_upsert(weekly, name, score)
 	_upsert(monthly, name, score)
+	if not share_run_synced:
+		pending_first_run = true
 	_save()
 	var backend := get_node_or_null("/root/Backend")
-	if backend and backend.has_method("submit_leaderboard_score"):
-		backend.submit_leaderboard_score(score, name)
+	var attempt_id := str(active_challenge.get("attempt_id", "")).strip_edges()
+	if DailyAttemptScript.should_finalize(match_mode, attempt_id):
+		remember_pending_finalize(attempt_id, score, name)
+		if backend and backend.has_method("finalize_daily_attempt"):
+			backend.finalize_daily_attempt(attempt_id, score, name)
+		return
+	if match_mode == MODE_DAILY:
+		push_warning("[rpc] finalize_daily_attempt status=0 error=no_attempt")
+		return
+	if match_mode != MODE_UNLIMITED or score <= 0:
+		return
+	remember_pending_unlimited(score, name)
+	if backend and backend.has_method("submit_unlimited_score"):
+		backend.submit_unlimited_score(score, name)
 
 
 func refresh_boards() -> bool:
@@ -499,6 +657,16 @@ func _load() -> void:
 	if cfg.load(SAVE_PATH) != OK:
 		return
 	fish_index = int(cfg.get_value("player", "fish", 0))
+	owned_fish = PackedInt32Array()
+	var raw_fish: Variant = cfg.get_value("player", "owned_fish", PackedInt32Array())
+	if raw_fish is PackedInt32Array:
+		owned_fish = raw_fish
+	elif raw_fish is Array:
+		for v in raw_fish:
+			owned_fish.append(int(v))
+	fish_index = clampi(fish_index, 0, RR.FISH_IDS.size() - 1)
+	if not owns_fish(fish_index):
+		fish_index = 0
 	player_name = clamp_player_name(str(cfg.get_value("player", "name", "")))
 	player_id = str(cfg.get_value("player", "player_id", ""))
 	coins = int(cfg.get_value("player", "coins", 0))
@@ -522,11 +690,24 @@ func _load() -> void:
 	daily = _decode_board(cfg.get_value("boards", "daily", PackedStringArray()))
 	weekly = _decode_board(cfg.get_value("boards", "weekly", PackedStringArray()))
 	monthly = _decode_board(cfg.get_value("boards", "monthly", PackedStringArray()))
+	pending_finalize_attempt = str(cfg.get_value("pending", "attempt_id", "")).strip_edges()
+	pending_finalize_score = int(cfg.get_value("pending", "score", 0))
+	pending_finalize_name = str(cfg.get_value("pending", "name", ""))
+	pending_unlimited_score = int(cfg.get_value("pending", "unlimited_score", 0))
+	pending_unlimited_name = str(cfg.get_value("pending", "unlimited_name", ""))
+	pending_claim_key = str(cfg.get_value("pending", "claim_key", "")).strip_edges()
+	pending_referral_code = ReferralRulesScript.normalize_code(str(cfg.get_value("share", "pending_code", "")))
+	pending_first_run = bool(cfg.get_value("share", "pending_run", false))
+	share_run_synced = bool(cfg.get_value("share", "run_synced", false))
+	applied_share_reward_coins = int(cfg.get_value("share", "applied_reward", 0))
+	referral_code = ReferralRulesScript.normalize_code(str(cfg.get_value("share", "code", "")))
+	share_reward_qualified = int(cfg.get_value("share", "qualified", 0))
 
 
 func _save() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("player", "fish", fish_index)
+	cfg.set_value("player", "owned_fish", owned_fish)
 	cfg.set_value("player", "name", player_name)
 	var id_to_store := player_id
 	if id_to_store.is_empty():
@@ -550,7 +731,104 @@ func _save() -> void:
 	cfg.set_value("boards", "daily", _encode_board(daily))
 	cfg.set_value("boards", "weekly", _encode_board(weekly))
 	cfg.set_value("boards", "monthly", _encode_board(monthly))
+	cfg.set_value("pending", "attempt_id", pending_finalize_attempt)
+	cfg.set_value("pending", "score", pending_finalize_score)
+	cfg.set_value("pending", "name", pending_finalize_name)
+	cfg.set_value("pending", "unlimited_score", pending_unlimited_score)
+	cfg.set_value("pending", "unlimited_name", pending_unlimited_name)
+	cfg.set_value("pending", "claim_key", pending_claim_key)
+	cfg.set_value("share", "pending_code", pending_referral_code)
+	cfg.set_value("share", "pending_run", pending_first_run)
+	cfg.set_value("share", "run_synced", share_run_synced)
+	cfg.set_value("share", "applied_reward", applied_share_reward_coins)
+	cfg.set_value("share", "code", referral_code)
+	cfg.set_value("share", "qualified", share_reward_qualified)
 	cfg.save(SAVE_PATH)
+
+
+func remember_referral_code(code: String) -> bool:
+	var clean := ReferralRulesScript.normalize_code(code)
+	if clean.is_empty() or pending_referral_code != "":
+		return false
+	pending_referral_code = clean
+	_save()
+	return true
+
+
+func apply_share_result(parsed: Dictionary, http_status: int, ok: bool) -> int:
+	if not ok:
+		return 0
+	var code := str(parsed.get("code", ""))
+	if code != "":
+		referral_code = code
+	share_reward_qualified = int(parsed.get("qualified", share_reward_qualified))
+	if bool(parsed.get("first_run", false)):
+		pending_first_run = false
+		share_run_synced = true
+	if ReferralRulesScript.clear_pending_code(http_status, str(parsed.get("attach", ""))):
+		pending_referral_code = ""
+	var delta := ReferralRulesScript.coin_delta(applied_share_reward_coins, int(parsed.get("granted_coins", 0)))
+	if delta > 0:
+		applied_share_reward_coins += delta
+		add_coins(delta)
+		return delta
+	_save()
+	return 0
+
+
+func remember_claim_key(key: String) -> void:
+	var next := key.strip_edges()
+	if next == pending_claim_key:
+		return
+	pending_claim_key = next
+	_save()
+
+
+func clear_claim_key() -> void:
+	if pending_claim_key == "":
+		return
+	pending_claim_key = ""
+	_save()
+
+
+func has_pending_finalize() -> bool:
+	return pending_finalize_attempt.strip_edges() != ""
+
+
+func remember_pending_finalize(attempt_id: String, score: int, player_label: String) -> void:
+	pending_finalize_attempt = attempt_id.strip_edges()
+	pending_finalize_score = score
+	pending_finalize_name = player_label
+	_save()
+
+
+func clear_pending_finalize() -> void:
+	if pending_finalize_attempt == "":
+		return
+	pending_finalize_attempt = ""
+	pending_finalize_score = 0
+	pending_finalize_name = ""
+	_save()
+
+
+func has_pending_unlimited() -> bool:
+	return pending_unlimited_score > 0
+
+
+func remember_pending_unlimited(score: int, player_label: String) -> void:
+	if score <= 0 or score < pending_unlimited_score:
+		return
+	pending_unlimited_score = score
+	pending_unlimited_name = player_label
+	_save()
+
+
+func clear_pending_unlimited_if(score: int) -> void:
+	if pending_unlimited_score <= 0 or pending_unlimited_score > score:
+		return
+	pending_unlimited_score = 0
+	pending_unlimited_name = ""
+	_save()
 
 
 func _encode_board(board: Array) -> PackedStringArray:

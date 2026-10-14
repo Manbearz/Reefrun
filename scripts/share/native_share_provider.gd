@@ -5,10 +5,15 @@ extends ShareProvider
 # and non-web exports save the PNG and let the OS open it.
 
 
-func share_image(bytes: PackedByteArray) -> String:
+func share_image(bytes: PackedByteArray, message: String = "") -> String:
 	if bytes.is_empty():
 		share_finished.emit("failed")
 		return "failed"
+	# Desktop saves the card and copies the referral line. iOS and Android do
+	# not have an OS share-sheet plugin, so the link is not attached to a
+	# system share there.
+	if message.strip_edges() != "" and DisplayServer.get_name() != "headless":
+		DisplayServer.clipboard_set(message)
 	var path := "user://reefrun-run.png"
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
