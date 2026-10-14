@@ -686,9 +686,11 @@ func _after_death(rank: int, remaining: int) -> void:
 	if GameSession.practice_daily:
 		_run_coins = 0
 		_show_over(rank, remaining)
-	elif _run_coins > 0:
+	elif _run_coins > 0 and RewardedAds.is_rewarded_ad_available():
 		_show_coin_ad()
 	else:
+		# Coins picked up during the swim stay in the wallet. The extra ad
+		# payout is only offered when a real rewarded ad can be completed.
 		_show_over(rank, remaining)
 
 
