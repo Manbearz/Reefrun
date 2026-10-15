@@ -38,34 +38,98 @@ jobs:
       - name: Check out the project
         uses: actions/checkout@v4
 
-      - name: Select Xcode 26
+      - name: Select an Xcode with the iOS 26 Metal symbols
         run: |
           set -euo pipefail
-          if [ -d /Applications/Xcode_26.6.app ]; then
-            XCODE_APP=/Applications/Xcode_26.6.app
-          elif [ -d /Applications/Xcode.app ]; then
-            XCODE_APP=/Applications/Xcode.app
-          else
-            echo "No Xcode 26 installation found."
-            ls -d /Applications/Xcode*.app || true
-            exit 1
-          fi
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          required = {
+              "QuartzCore": (
+                  "CADynamicRangeAutomatic",
+                  "CADynamicRangeConstrainedHigh",
+                  "CADynamicRangeHigh",
+                  "CADynamicRangeStandard",
+              ),
+              "Metal": ("MTLTensorDomain",),
+          }
+          apps = sorted(pathlib.Path("/Applications").glob("Xcode*.app"))
+          if not apps:
+              print("No Xcode is installed on this runner.")
+              sys.exit(1)
+
+          def version_key(text):
+              parts = []
+              for piece in text.split("."):
+                  digits = "".join(ch for ch in piece if ch.isdigit())
+                  parts.append(int(digits or 0))
+              return tuple(parts)
+
+          def command(developer_dir, args):
+              result = subprocess.run(
+                  args,
+                  env={**os.environ, "DEVELOPER_DIR": str(developer_dir)},
+                  text=True,
+                  capture_output=True,
+                  check=False,
+              )
+              return result.returncode, (result.stdout or "") + (result.stderr or "")
+
+          candidates = []
+          print("Installed Xcode applications:")
+          for app in apps:
+              developer = app / "Contents" / "Developer"
+              code, version_text = command(developer, ["xcodebuild", "-version"])
+              version = "unknown"
+              for line in version_text.splitlines():
+                  if line.startswith("Xcode "):
+                      version = line.split()[1]
+                      break
+              code, sdk_text = command(developer, ["xcodebuild", "-version", "-sdk", "iphoneos", "SDKVersion"])
+              sdk = sdk_text.strip().splitlines()[-1].strip() if code == 0 and sdk_text.strip() else "unavailable"
+              missing = []
+              sdk_root = developer / "Platforms" / "iPhoneOS.platform" / "Developer" / "SDKs" / "iPhoneOS.sdk"
+              for framework, names in required.items():
+                  framework_dir = sdk_root / "System" / "Library" / "Frameworks" / f"{framework}.framework"
+                  blob = ""
+                  if framework_dir.exists():
+                      for path in framework_dir.rglob("*"):
+                          if path.is_file() and path.suffix in {".tbd", ".yaml", ".dylib"}:
+                              blob += path.read_text(errors="ignore")
+                  missing.extend(name for name in names if name not in blob)
+              print(f"  {app}  Xcode {version}  iPhoneOS {sdk}  missing={missing or 'none'}")
+              if code == 0 and not missing and version_key(version) >= (26,):
+                  candidates.append((version_key(sdk), version_key(version), app, developer, version, sdk))
+
+          if not candidates:
+              print("")
+              print("No installed Xcode SDK exports the symbols required by Godot 4.7.2.")
+              print("Those symbols first shipped in the iOS 26 SDK (Xcode 26 or newer).")
+              print("Xcode 16.4 and its iOS 18.5 SDK cannot link libgodot.a.")
+              print("Use a GitHub macos-26 runner, where Xcode 26 is installed.")
+              print("A local Mac needs Xcode 26 or newer as well.")
+              print("Stubbing the symbols would not produce a valid TestFlight binary.")
+              sys.exit(1)
+
+          candidates.sort()
+          _sdk_key, _version_key, app, developer, version, sdk = candidates[-1]
+          env_path = pathlib.Path(os.environ["GITHUB_ENV"])
+          with env_path.open("a", encoding="utf-8") as handle:
+              handle.write(f"XCODE_APP={app}\n")
+              handle.write(f"DEVELOPER_DIR={developer}\n")
+              handle.write(f"SELECTED_XCODE_VERSION={version}\n")
+              handle.write(f"SELECTED_IPHONEOS_SDK={sdk}\n")
+          pathlib.Path(os.environ["RUNNER_TEMP"], "selected-xcode.txt").write_text(str(app), encoding="utf-8")
+          print(f"Selected {app}")
+          print(f"Xcode {version}, iPhoneOS SDK {sdk}")
+          PY
+          XCODE_APP="$(cat "$RUNNER_TEMP/selected-xcode.txt")"
           sudo xcode-select -s "$XCODE_APP"
-          echo "DEVELOPER_DIR=${XCODE_APP}/Contents/Developer" >> "$GITHUB_ENV"
           xcodebuild -version
-          XCODE_VERSION="$(xcodebuild -version | awk 'NR==1 { print $2 }')"
-          XCODE_MAJOR="${XCODE_VERSION%%.*}"
-          if [ "$XCODE_MAJOR" -lt 26 ]; then
-            echo "Xcode ${XCODE_VERSION} is too old. Godot 4.7.2 iOS templates need Xcode 26 or newer."
-            exit 1
-          fi
-          SDK_VERSION="$(xcodebuild -version -sdk iphoneos SDKVersion)"
-          SDK_MAJOR="${SDK_VERSION%%.*}"
-          echo "iPhoneOS SDK ${SDK_VERSION}"
-          if [ "$SDK_MAJOR" -lt 26 ]; then
-            echo "iPhoneOS SDK ${SDK_VERSION} does not provide CADynamicRange* or MTLTensorDomain."
-            exit 1
-          fi
+          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Reject developer-only release settings
         run: |
@@ -117,6 +181,14 @@ jobs:
           editor_version="$("$RUNNER_TEMP/godot/Godot.app/Contents/MacOS/Godot" --version)"
           echo "Godot editor: ${editor_version}"
           echo "iOS export templates: ${template_version}"
+          {
+            echo "GODOT_EDITOR_VERSION<<EOF"
+            echo "$editor_version"
+            echo "EOF"
+            echo "GODOT_TEMPLATE_VERSION<<EOF"
+            echo "$template_version"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
           case "$editor_version" in
             4.7.2.stable*) ;;
             *)
@@ -257,15 +329,75 @@ jobs:
                   print(f"Removed empty permission strings from {strings_path}")
           PY
 
+      - name: Show selected Xcode and iPhoneOS SDK
+        run: |
+          set -euo pipefail
+          echo "xcode-select: $(xcode-select -p)"
+          echo "DEVELOPER_DIR=${DEVELOPER_DIR}"
+          echo "Selected Xcode app: ${XCODE_APP}"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-path
+          echo "Godot editor: ${GODOT_EDITOR_VERSION}"
+          echo "iOS export templates: ${GODOT_TEMPLATE_VERSION}"
+          case "${GODOT_EDITOR_VERSION}" in
+            4.7.2.stable*) ;;
+            *)
+              echo "Godot editor ${GODOT_EDITOR_VERSION} does not match the 4.7.2-stable templates."
+              exit 1
+              ;;
+          esac
+          case "${GODOT_TEMPLATE_VERSION}" in
+            4.7.2.stable*) ;;
+            *)
+              echo "Export templates ${GODOT_TEMPLATE_VERSION} do not match the 4.7.2-stable editor."
+              exit 1
+              ;;
+          esac
+          export SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "SDKROOT=${SDKROOT}" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import sys
+          sdk = pathlib.Path(os.environ["SDKROOT"])
+          needed = {
+              "QuartzCore": (
+                  "CADynamicRangeAutomatic",
+                  "CADynamicRangeConstrainedHigh",
+                  "CADynamicRangeHigh",
+                  "CADynamicRangeStandard",
+              ),
+              "Metal": ("MTLTensorDomain",),
+          }
+          missing = []
+          for framework, names in needed.items():
+              root = sdk / "System" / "Library" / "Frameworks" / f"{framework}.framework"
+              blob = ""
+              if root.exists():
+                  for path in root.rglob("*"):
+                      if path.is_file() and path.suffix in {".tbd", ".yaml", ".dylib"}:
+                          blob += path.read_text(errors="ignore")
+              missing.extend(f"{framework} {name}" for name in names if name not in blob)
+          if missing:
+              print("Active iPhoneOS SDK is missing:")
+              print("\n".join(missing))
+              sys.exit(1)
+          print(f"Active SDK contains the Godot 4.7.2 Metal symbols: {sdk}")
+          PY
+
       - name: Archive with Xcode
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
           xcodebuild \
             -project build/Reefrun.xcodeproj \
             -scheme Reefrun \
             -configuration Release \
+            -sdk iphoneos \
             -destination "generic/platform=iOS" \
             -archivePath "$RUNNER_TEMP/Reefrun.xcarchive" \
             CODE_SIGN_STYLE=Manual \
