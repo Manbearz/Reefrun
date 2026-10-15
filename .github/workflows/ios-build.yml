@@ -287,14 +287,67 @@ jobs:
           mkdir -p build
           "$RUNNER_TEMP/godot/Godot.app/Contents/MacOS/Godot" --headless --path . --export-release "iOS" "build/Reefrun"
           test -d build/Reefrun.xcodeproj
-          pbx="build/Reefrun.xcodeproj/project.pbxproj"
-          for framework in Metal QuartzCore; do
-            if ! grep -Eq "\"${framework}\"|${framework}\\.framework" "$pbx"; then
-              echo "The generated Xcode project does not link ${framework}.framework."
-              exit 1
-            fi
-          done
-          echo "Generated project links Metal.framework and QuartzCore.framework."
+
+      - name: Link Metal and QuartzCore
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          pbx_path = pathlib.Path("build/Reefrun.xcodeproj/project.pbxproj")
+          text = pbx_path.read_text(encoding="utf-8")
+          print("Godot 4.7.2 links system frameworks from OTHER_LDFLAGS.")
+          print("It does not add a PBXFileReference named Metal.framework.")
+          print(f"pbxproj bytes: {pbx_path.stat().st_size}")
+          for label, pattern in (
+              ("Metal.framework reference", r"Metal\.framework"),
+              ("-framework Metal", r"-framework Metal(?!FX)"),
+              ("QuartzCore.framework reference", r"QuartzCore\.framework"),
+              ("-framework QuartzCore", r"-framework QuartzCore"),
+              ("libgodot xcframework", r"libgodot\.ios\.release\.xcframework"),
+          ):
+              print(f"  {label}: {'yes' if re.search(pattern, text) else 'no'}")
+          flags = ("-framework Metal", "-framework QuartzCore")
+          lines = text.splitlines(keepends=True)
+          other_count = 0
+          changed = False
+          updated = []
+          for line in lines:
+              if "OTHER_LDFLAGS" not in line or "=" not in line:
+                  updated.append(line)
+                  continue
+              other_count += 1
+              print("OTHER_LDFLAGS before:")
+              print(line.rstrip())
+              if not line.rstrip().endswith(";"):
+                  print("OTHER_LDFLAGS is not a single-line assignment, so it was not edited.")
+                  print(line.rstrip())
+                  sys.exit(1)
+              newline = "\n" if line.endswith("\n") else ""
+              body = line.rstrip("\n")[:-1].rstrip()
+              added = []
+              for flag in flags:
+                  if re.search(re.escape(flag) + r"(?![\w])", body) is None:
+                      body += " " + flag
+                      added.append(flag)
+              new_line = body + ";" + newline
+              if added:
+                  changed = True
+                  print("Added to this configuration: " + " ".join(added))
+              else:
+                  print("This configuration already links Metal and QuartzCore.")
+              print("OTHER_LDFLAGS after:")
+              print(new_line.rstrip())
+              updated.append(new_line)
+          if other_count == 0:
+              print("The generated project has no OTHER_LDFLAGS setting, so Metal cannot be linked.")
+              sys.exit(1)
+          if changed:
+              pbx_path.write_text("".join(updated), encoding="utf-8")
+          print(f"Updated {other_count} OTHER_LDFLAGS configuration(s).")
+          PY
 
       - name: Remove empty camera, microphone, and photo permission strings
         run: |
