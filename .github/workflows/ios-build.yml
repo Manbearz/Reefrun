@@ -23,7 +23,10 @@ concurrency:
 jobs:
   ipa:
     name: Export and sign IPA
-    runs-on: macos-15
+    # Godot 4.7.2's iOS template references iOS 26 Metal and Core Animation
+    # symbols. macos-15 defaults to Xcode 16.4, whose iOS 18.5 SDK does not
+    # contain them. macos-26 provides Xcode 26.
+    runs-on: macos-26
     timeout-minutes: 120
     env:
       GODOT_VERSION: 4.7.2-stable
@@ -35,8 +38,34 @@ jobs:
       - name: Check out the project
         uses: actions/checkout@v4
 
-      - name: Show Xcode
-        run: xcodebuild -version
+      - name: Select Xcode 26
+        run: |
+          set -euo pipefail
+          if [ -d /Applications/Xcode_26.6.app ]; then
+            XCODE_APP=/Applications/Xcode_26.6.app
+          elif [ -d /Applications/Xcode.app ]; then
+            XCODE_APP=/Applications/Xcode.app
+          else
+            echo "No Xcode 26 installation found."
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_APP"
+          echo "DEVELOPER_DIR=${XCODE_APP}/Contents/Developer" >> "$GITHUB_ENV"
+          xcodebuild -version
+          XCODE_VERSION="$(xcodebuild -version | awk 'NR==1 { print $2 }')"
+          XCODE_MAJOR="${XCODE_VERSION%%.*}"
+          if [ "$XCODE_MAJOR" -lt 26 ]; then
+            echo "Xcode ${XCODE_VERSION} is too old. Godot 4.7.2 iOS templates need Xcode 26 or newer."
+            exit 1
+          fi
+          SDK_VERSION="$(xcodebuild -version -sdk iphoneos SDKVersion)"
+          SDK_MAJOR="${SDK_VERSION%%.*}"
+          echo "iPhoneOS SDK ${SDK_VERSION}"
+          if [ "$SDK_MAJOR" -lt 26 ]; then
+            echo "iPhoneOS SDK ${SDK_VERSION} does not provide CADynamicRange* or MTLTensorDomain."
+            exit 1
+          fi
 
       - name: Reject developer-only release settings
         run: |
@@ -84,7 +113,24 @@ jobs:
           unzip -q "$RUNNER_TEMP/godot/templates.tpz" -d "$RUNNER_TEMP/godot/templates-unpack"
           cp -R "$RUNNER_TEMP/godot/templates-unpack/templates/." "$template_root/"
           test -f "$template_root/ios.zip"
-          "$RUNNER_TEMP/godot/Godot.app/Contents/MacOS/Godot" --version
+          template_version="$(tr -d '[:space:]' < "$template_root/version.txt")"
+          editor_version="$("$RUNNER_TEMP/godot/Godot.app/Contents/MacOS/Godot" --version)"
+          echo "Godot editor: ${editor_version}"
+          echo "iOS export templates: ${template_version}"
+          case "$editor_version" in
+            4.7.2.stable*) ;;
+            *)
+              echo "The Godot editor is ${editor_version}, not 4.7.2-stable."
+              exit 1
+              ;;
+          esac
+          case "$template_version" in
+            4.7.2.stable*) ;;
+            *)
+              echo "The export templates are ${template_version}, not 4.7.2-stable."
+              exit 1
+              ;;
+          esac
 
       - name: Install the Apple Distribution certificate and profile
         env:
@@ -169,6 +215,14 @@ jobs:
           mkdir -p build
           "$RUNNER_TEMP/godot/Godot.app/Contents/MacOS/Godot" --headless --path . --export-release "iOS" "build/Reefrun"
           test -d build/Reefrun.xcodeproj
+          pbx="build/Reefrun.xcodeproj/project.pbxproj"
+          for framework in Metal QuartzCore; do
+            if ! grep -Eq "\"${framework}\"|${framework}\\.framework" "$pbx"; then
+              echo "The generated Xcode project does not link ${framework}.framework."
+              exit 1
+            fi
+          done
+          echo "Generated project links Metal.framework and QuartzCore.framework."
 
       - name: Remove empty camera, microphone, and photo permission strings
         run: |
