@@ -785,10 +785,30 @@ jobs:
             echo "TestFlight upload needs APPSTORE_CONNECT_API_KEY_ID, APPSTORE_CONNECT_API_ISSUER_ID, and APPSTORE_CONNECT_API_PRIVATE_KEY_BASE64."
             exit 1
           fi
-          mkdir -p "$HOME/.appstoreconnect/private_keys"
-          printf '%s' "$APPSTORE_CONNECT_API_PRIVATE_KEY_BASE64" | tr -d ' \n\r\t' | base64 --decode > "$HOME/.appstoreconnect/private_keys/AuthKey_${APPSTORE_CONNECT_API_KEY_ID}.p8"
-          chmod 600 "$HOME/.appstoreconnect/private_keys/AuthKey_${APPSTORE_CONNECT_API_KEY_ID}.p8"
-          xcrun iTMSTransporter -m upload -assetFile "$IPA_PATH" -apiKey "$APPSTORE_CONNECT_API_KEY_ID" -apiIssuer "$APPSTORE_CONNECT_API_ISSUER_ID"
+          # xcrun iTMSTransporter on GitHub-hosted runners only prints instructions to
+          # install the Transporter app. altool is the Xcode upload tool, and it
+          # reads AuthKey_<key id>.p8 from ~/.appstoreconnect/private_keys.
+          KEY_DIR="$HOME/.appstoreconnect/private_keys"
+          KEY_PATH="${KEY_DIR}/AuthKey_${APPSTORE_CONNECT_API_KEY_ID}.p8"
+          mkdir -p "$KEY_DIR"
+          printf '%s' "$APPSTORE_CONNECT_API_PRIVATE_KEY_BASE64" | tr -d ' \n\r\t' | base64 --decode > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          unset APPSTORE_CONNECT_API_PRIVATE_KEY_BASE64
+          if [ ! -s "$KEY_PATH" ]; then
+            echo "The App Store Connect API private key did not decode to a file."
+            exit 1
+          fi
+          IPA="$(find build "${RUNNER_TEMP}/ipa" -name '*.ipa' -type f 2>/dev/null | head -n 1 || true)"
+          if [ -z "$IPA" ] || [ ! -f "$IPA" ]; then
+            echo "No exported IPA was found to upload."
+            exit 1
+          fi
+          echo "Uploading $(basename "$IPA") with xcrun altool."
+          xcrun altool --upload-app \
+            --file "$IPA" \
+            --type ios \
+            --apiKey "$APPSTORE_CONNECT_API_KEY_ID" \
+            --apiIssuer "$APPSTORE_CONNECT_API_ISSUER_ID"
 
       - name: Remove the temporary keychain and API key
         if: always()
