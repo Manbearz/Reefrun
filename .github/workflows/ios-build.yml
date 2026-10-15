@@ -291,63 +291,329 @@ jobs:
       - name: Link Metal and QuartzCore
         run: |
           set -euo pipefail
+          PBX="build/Reefrun.xcodeproj/project.pbxproj"
+          echo "Checking the Godot export before editing project.pbxproj."
+          if ! plutil -lint "$PBX"; then
+            echo "plutil rejected the exported project directly."
+            echo "Retrying without the leading Xcode UTF-8 header. The project file is not rewritten by this check."
+            tail -n +2 "$PBX" > "$RUNNER_TEMP/pbx-lint-before.pbxproj"
+            if ! plutil -lint "$RUNNER_TEMP/pbx-lint-before.pbxproj"; then
+              echo "Godot exported a project.pbxproj that is not valid OpenStep. It was not modified."
+              exit 1
+            fi
+          fi
           python3 - <<'PY'
           import pathlib
           import re
           import sys
 
           pbx_path = pathlib.Path("build/Reefrun.xcodeproj/project.pbxproj")
-          text = pbx_path.read_text(encoding="utf-8")
-          print("Godot 4.7.2 links system frameworks from OTHER_LDFLAGS.")
-          print("It does not add a PBXFileReference named Metal.framework.")
-          print(f"pbxproj bytes: {pbx_path.stat().st_size}")
+          original = pbx_path.read_text(encoding="utf-8")
+          print("Godot 4.7.2 puts linker flags inside the quoted OTHER_LDFLAGS string.")
+          print("A PBXFileReference named Metal.framework is not how this template links system frameworks.")
+          print(f"pbxproj bytes before edit: {pbx_path.stat().st_size}")
           for label, pattern in (
               ("Metal.framework reference", r"Metal\.framework"),
-              ("-framework Metal", r"-framework Metal(?!FX)"),
+              ("-framework Metal inside a value", r"-framework Metal(?![\w])"),
               ("QuartzCore.framework reference", r"QuartzCore\.framework"),
-              ("-framework QuartzCore", r"-framework QuartzCore"),
+              ("-framework QuartzCore inside a value", r"-framework QuartzCore(?![\w])"),
               ("libgodot xcframework", r"libgodot\.ios\.release\.xcframework"),
           ):
-              print(f"  {label}: {'yes' if re.search(pattern, text) else 'no'}")
-          flags = ("-framework Metal", "-framework QuartzCore")
-          lines = text.splitlines(keepends=True)
-          other_count = 0
-          changed = False
-          updated = []
-          for line in lines:
-              if "OTHER_LDFLAGS" not in line or "=" not in line:
-                  updated.append(line)
-                  continue
-              other_count += 1
-              print("OTHER_LDFLAGS before:")
-              print(line.rstrip())
-              if not line.rstrip().endswith(";"):
-                  print("OTHER_LDFLAGS is not a single-line assignment, so it was not edited.")
-                  print(line.rstrip())
-                  sys.exit(1)
-              newline = "\n" if line.endswith("\n") else ""
-              body = line.rstrip("\n")[:-1].rstrip()
+              print(f"  {label}: {'yes' if re.search(pattern, original) else 'no'}")
+
+          FLAGS = ("-framework Metal", "-framework QuartzCore")
+
+          def fail(message):
+              print(message)
+              print("project.pbxproj was not modified.")
+              sys.exit(1)
+
+          def decode_quoted(raw):
+              if len(raw) < 2 or raw[0] != '"' or raw[-1] != '"':
+                  return None
+              chars = []
+              index = 1
+              last = len(raw) - 1
+              while index < last:
+                  if raw[index] == "\\":
+                      if index + 1 >= last:
+                          return None
+                      chars.append(raw[index + 1])
+                      index += 2
+                      continue
+                  chars.append(raw[index])
+                  index += 1
+              return "".join(chars)
+
+          def encode_quoted(value):
+              escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+              return '"' + escaped + '"'
+
+          def has_flag(value, flag):
+              return re.search(re.escape(flag) + r"(?![\w])", value) is not None
+
+          def with_flags(value):
+              updated = value
               added = []
-              for flag in flags:
-                  if re.search(re.escape(flag) + r"(?![\w])", body) is None:
-                      body += " " + flag
-                      added.append(flag)
-              new_line = body + ";" + newline
+              for flag in FLAGS:
+                  if has_flag(updated, flag):
+                      continue
+                  if updated and not updated.endswith(" "):
+                      updated += " "
+                  updated += flag
+                  added.append(flag)
+              return updated, added
+
+          def read_quoted(text, start):
+              index = start + 1
+              while index < len(text):
+                  if text[index] == "\\":
+                      index += 2
+                      continue
+                  if text[index] == '"':
+                      return text[start:index + 1], index + 1
+                  index += 1
+              return None, None
+
+          def read_array(text, start):
+              depth = 0
+              index = start
+              in_string = False
+              while index < len(text):
+                  char = text[index]
+                  if in_string:
+                      if char == "\\":
+                          index += 2
+                          continue
+                      if char == '"':
+                          in_string = False
+                      index += 1
+                      continue
+                  if char == '"':
+                      in_string = True
+                      index += 1
+                      continue
+                  if char == "(":
+                      depth += 1
+                  elif char == ")":
+                      depth -= 1
+                      if depth == 0:
+                          return text[start:index + 1], index + 1
+                  index += 1
+              return None, None
+
+          def array_has_framework(array_text, framework):
+              pattern = r'"-framework"\s*,\s*"' + re.escape(framework) + r'"'
+              return re.search(pattern, array_text) is not None
+
+          def with_framework_entries(array_text):
+              added = []
+              insertion = ""
+              for framework in ("Metal", "QuartzCore"):
+                  if array_has_framework(array_text, framework):
+                      continue
+                  insertion += '\n\t\t\t\t"-framework",\n\t\t\t\t"' + framework + '",'
+                  added.append("-framework " + framework)
+              if not insertion:
+                  return array_text, added
+              close = array_text.rfind(")")
+              prefix = array_text[:close].rstrip()
+              if not prefix.endswith("(") and not prefix.endswith(","):
+                  prefix += ","
+              line_start = array_text.rfind("\n", 0, close)
+              if line_start == -1:
+                  indent = ""
+              else:
+                  closer = array_text[line_start + 1:close]
+                  indent = closer[:len(closer) - len(closer.lstrip(" \t"))]
+              return prefix + insertion + "\n" + indent + ")", added
+
+          def assignments(text):
+              found = []
+              cursor = 0
+              key = "OTHER_LDFLAGS"
+              while True:
+                  at = text.find(key, cursor)
+                  if at < 0:
+                      break
+                  if at > 0 and (text[at - 1].isalnum() or text[at - 1] == "_"):
+                      cursor = at + len(key)
+                      continue
+                  value_at = at + len(key)
+                  while value_at < len(text) and text[value_at] in " \t":
+                      value_at += 1
+                  if value_at >= len(text) or text[value_at] != "=":
+                      cursor = at + len(key)
+                      continue
+                  value_at += 1
+                  while value_at < len(text) and text[value_at] in " \t":
+                      value_at += 1
+                  if value_at >= len(text):
+                      fail("OTHER_LDFLAGS has no value.")
+                  if text[value_at] == '"':
+                      raw, end = read_quoted(text, value_at)
+                      kind = "quoted string"
+                      if raw is None:
+                          fail("OTHER_LDFLAGS string is unterminated.")
+                  elif text[value_at] == "(":
+                      raw, end = read_array(text, value_at)
+                      kind = "array"
+                      if raw is None:
+                          fail("OTHER_LDFLAGS array is unterminated.")
+                  else:
+                      line_end = text.find("\n", at)
+                      fail(
+                          "OTHER_LDFLAGS is not a quoted string or an array:\n"
+                          + text[at:line_end if line_end >= 0 else None]
+                      )
+                  semicolon = end
+                  while semicolon < len(text) and text[semicolon] in " \t":
+                      semicolon += 1
+                  if semicolon >= len(text) or text[semicolon] != ";":
+                      line_end = text.find("\n", at)
+                      fail(
+                          "OTHER_LDFLAGS is not followed by a semicolon:\n"
+                          + text[at:line_end if line_end >= 0 else None]
+                      )
+                  found.append((value_at, end, raw, kind))
+                  cursor = semicolon + 1
+              return found
+
+          def place_flags(raw, kind):
+              if kind == "quoted string":
+                  decoded = decode_quoted(raw)
+                  if decoded is None:
+                      fail("Could not decode OTHER_LDFLAGS string:\n" + raw)
+                  updated, added = with_flags(decoded)
+                  return encode_quoted(updated), added
+              return with_framework_entries(raw)
+
+          def show(text, raw_start, raw_end):
+              line_start = text.rfind("\n", 0, raw_start) + 1
+              line_end = text.find("\n", raw_end)
+              if line_end < 0:
+                  line_end = len(text)
+              print(text[line_start:line_end])
+
+          current = assignments(original)
+          if not current:
+              fail("The generated project has no OTHER_LDFLAGS setting, so Metal cannot be linked.")
+
+          updated_text = original
+          shift = 0
+          for start, end, raw, kind in current:
+              new_raw, added = place_flags(raw, kind)
+              print(f"OTHER_LDFLAGS ({kind}) before:")
+              show(original, start, end)
               if added:
-                  changed = True
-                  print("Added to this configuration: " + " ".join(added))
+                  print("Placed inside the value: " + " ".join(added))
               else:
                   print("This configuration already links Metal and QuartzCore.")
-              print("OTHER_LDFLAGS after:")
-              print(new_line.rstrip())
-              updated.append(new_line)
-          if other_count == 0:
-              print("The generated project has no OTHER_LDFLAGS setting, so Metal cannot be linked.")
-              sys.exit(1)
-          if changed:
-              pbx_path.write_text("".join(updated), encoding="utf-8")
-          print(f"Updated {other_count} OTHER_LDFLAGS configuration(s).")
+              start += shift
+              end += shift
+              updated_text = updated_text[:start] + new_raw + updated_text[end:]
+              shift += len(new_raw) - (end - start)
+              print(f"OTHER_LDFLAGS ({kind}) after:")
+              show(updated_text, start, start + len(new_raw))
+
+          checked = assignments(updated_text)
+          if len(checked) != len(current):
+              fail("Editing OTHER_LDFLAGS changed how many assignments parse.")
+          for _start, _end, raw, kind in checked:
+              if kind == "quoted string":
+                  decoded = decode_quoted(raw)
+                  if decoded is None:
+                      fail("Edited OTHER_LDFLAGS string no longer parses.")
+                  missing = [flag for flag in FLAGS if not has_flag(decoded, flag)]
+              else:
+                  missing = [
+                      "-framework " + framework
+                      for framework in ("Metal", "QuartzCore")
+                      if not array_has_framework(raw, framework)
+                  ]
+              if missing:
+                  fail("Edited OTHER_LDFLAGS is missing: " + ", ".join(missing))
+              if re.search(r'"\s+-framework\b', raw):
+                  fail("Linker flags were left outside the OTHER_LDFLAGS quotes.")
+
+          if updated_text != original:
+              pbx_path.write_bytes(updated_text.encode("utf-8"))
+          print(f"pbxproj bytes after edit: {pbx_path.stat().st_size}")
+          print(f"Updated {len(current)} OTHER_LDFLAGS configuration(s).")
           PY
+
+      - name: Validate the Xcode project
+        run: |
+          set -euo pipefail
+          PBX="build/Reefrun.xcodeproj/project.pbxproj"
+          echo "Rejecting the broken form that appends -framework after the closing quote."
+          if grep -E 'OTHER_LDFLAGS[[:space:]]*=[[:space:]]*".*"[[:space:]]+-framework' "$PBX"; then
+            echo "OTHER_LDFLAGS has linker flags outside its quoted value."
+            echo "That is invalid OpenStep, so xcodebuild cannot open the project."
+            echo "Archive was not started."
+            exit 1
+          fi
+          echo "plutil -lint (OpenStep project format)"
+          if ! plutil -lint "$PBX"; then
+            echo "plutil rejected project.pbxproj directly."
+            echo "Retrying without the leading Xcode UTF-8 header. The project file is not rewritten by this check."
+            tail -n +2 "$PBX" > "$RUNNER_TEMP/pbx-lint.pbxproj"
+            if ! plutil -lint "$RUNNER_TEMP/pbx-lint.pbxproj"; then
+              echo "project.pbxproj is not valid OpenStep."
+              echo "Archive was not started."
+              exit 1
+            fi
+          fi
+          plutil -convert json -o "$RUNNER_TEMP/reefrun-pbx.json" "$PBX"
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          data = json.loads(pathlib.Path(os.environ["RUNNER_TEMP"], "reefrun-pbx.json").read_text(encoding="utf-8"))
+          objects = data.get("objects", {})
+          found = 0
+          for obj in objects.values():
+              if not isinstance(obj, dict):
+                  continue
+              settings = obj.get("buildSettings")
+              if not isinstance(settings, dict) or "OTHER_LDFLAGS" not in settings:
+                  continue
+              found += 1
+              name = obj.get("name", "unnamed configuration")
+              value = settings["OTHER_LDFLAGS"]
+              print(f"Parsed OTHER_LDFLAGS for {name}: {value!r}")
+              missing = []
+              if isinstance(value, str):
+                  for framework in ("Metal", "QuartzCore"):
+                      if re.search(r"-framework " + framework + r"(?![\w])", value) is None:
+                          missing.append(framework)
+              elif isinstance(value, list):
+                  for framework in ("Metal", "QuartzCore"):
+                      linked = any(
+                          value[index] == "-framework" and value[index + 1] == framework
+                          for index in range(len(value) - 1)
+                      )
+                      if not linked:
+                          missing.append(framework)
+              else:
+                  missing.append("unrecognized OTHER_LDFLAGS value")
+              if missing:
+                  print(f"{name} does not link: {', '.join(missing)}")
+                  sys.exit(1)
+          if found == 0:
+              print("The parsed project has no OTHER_LDFLAGS setting.")
+              sys.exit(1)
+          print(f"Metal and QuartzCore are linked from {found} parsed configuration(s).")
+          PY
+          echo "xcodebuild -list -project build/Reefrun.xcodeproj"
+          if ! xcodebuild -list -project build/Reefrun.xcodeproj; then
+            echo "xcodebuild could not read build/Reefrun.xcodeproj."
+            echo "Archive was not started."
+            exit 1
+          fi
 
       - name: Remove empty camera, microphone, and photo permission strings
         run: |
