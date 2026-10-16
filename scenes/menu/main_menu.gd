@@ -140,6 +140,8 @@ func _ready() -> void:
 		backend.identity_ready.connect(_on_identity_ready)
 	if backend and backend.has_signal("share_rewards_changed") and not backend.share_rewards_changed.is_connected(_refresh_wallet):
 		backend.share_rewards_changed.connect(_refresh_wallet)
+	if not get_viewport().size_changed.is_connected(_sync_menu_anchor):
+		get_viewport().size_changed.connect(_sync_menu_anchor)
 
 
 func _process(delta: float) -> void:
@@ -265,7 +267,7 @@ func _backdrop() -> void:
 	_ground.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_ground.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	_ground.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_ground.position = Vector2(0, RR.VIEW_H - RR.GROUND_H)
+	_ground.position = Vector2(0, RR.screen_bottom() - RR.GROUND_H)
 	_ground.size = Vector2(RR.VIEW_W, RR.GROUND_H)
 	_ground.modulate = Color(1, 1, 1, 0.52)
 	add_child(_ground)
@@ -347,7 +349,31 @@ void fragment() {
 
 
 func _hat_row_y() -> float:
-	return RR.VIEW_H - RR.GROUND_H + 12.0
+	return RR.screen_bottom() - RR.GROUND_H + 12.0
+
+
+func _sync_menu_anchor() -> void:
+	var bottom := RR.screen_bottom()
+	if _ground:
+		_ground.position = Vector2(0, bottom - RR.GROUND_H)
+	if _hat_clip == null:
+		return
+	var hat_y := minf(_hat_row_y(), bottom - _hat_clip.size.y - 6.0)
+	var hat_delta := hat_y - _hat_clip.position.y
+	_hat_clip.position.y = hat_y
+	if _wallet_coin and not is_zero_approx(hat_delta):
+		_wallet_rest.y += hat_delta
+		_wallet_text_rest.y += hat_delta
+		_wallet_coin.position.y = _wallet_rest.y
+		if _wallet_text:
+			_wallet_text.position.y = _wallet_text_rest.y
+	if _fish_clip:
+		var hs_bottom := _card_pos.y + (SCORE_BOX.position.y + SCORE_BOX.size.y) * _card_scale
+		var gap_top := hs_bottom + 6.0
+		var gap_bottom := hat_y - 6.0
+		var clip_h := _fish_clip.size.y
+		var row_y := gap_top + maxf(0.0, gap_bottom - gap_top - clip_h) * 0.5
+		_fish_clip.position.y = minf(row_y, gap_bottom - clip_h)
 
 
 func _build_fish_picker() -> void:
@@ -450,7 +476,7 @@ func _build_hat_picker() -> void:
 	var edge := 14.0
 	var clip_h := row_h + bob + edge * 2.0
 	var row_y := _hat_row_y()
-	row_y = minf(row_y, RR.VIEW_H - clip_h - 6.0)
+	row_y = minf(row_y, RR.screen_bottom() - clip_h - 6.0)
 	var wallet_w := 92.0
 	_build_wallet(Vector2(pad, row_y + edge + 18.0), Vector2(wallet_w, 48.0))
 	_hat_clip = Control.new()

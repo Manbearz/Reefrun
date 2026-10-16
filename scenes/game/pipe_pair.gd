@@ -81,6 +81,19 @@ func rebuild(p_style: String, p_gap_y: float, p_gap_h: float) -> void:
 	_place_column(_bot, _bot_hit, _bot_rect, _bot_shape, tex, p_gap_y + half, false)
 
 
+func sync_screen() -> void:
+	if not _ready_pool or gap_h <= 0.0:
+		return
+	var tex := Sprites.tex(style)
+	if tex == null:
+		return
+	var keep_scored := scored
+	var half := gap_h * 0.5
+	_place_column(_top, _top_hit, _top_rect, _top_shape, tex, gap_y - half, true)
+	_place_column(_bot, _bot_hit, _bot_rect, _bot_shape, tex, gap_y + half, false)
+	scored = keep_scored
+
+
 func activate() -> void:
 	active = true
 	visual.visible = true
@@ -114,7 +127,8 @@ func _place_column(
 	var pipe_w := tex.get_width() * scale
 	var join := pipe_h * RR.PIPE_JOIN
 	var step := maxf(pipe_h - join, pipe_h * 0.5)
-	var span := (lip_y + 8.0) if top else (RR.VIEW_H - lip_y + 8.0)
+	var floor_y := RR.screen_bottom()
+	var span := (lip_y + 8.0) if top else (floor_y - lip_y + 8.0)
 	var count := clampi(maxi(1, int(ceil(span / step))), 1, MAX_SEGS)
 	for i in MAX_SEGS:
 		var sprite := sprites[i]
@@ -122,7 +136,7 @@ func _place_column(
 			sprite.visible = false
 			continue
 		var py := (lip_y - pipe_h * 0.5 - step * i) if top else (lip_y + pipe_h * 0.5 + step * i)
-		if py + pipe_h * 0.5 < -24.0 or py - pipe_h * 0.5 > RR.VIEW_H + 24.0:
+		if py + pipe_h * 0.5 < -24.0 or py - pipe_h * 0.5 > floor_y + RR.FLOOR_DROP:
 			sprite.visible = false
 			continue
 		sprite.texture = tex

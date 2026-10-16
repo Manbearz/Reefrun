@@ -29,8 +29,8 @@ RewardedAds="*res://autoload/rewarded_ads.gd"
 
 window/size/viewport_width=540
 window/size/viewport_height=960
-window/size/window_width_override=540
-window/size/window_height_override=960
+window/size/window_width_override=393
+window/size/window_height_override=852
 window/stretch/mode="viewport"
 window/handheld/orientation=1
 

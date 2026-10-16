@@ -135,9 +135,12 @@ func _ready() -> void:
 	hud = GameHUD.new()
 	hud.process_mode = Node.PROCESS_MODE_PAUSABLE
 	add_child(hud)
+	if not get_viewport().size_changed.is_connected(_sync_screen_layout):
+		get_viewport().size_changed.connect(_sync_screen_layout)
 	_build_pause()
 	_prewarm_pipes()
 	_prime_opening_pipes()
+	_sync_screen_layout()
 	_setup_harpoons()
 	_prewarm_gameplay_draw()
 	_bind_rewarded_ads()
@@ -155,6 +158,17 @@ func _ready() -> void:
 		return
 	_attach_ghosts(runs)
 	_roster_ready = true
+
+
+func _sync_screen_layout() -> void:
+	if world:
+		world.apply_screen_layout()
+	if hud:
+		hud.apply_screen_layout()
+	for pair in pipes:
+		pair.sync_screen()
+	for pair in _pipe_pool:
+		pair.sync_screen()
 
 
 func _build_layout() -> void:
@@ -735,7 +749,7 @@ func _show_coin_ad() -> void:
 	add_child(overlay)
 	var dim := ColorRect.new()
 	dim.color = Palette.SHADOW
-	dim.size = Vector2(RR.VIEW_W, RR.VIEW_H)
+	dim.size = RR.screen_size()
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	overlay.add_child(dim)
 	var tex := Sprites.tex("coin_ad_overlay")
@@ -874,7 +888,7 @@ func _show_over(rank: int, remaining: int) -> void:
 	add_child(overlay)
 	var dim := ColorRect.new()
 	dim.color = Palette.SHADOW
-	dim.size = Vector2(RR.VIEW_W, RR.VIEW_H)
+	dim.size = RR.screen_size()
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	overlay.add_child(dim)
 	var tex := Sprites.tex("death_overlay")
@@ -1069,7 +1083,7 @@ func _open_share_overlay() -> void:
 	add_child(_share_layer)
 	var dim := ColorRect.new()
 	dim.color = Palette.SHADOW
-	dim.size = Vector2(RR.VIEW_W, RR.VIEW_H)
+	dim.size = RR.screen_size()
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	_share_layer.add_child(dim)
 	var tex := Sprites.tex("share_overlay")
@@ -1313,7 +1327,7 @@ func _build_pause() -> void:
 	add_child(pause_layer)
 	var dim := ColorRect.new()
 	dim.color = Palette.SHADOW
-	dim.size = Vector2(RR.VIEW_W, RR.VIEW_H)
+	dim.size = RR.screen_size()
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	pause_layer.add_child(dim)
 	var title := SpriteTextScript.new()

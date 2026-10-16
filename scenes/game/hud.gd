@@ -49,8 +49,14 @@ func _ready() -> void:
 	lobby_text = _line("LOBBY", 22, Vector2(0, RR.VIEW_H * 0.30), Vector2(RR.VIEW_W, 32), HORIZONTAL_ALIGNMENT_CENTER)
 	lobby_time = _line("12", 64, Vector2(0, RR.VIEW_H * 0.36), Vector2(RR.VIEW_W, 80), HORIZONTAL_ALIGNMENT_CENTER, true)
 	_build_jump_hint()
-	feed_text = _line("", 14, Vector2(12, RR.VIEW_H - 92), Vector2(RR.VIEW_W - 24, 24), HORIZONTAL_ALIGNMENT_LEFT)
+	feed_text = _line("", 14, Vector2(12, RR.screen_bottom() - 92.0), Vector2(RR.VIEW_W - 24, 24), HORIZONTAL_ALIGNMENT_LEFT)
+	apply_screen_layout()
 	_prewarm_glyphs()
+
+
+func apply_screen_layout() -> void:
+	if feed_text:
+		feed_text.position.y = RR.screen_bottom() - 92.0
 
 
 func _prewarm_glyphs() -> void:

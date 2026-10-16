@@ -145,7 +145,7 @@ func tick(delta: float) -> void:
 	simulate_vertical(delta)
 	_face_velocity()
 	position.x = RR.PLAYER_X
-	if position.y < RR.PLAY_TOP or position.y > RR.VIEW_H:
+	if position.y < RR.PLAY_TOP or position.y > RR.screen_bottom():
 		kill()
 		return
 	if _hit_area and not _hit_area.get_overlapping_areas().is_empty():

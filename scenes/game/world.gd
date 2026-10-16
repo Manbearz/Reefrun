@@ -14,6 +14,7 @@ var _bubble_phase := PackedFloat32Array()
 var _bubble_wobble := PackedFloat32Array()
 var _last_scroll := 0.0
 var _bg_layer: CanvasLayer
+var _bg: Sprite2D
 var _shark: Sprite2D
 var _shark_active := false
 var _shark_wait := 0.0
@@ -30,6 +31,7 @@ func _ready() -> void:
 	_build_ceiling()
 	_build_ground()
 	_build_bubbles()
+	apply_screen_layout()
 
 
 func _build_backdrop() -> void:
@@ -37,15 +39,11 @@ func _build_backdrop() -> void:
 	_bg_layer.layer = -20
 	add_child(_bg_layer)
 	var tex := Sprites.tex("background")
-	var spr := Sprite2D.new()
-	spr.texture = tex
-	spr.centered = true
-	spr.position = Vector2(RR.VIEW_W * 0.5, RR.VIEW_H * 0.5)
-	spr.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-	if tex:
-		var cover := maxf(RR.VIEW_W / float(tex.get_width()), RR.VIEW_H / float(tex.get_height()))
-		spr.scale = Vector2(cover, cover)
-	_bg_layer.add_child(spr)
+	_bg = Sprite2D.new()
+	_bg.texture = tex
+	_bg.centered = true
+	_bg.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	_bg_layer.add_child(_bg)
 	_build_shark()
 
 
@@ -68,22 +66,36 @@ func _build_ground() -> void:
 		push_error("Missing ground texture")
 		return
 	var scale := 0.78
-	var gy := RR.VIEW_H - tex.get_height() * scale + 18.0
-	_ground_a = _tile(tex, gy, scale, 12)
-	_ground_b = _tile(tex, gy, scale, 12)
+	_ground_a = _tile(tex, 0.0, scale, 12)
+	_ground_b = _tile(tex, 0.0, scale, 12)
 	_ground_b.position.x = tex.get_width() * scale
 	_floor = Area2D.new()
-	var floor_top := RR.VIEW_H + 24.0
-	var floor_h := 80.0
-	_floor.position = Vector2(RR.VIEW_W * 0.5, floor_top + floor_h * 0.5)
 	_floor.collision_layer = 1
 	_floor.monitoring = false
 	var shape := CollisionShape2D.new()
 	var rect := RectangleShape2D.new()
-	rect.size = Vector2(RR.VIEW_W + 80, floor_h)
+	rect.size = Vector2(RR.VIEW_W + 80, RR.FLOOR_THICK)
 	shape.shape = rect
 	_floor.add_child(shape)
 	add_child(_floor)
+
+
+func apply_screen_layout() -> void:
+	var bottom := RR.screen_bottom()
+	if _bg:
+		_bg.position = Vector2(RR.VIEW_W * 0.5, bottom * 0.5)
+		var tex := _bg.texture
+		if tex:
+			var cover := maxf(RR.VIEW_W / float(tex.get_width()), bottom / float(tex.get_height()))
+			_bg.scale = Vector2(cover, cover)
+	if _ground_a and _ground_a.texture:
+		var gy := bottom - _ground_a.texture.get_height() * _ground_a.scale.y + RR.GROUND_BLEED
+		_ground_a.position.y = gy
+		if _ground_b:
+			_ground_b.position.y = gy
+	if _floor:
+		var floor_top := bottom + RR.FLOOR_DROP
+		_floor.position = Vector2(RR.VIEW_W * 0.5, floor_top + RR.FLOOR_THICK * 0.5)
 
 
 func _tile(tex: Texture2D, y: float, scale: float, z: int) -> Sprite2D:
@@ -114,7 +126,7 @@ func tick_decor(delta: float) -> void:
 	var drift := _scroll - _last_scroll
 	_last_scroll = _scroll
 	var top := RR.PLAY_TOP - 70.0
-	var bot := RR.VIEW_H + 50.0
+	var bot := RR.screen_bottom() + 50.0
 	var span := bot - top
 	for i in _bubbles.size():
 		_bubble_phase[i] += delta

@@ -54,6 +54,8 @@ const ReferralRulesScript := preload("res://scripts/share/referral_rules.gd")
 const ReferralLinksScript := preload("res://scripts/share/referral_links.gd")
 const ConfigScript := preload("res://scripts/backend/supabase_config.gd")
 const SAVE_PATH := "user://reefrun.cfg"
+# iPhone 14/15/16 logical points. Editor play only; exported desktop stays 540x960.
+const EDITOR_PREVIEW_SIZE := Vector2i(393, 852)
 
 
 func _ready() -> void:
@@ -80,11 +82,15 @@ func _phone_web() -> bool:
 	return OS.has_feature("web") or OS.has_feature("mobile") or OS.has_feature("ios") or OS.has_feature("android")
 
 
+func _editor_phone_preview() -> bool:
+	return OS.has_feature("editor")
+
+
 func _apply_content_scale(win: Window) -> void:
 	win.content_scale_size = Vector2i(int(RR.VIEW_W), int(RR.VIEW_H))
 	win.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
 	win.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_FRACTIONAL
-	if _phone_web():
+	if _phone_web() or _editor_phone_preview():
 		win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP_WIDTH
 	else:
 		win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
@@ -97,7 +103,7 @@ func _apply_phone_aspect() -> void:
 	if _phone_web():
 		return
 	if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_WINDOWED:
-		var preview := Vector2i(int(RR.VIEW_W), int(RR.VIEW_H))
+		var preview := EDITOR_PREVIEW_SIZE if _editor_phone_preview() else Vector2i(int(RR.VIEW_W), int(RR.VIEW_H))
 		DisplayServer.window_set_size(preview)
 		var screen := DisplayServer.screen_get_usable_rect()
 		var origin := screen.position + (screen.size - preview) / 2

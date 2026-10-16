@@ -7,6 +7,11 @@ const SURFACE_H := 48.0
 const GROUND_H := 157.0
 const PLAY_TOP := 53.0
 const PLAY_BOTTOM := 803.0
+# The ground sprite is drawn this far past the screen bottom so its edge stays cropped.
+const GROUND_BLEED := 18.0
+# Floor collision sits just below the death line, same offset the 960px layout used.
+const FLOOR_DROP := 24.0
+const FLOOR_THICK := 80.0
 const PLAYER_X := 108.0
 const COUNTDOWN := 3.0
 const LOBBY_SECS := 5.0
@@ -76,6 +81,24 @@ const GHOST_NAMES: PackedStringArray = [
 	"Current", "Dory", "Skipper", "Mussel", "Lagoon", "Comet", "Barnacle",
 	"Gill", "Nixie", "Triton", "Foam", "Cove", "Pike", "Sable"
 ]
+
+
+static func screen_bottom() -> float:
+	# KEEP_WIDTH on a tall phone grows the viewport past VIEW_H. Desktop KEEP
+	# stays at 540x960, so this returns VIEW_H and the original layout is unchanged.
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree == null or tree.root == null:
+		return VIEW_H
+	var visible := tree.root.get_visible_rect().size
+	if visible.x < VIEW_W * 0.5 or visible.x > VIEW_W * 1.5:
+		return VIEW_H
+	if visible.y < VIEW_H:
+		return VIEW_H
+	return visible.y
+
+
+static func screen_size() -> Vector2:
+	return Vector2(VIEW_W, screen_bottom())
 
 
 static func hat_id(index: int) -> String:
