@@ -149,6 +149,22 @@ jobs:
               problems.append("Mock rewarded ads must not run in exported builds.")
           if 'application/bundle_identifier="com.lunarentertainment.reefrun"' not in preset:
               problems.append("iOS bundle identifier is not com.lunarentertainment.reefrun.")
+          ios_at = preset.find('name="iOS"')
+          ios_end = preset.find("\n[preset.", ios_at + 1)
+          ios_preset = preset[ios_at:ios_end if ios_end != -1 else None]
+          if 'application/short_version="1.0.0"' not in ios_preset:
+              problems.append("iOS marketing version (CFBundleShortVersionString) must stay 1.0.0.")
+          if 'application/version="2"' not in ios_preset:
+              problems.append("iOS build number (CFBundleVersion) must be 2.")
+          if 'config/icon="res://assets/source/app icon.png"' not in project:
+              problems.append("Project icon must stay assets/source/app icon.png.")
+          if 'icons/icon_1024x1024="res://assets/source/app icon.png"' not in ios_preset:
+              problems.append("iOS app icon must stay assets/source/app icon.png.")
+          if 'icons/app_store_1024x1024="res://assets/icons/app_store_1024.png"' not in ios_preset:
+              problems.append("App Store icon must stay assets/icons/app_store_1024.png.")
+          for icon in ("assets/source/app icon.png", "assets/icons/app_store_1024.png"):
+              if not (root / icon).is_file():
+                  problems.append(f"Missing app icon file: {icon}")
           if "application/export_project_only=true" not in preset:
               problems.append("iOS export must write an Xcode project for this workflow to sign.")
           if 'textures/vram_compression/import_etc2_astc=true' not in project:
@@ -705,6 +721,41 @@ jobs:
           print(f"Active SDK contains the Godot 4.7.2 Metal symbols: {sdk}")
           PY
 
+      - name: Check the exported iOS build number
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          import plistlib
+          import re
+          import sys
+
+          pbx = pathlib.Path("build/Reefrun.xcodeproj/project.pbxproj").read_text(encoding="utf-8")
+          builds = [value.strip().strip('"') for value in re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", pbx)]
+          marketing = [value.strip().strip('"') for value in re.findall(r"MARKETING_VERSION = ([^;]+);", pbx)]
+          problems = []
+          if not builds or any(value != "2" for value in builds):
+              problems.append(f"Xcode CURRENT_PROJECT_VERSION must be 2, found {builds or 'none'}.")
+          if not marketing or any(value != "1.0.0" for value in marketing):
+              problems.append(f"Xcode MARKETING_VERSION must be 1.0.0, found {marketing or 'none'}.")
+          plists = list(pathlib.Path("build").rglob("*-Info.plist"))
+          if not plists:
+              problems.append("Godot did not export an Info.plist.")
+          for plist_path in plists:
+              with plist_path.open("rb") as handle:
+                  data = plistlib.load(handle)
+              bundle = str(data.get("CFBundleVersion", ""))
+              short = str(data.get("CFBundleShortVersionString", ""))
+              if bundle not in {"2", "$(CURRENT_PROJECT_VERSION)"}:
+                  problems.append(f"{plist_path.name} CFBundleVersion is {bundle!r}, expected 2.")
+              if short not in {"1.0.0", "$(MARKETING_VERSION)"}:
+                  problems.append(f"{plist_path.name} CFBundleShortVersionString is {short!r}, expected 1.0.0.")
+          if problems:
+              print("\n".join(problems))
+              sys.exit(1)
+          print(f"Exported iOS build number is 2. Marketing version is 1.0.0. Checked {len(plists)} Info.plist file(s).")
+          PY
+
       - name: Archive with Xcode
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -723,6 +774,8 @@ jobs:
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             CODE_SIGN_IDENTITY="Apple Distribution" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            CURRENT_PROJECT_VERSION=2 \
+            MARKETING_VERSION=1.0.0 \
             archive
 
       - name: Export the App Store IPA
@@ -762,8 +815,13 @@ jobs:
           test -n "$APP"
           codesign --verify --strict --verbose=2 "$APP"
           BUILT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+          BUILT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")"
+          BUILT_SHORT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")"
           test "$BUILT_ID" = "$BUNDLE_ID"
+          test "$BUILT_VERSION" = "2"
+          test "$BUILT_SHORT" = "1.0.0"
           echo "Signed IPA bundle id: ${BUILT_ID}"
+          echo "Signed IPA version: ${BUILT_SHORT} (${BUILT_VERSION})"
 
       - name: Upload the IPA artifact
         uses: actions/upload-artifact@v4
