@@ -136,6 +136,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import pathlib
+          import re
           import sys
           root = pathlib.Path(".")
           daily = (root / "scripts/daily_test_mode.gd").read_text(encoding="utf-8")
@@ -150,8 +151,15 @@ jobs:
           if 'application/bundle_identifier="com.lunarentertainment.reefrun"' not in preset:
               problems.append("iOS bundle identifier is not com.lunarentertainment.reefrun.")
           ios_at = preset.find('name="iOS"')
-          ios_end = preset.find("\n[preset.", ios_at + 1)
-          ios_preset = preset[ios_at:ios_end if ios_end != -1 else None]
+          if ios_at == -1:
+              problems.append("iOS export preset was not found.")
+              ios_preset = ""
+          else:
+              # [preset.1.options] follows the preset name. Stop at the next
+              # numbered preset, not at that options section.
+              next_preset = re.search(r"\n\[preset\.\d+\]\n", preset[ios_at + 1:])
+              ios_end = ios_at + 1 + next_preset.start() if next_preset else len(preset)
+              ios_preset = preset[ios_at:ios_end]
           if 'application/short_version="1.0.0"' not in ios_preset:
               problems.append("iOS marketing version (CFBundleShortVersionString) must stay 1.0.0.")
           if 'application/version="2"' not in ios_preset:
