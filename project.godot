@@ -15,7 +15,7 @@ config/description="99 fish. One reef. Last one swimming."
 run/main_scene="res://scenes/menu/main_menu.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 run/delta_smoothing=false
-config/icon="res://icon.svg"
+config/icon="res://assets/source/app icon.png"
 
 [autoload]
 
