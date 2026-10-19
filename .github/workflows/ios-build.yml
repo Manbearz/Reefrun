@@ -148,6 +148,43 @@ jobs:
               problems.append("Daily practice mode must stay false for a release export.")
           if "OS.is_debug_build()" in ads.split("static func use_mock_provider", 1)[-1]:
               problems.append("Mock rewarded ads must not run in exported builds.")
+          if "const USE_TEST_ADS := true" not in ads:
+              problems.append("TestFlight must keep USE_TEST_ADS true so live rewarded units are not requested.")
+          reward_fn = ads.split("static func rewarded_unit_id", 1)[-1].split("static func use_mock_provider", 1)[0]
+          test_branch = reward_fn.split("if USE_TEST_ADS:", 1)[-1].split("return production", 1)[0]
+          if "if USE_TEST_ADS:" not in reward_fn or "return test_unit" not in test_branch:
+              problems.append("Rewarded requests must return the Google test unit while USE_TEST_ADS is true.")
+          for required in (
+              "ca-app-pub-3940256099942544/1712485313",
+              "ca-app-pub-3940256099942544/5224354917",
+              "ca-app-pub-5190108736982657/2549031818",
+              "ca-app-pub-5190108736982657/3355591884",
+              "ca-app-pub-5190108736982657~5175195159",
+              "ca-app-pub-5190108736982657~2452653885",
+          ):
+              if required not in ads:
+                  problems.append(f"Ad config is missing {required}.")
+          if 'general/ios/app_id="ca-app-pub-5190108736982657~5175195159"' not in project:
+              problems.append("iOS AdMob app id is not set in project.godot.")
+          if 'general/android/app_id="ca-app-pub-5190108736982657~2452653885"' not in project:
+              problems.append("Android AdMob app id is not set in project.godot.")
+          if 'res://addons/admob/plugin.cfg' not in project:
+              problems.append("The AdMob editor plugin is not enabled.")
+          plugin_cfg = root / "addons/admob/plugin.cfg"
+          if not plugin_cfg.is_file() or 'version="5.1.0"' not in plugin_cfg.read_text(encoding="utf-8"):
+              problems.append("Poing AdMob plugin 5.1.0 is not installed.")
+          native_libs = (
+              "addons/admob/ios/bin/package.gd",
+              "addons/admob/ios/bin/ads/poing_godot_admob_ads.gd",
+              "addons/admob/ios/bin/ads/libs/poing-godot-admob-ads.release.xcframework/ios-arm64/libpoing-godot-admob-ads.arm64-ios.release.a",
+              "addons/admob/android/bin/package.gd",
+              "addons/admob/android/bin/ads/libs/poing-godot-admob-ads-release.aar",
+              "addons/admob/android/bin/ads/libs/poing-godot-admob-core-release.aar",
+          )
+          for relative in native_libs:
+              library = root / relative
+              if not library.is_file() or library.stat().st_size < 32:
+                  problems.append(f"AdMob native library is missing: {relative}")
           if 'application/bundle_identifier="com.lunarentertainment.reefrun"' not in preset:
               problems.append("iOS bundle identifier is not com.lunarentertainment.reefrun.")
           ios_at = preset.find('name="iOS"')
@@ -162,8 +199,12 @@ jobs:
               ios_preset = preset[ios_at:ios_end]
           if 'application/short_version="1.0.0"' not in ios_preset:
               problems.append("iOS marketing version (CFBundleShortVersionString) must stay 1.0.0.")
-          if 'application/version="2"' not in ios_preset:
-              problems.append("iOS build number (CFBundleVersion) must be 2.")
+          if 'application/version="3"' not in ios_preset:
+              problems.append("iOS build number (CFBundleVersion) must be 3.")
+          if "NSUserTrackingUsageDescription" not in ios_preset:
+              problems.append("iOS export is missing NSUserTrackingUsageDescription.")
+          if "privacy/tracking_enabled=true" not in ios_preset:
+              problems.append("iOS privacy tracking must be enabled for AdMob.")
           if 'config/icon="res://assets/source/app icon.png"' not in project:
               problems.append("Project icon must stay assets/source/app icon.png.")
           if 'icons/icon_1024x1024="res://assets/source/app icon.png"' not in ios_preset:
@@ -345,7 +386,13 @@ jobs:
           ):
               print(f"  {label}: {'yes' if re.search(pattern, original) else 'no'}")
 
-          FLAGS = ("-framework Metal", "-framework QuartzCore")
+          FLAGS = (
+              "-framework Metal",
+              "-framework QuartzCore",
+              "-framework JavaScriptCore",
+              "-framework AppTrackingTransparency",
+              "-ObjC",
+          )
 
           def fail(message):
               print(message)
@@ -433,11 +480,14 @@ jobs:
           def with_framework_entries(array_text):
               added = []
               insertion = ""
-              for framework in ("Metal", "QuartzCore"):
+              for framework in ("Metal", "QuartzCore", "JavaScriptCore", "AppTrackingTransparency"):
                   if array_has_framework(array_text, framework):
                       continue
                   insertion += '\n\t\t\t\t"-framework",\n\t\t\t\t"' + framework + '",'
                   added.append("-framework " + framework)
+              if '"-ObjC"' not in array_text:
+                  insertion += '\n\t\t\t\t"-ObjC",'
+                  added.append("-ObjC")
               if not insertion:
                   return array_text, added
               close = array_text.rfind(")")
@@ -552,9 +602,11 @@ jobs:
               else:
                   missing = [
                       "-framework " + framework
-                      for framework in ("Metal", "QuartzCore")
+                      for framework in ("Metal", "QuartzCore", "JavaScriptCore", "AppTrackingTransparency")
                       if not array_has_framework(raw, framework)
                   ]
+                  if '"-ObjC"' not in raw:
+                      missing.append("-ObjC")
               if missing:
                   fail("Edited OTHER_LDFLAGS is missing: " + ", ".join(missing))
               if re.search(r'"\s+-framework\b', raw):
@@ -611,17 +663,21 @@ jobs:
               print(f"Parsed OTHER_LDFLAGS for {name}: {value!r}")
               missing = []
               if isinstance(value, str):
-                  for framework in ("Metal", "QuartzCore"):
+                  for framework in ("Metal", "QuartzCore", "JavaScriptCore", "AppTrackingTransparency"):
                       if re.search(r"-framework " + framework + r"(?![\w])", value) is None:
                           missing.append(framework)
+                  if not re.search(r"-ObjC(?![\w])", value):
+                      missing.append("-ObjC")
               elif isinstance(value, list):
-                  for framework in ("Metal", "QuartzCore"):
+                  for framework in ("Metal", "QuartzCore", "JavaScriptCore", "AppTrackingTransparency"):
                       linked = any(
                           value[index] == "-framework" and value[index + 1] == framework
                           for index in range(len(value) - 1)
                       )
                       if not linked:
                           missing.append(framework)
+                  if "-ObjC" not in value:
+                      missing.append("-ObjC")
               else:
                   missing.append("unrecognized OTHER_LDFLAGS value")
               if missing:
@@ -630,7 +686,7 @@ jobs:
           if found == 0:
               print("The parsed project has no OTHER_LDFLAGS setting.")
               sys.exit(1)
-          print(f"Metal and QuartzCore are linked from {found} parsed configuration(s).")
+          print(f"Metal, QuartzCore, JavaScriptCore, AppTrackingTransparency, and -ObjC are linked from {found} parsed configuration(s).")
           PY
           echo "xcodebuild -list -project build/Reefrun.xcodeproj"
           if ! xcodebuild -list -project build/Reefrun.xcodeproj; then
@@ -742,8 +798,8 @@ jobs:
           builds = [value.strip().strip('"') for value in re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", pbx)]
           marketing = [value.strip().strip('"') for value in re.findall(r"MARKETING_VERSION = ([^;]+);", pbx)]
           problems = []
-          if not builds or any(value != "2" for value in builds):
-              problems.append(f"Xcode CURRENT_PROJECT_VERSION must be 2, found {builds or 'none'}.")
+          if not builds or any(value != "3" for value in builds):
+              problems.append(f"Xcode CURRENT_PROJECT_VERSION must be 3, found {builds or 'none'}.")
           if not marketing or any(value != "1.0.0" for value in marketing):
               problems.append(f"Xcode MARKETING_VERSION must be 1.0.0, found {marketing or 'none'}.")
           plists = list(pathlib.Path("build").rglob("*-Info.plist"))
@@ -754,15 +810,47 @@ jobs:
                   data = plistlib.load(handle)
               bundle = str(data.get("CFBundleVersion", ""))
               short = str(data.get("CFBundleShortVersionString", ""))
-              if bundle not in {"2", "$(CURRENT_PROJECT_VERSION)"}:
-                  problems.append(f"{plist_path.name} CFBundleVersion is {bundle!r}, expected 2.")
+              if bundle not in {"3", "$(CURRENT_PROJECT_VERSION)"}:
+                  problems.append(f"{plist_path.name} CFBundleVersion is {bundle!r}, expected 3.")
               if short not in {"1.0.0", "$(MARKETING_VERSION)"}:
                   problems.append(f"{plist_path.name} CFBundleShortVersionString is {short!r}, expected 1.0.0.")
+              app_id = str(data.get("GADApplicationIdentifier", ""))
+              if app_id != "ca-app-pub-5190108736982657~5175195159":
+                  problems.append(f"{plist_path.name} GADApplicationIdentifier is {app_id!r}.")
+              tracking = str(data.get("NSUserTrackingUsageDescription", "")).strip()
+              if not tracking:
+                  problems.append(f"{plist_path.name} is missing NSUserTrackingUsageDescription.")
+              skan = data.get("SKAdNetworkItems", [])
+              if not isinstance(skan, list) or len(skan) < 1:
+                  problems.append(f"{plist_path.name} is missing SKAdNetworkItems.")
+          package = pathlib.Path("build/admob_spm/Package.swift")
+          package_text = package.read_text(encoding="utf-8") if package.is_file() else ""
+          has_sdk = (
+              "swift-package-manager-google-mobile-ads" in pbx
+              or "GoogleMobileAds" in pbx
+              or "swift-package-manager-google-mobile-ads" in package_text
+          )
+          if not has_sdk:
+              problems.append("The Xcode project does not reference the Google Mobile Ads SDK.")
+          if "poing-godot-admob-ads" not in pbx:
+              problems.append("The Xcode project does not include the Poing AdMob native library.")
           if problems:
               print("\n".join(problems))
               sys.exit(1)
-          print(f"Exported iOS build number is 2. Marketing version is 1.0.0. Checked {len(plists)} Info.plist file(s).")
+          print(f"Exported iOS build number is 3. Marketing version is 1.0.0. AdMob app id, tracking description, and SDK reference are present. Checked {len(plists)} Info.plist file(s).")
           PY
+
+      - name: Resolve the Google Mobile Ads Swift package
+        run: |
+          set -euo pipefail
+          if [ ! -f build/admob_spm/Package.swift ] && ! grep -q "swift-package-manager-google-mobile-ads\|GoogleMobileAds" build/Reefrun.xcodeproj/project.pbxproj; then
+            echo "Godot did not add the Google Mobile Ads package to the Xcode project."
+            exit 1
+          fi
+          xcodebuild \
+            -resolvePackageDependencies \
+            -project build/Reefrun.xcodeproj \
+            -scheme Reefrun
 
       - name: Archive with Xcode
         env:
@@ -782,7 +870,7 @@ jobs:
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             CODE_SIGN_IDENTITY="Apple Distribution" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
-            CURRENT_PROJECT_VERSION=2 \
+            CURRENT_PROJECT_VERSION=3 \
             MARKETING_VERSION=1.0.0 \
             archive
 
@@ -826,7 +914,7 @@ jobs:
           BUILT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")"
           BUILT_SHORT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")"
           test "$BUILT_ID" = "$BUNDLE_ID"
-          test "$BUILT_VERSION" = "2"
+          test "$BUILT_VERSION" = "3"
           test "$BUILT_SHORT" = "1.0.0"
           echo "Signed IPA bundle id: ${BUILT_ID}"
           echo "Signed IPA version: ${BUILT_SHORT} (${BUILT_VERSION})"

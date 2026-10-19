@@ -1,67 +1,50 @@
 extends Node
 
 var textures: Dictionary = {}
+var _boot_ids: PackedStringArray = PackedStringArray()
 
 
 func _ready() -> void:
-	_load_from_dir()
-	_load_known()
+	# Names only. The startup screen decodes the pictures across frames so the
+	# first paint is not stuck behind the full sprite set.
+	_boot_ids = _scan_sprite_ids()
 
 
-func _load_from_dir() -> void:
+func boot_ids() -> PackedStringArray:
+	return _boot_ids
+
+
+func sprite_path(id: String) -> String:
+	return "res://assets/sprites/%s.png" % id
+
+
+func remember(id: String, texture: Texture2D) -> void:
+	if texture:
+		textures[id] = texture
+
+
+func peek(id: String) -> Texture2D:
+	return textures.get(id) as Texture2D
+
+
+func _scan_sprite_ids() -> PackedStringArray:
+	var ids := PackedStringArray()
+	var seen := {}
 	var dir := DirAccess.open("res://assets/sprites")
 	if dir == null:
-		return
+		return ids
 	dir.list_dir_begin()
 	var file := dir.get_next()
 	while file != "":
 		var name := file.replace(".remap", "")
 		if name.ends_with(".png"):
 			var id := name.get_basename()
-			var tex := load("res://assets/sprites/%s.png" % id) as Texture2D
-			if tex:
-				textures[id] = tex
+			if not seen.has(id):
+				seen[id] = true
+				ids.append(id)
 		file = dir.get_next()
 	dir.list_dir_end()
-
-
-func _load_known() -> void:
-	const IDS: PackedStringArray = [
-		"background", "ground",
-		"btn_play", "btn_close", "btn_settings", "btn_trophy",
-		"fish_blue", "fish_clown", "fish_yellow", "fish_green", "fish_pink", "fish_purple",
-		"pipe_kelp", "pipe_blue", "pipe_wood", "pipe_metal", "pipe_sand", "pipe_purple",
-		"crown_gold", "crown_silver", "crown_bronze",
-		"splash_a", "splash_b", "splash_c", "bubbles_small",
-		"shark_far",
-		"spear_long", "spear_mid", "spear_short",
-		"harpoon_00", "harpoon_01", "harpoon_02", "harpoon_03", "harpoon_04",
-		"harpoon_05", "harpoon_06", "harpoon_07", "harpoon_08", "harpoon_09",
-		"harpoon_10",
-		"death_overlay", "main_menu_overlay", "highscore_overlay", "daily_overlay", "weekly_overlay",
-		"monthly_overlay", "mode_overlay", "mode_unlocked", "mode_locked", "btn_main_menu", "btn_score_left", "btn_score_right", "coin_ad_overlay",
-		"share_overlay", "btn_share_small", "jump_overlay",
-		"coin",
-	]
-	for id in IDS:
-		_ensure_tex(id)
-	for id in RR.FISH_IDS:
-		_ensure_tex(id)
-	for i in 88:
-		_ensure_tex("hat_%02d" % i)
-	for d in 10:
-		_ensure_tex("num_gold_%d" % d)
-		_ensure_tex("num_white_%d" % d)
-	for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-		_ensure_tex("alpha_%s" % ch)
-	for id in [
-		"alpha_excl", "alpha_at", "alpha_hash", "alpha_dollar", "alpha_pct",
-		"alpha_caret", "alpha_amp", "alpha_star", "alpha_lparen", "alpha_rparen",
-		"alpha_quest", "alpha_colon", "alpha_semi", "alpha_tilde", "alpha_slash",
-		"alpha_bslash", "alpha_comma", "alpha_hyphen", "alpha_dash", "alpha_plus",
-		"alpha_eq",
-	]:
-		_ensure_tex(id)
+	return ids
 
 
 const GLYPH_IDS := {
@@ -117,4 +100,9 @@ func _ensure_tex(id: String) -> void:
 
 
 func tex(id: String) -> Texture2D:
-	return textures.get(id) as Texture2D
+	var found := peek(id)
+	if found:
+		return found
+	# Direct scene play skips the startup screen, so load this one picture on demand.
+	_ensure_tex(id)
+	return peek(id)

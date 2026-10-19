@@ -26,6 +26,9 @@ var pending_referral_code: String = ""
 var pending_first_run: bool = false
 var share_run_synced: bool = false
 var applied_share_reward_coins: int = 0
+var pending_mission_runs: Array = []
+var applied_mission_reward_coins: int = 0
+var mission_board: Dictionary = {}
 var referral_code: String = ""
 var share_reward_qualified: int = 0
 var last_score: int = 0
@@ -51,6 +54,7 @@ const DailyChallengeScript := preload("res://scripts/daily_challenge.gd")
 const DailyAttemptScript := preload("res://scripts/daily_attempt.gd")
 const DailyTestModeScript := preload("res://scripts/daily_test_mode.gd")
 const ReferralRulesScript := preload("res://scripts/share/referral_rules.gd")
+const DailyMissionsScript := preload("res://scripts/daily_missions.gd")
 const ReferralLinksScript := preload("res://scripts/share/referral_links.gd")
 const ConfigScript := preload("res://scripts/backend/supabase_config.gd")
 const SAVE_PATH := "user://reefrun.cfg"
@@ -356,9 +360,10 @@ func buy_fish(index: int) -> bool:
 		fish_index = index
 		_save()
 		return true
-	if coins < RR.FISH_PRICE:
+	var price := RR.fish_price(index)
+	if coins < price:
 		return false
-	coins -= RR.FISH_PRICE
+	coins -= price
 	owned_fish.append(index)
 	fish_index = index
 	_save()
@@ -385,9 +390,10 @@ func buy_hat(index: int) -> bool:
 	if owns_hat(index):
 		equip_hat(index)
 		return true
-	if coins < RR.HAT_PRICE:
+	var price := RR.hat_price(index)
+	if coins < price:
 		return false
-	coins -= RR.HAT_PRICE
+	coins -= price
 	owned_hats.append(index)
 	equip_hat(index)
 	_save()
@@ -625,6 +631,20 @@ func current_month_key() -> String:
 	return "%04d-%02d" % [int(now.year), int(now.month)]
 
 
+func _decode_json_array(text: String) -> Array:
+	var parsed: Variant = JSON.parse_string(text)
+	if typeof(parsed) == TYPE_ARRAY:
+		return parsed
+	return []
+
+
+func _decode_json_dict(text: String) -> Dictionary:
+	var parsed: Variant = JSON.parse_string(text)
+	if typeof(parsed) == TYPE_DICTIONARY:
+		return parsed
+	return {}
+
+
 func _shift_date(year: int, month: int, day: int, delta: int) -> Dictionary:
 	var unix := Time.get_unix_time_from_datetime_dict({
 		"year": year,
@@ -708,6 +728,9 @@ func _load() -> void:
 	applied_share_reward_coins = int(cfg.get_value("share", "applied_reward", 0))
 	referral_code = ReferralRulesScript.normalize_code(str(cfg.get_value("share", "code", "")))
 	share_reward_qualified = int(cfg.get_value("share", "qualified", 0))
+	pending_mission_runs = _decode_json_array(str(cfg.get_value("missions", "pending", "[]")))
+	applied_mission_reward_coins = int(cfg.get_value("missions", "applied", 0))
+	mission_board = _decode_json_dict(str(cfg.get_value("missions", "board", "{}")))
 
 
 func _save() -> void:
@@ -749,6 +772,9 @@ func _save() -> void:
 	cfg.set_value("share", "applied_reward", applied_share_reward_coins)
 	cfg.set_value("share", "code", referral_code)
 	cfg.set_value("share", "qualified", share_reward_qualified)
+	cfg.set_value("missions", "pending", JSON.stringify(pending_mission_runs))
+	cfg.set_value("missions", "applied", applied_mission_reward_coins)
+	cfg.set_value("missions", "board", JSON.stringify(mission_board))
 	cfg.save(SAVE_PATH)
 
 
@@ -759,6 +785,51 @@ func remember_referral_code(code: String) -> bool:
 	pending_referral_code = clean
 	_save()
 	return true
+
+
+func remember_mission_run(run_id: String, pipes: int, seconds: int, gameplay_coins: int) -> void:
+	if not DailyMissionsScript.should_report(match_mode, practice_daily):
+		return
+	if not DailyMissionsScript.valid_run_id(run_id) or not DailyMissionsScript.accept_run(pipes, seconds, gameplay_coins):
+		push_warning("[missions] run not counted pipes=%d seconds=%d coins=%d" % [pipes, seconds, gameplay_coins])
+		return
+	var queued: Array = DailyMissionsScript.enqueue(pending_mission_runs, run_id, pipes, seconds, gameplay_coins)
+	if queued == pending_mission_runs:
+		return
+	pending_mission_runs = queued
+	_save()
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("flush_daily_missions"):
+		backend.flush_daily_missions()
+
+
+func drop_mission_run(run_id: String) -> void:
+	var kept: Array = []
+	var changed := false
+	for run in pending_mission_runs:
+		if typeof(run) == TYPE_DICTIONARY and str(run.get("id", "")) == run_id:
+			changed = true
+			continue
+		kept.append(run)
+	if not changed:
+		return
+	pending_mission_runs = kept
+	_save()
+
+
+func apply_mission_board(board: Dictionary) -> int:
+	if not bool(board.get("ok", false)):
+		return 0
+	mission_board = board.duplicate(true)
+	mission_board["fetched_at"] = int(Time.get_unix_time_from_system())
+	var total := int(board.get("mission_reward_coins", applied_mission_reward_coins))
+	var delta := DailyMissionsScript.reward_delta(applied_mission_reward_coins, total)
+	if delta > 0:
+		applied_mission_reward_coins += delta
+		add_coins(delta)
+		return delta
+	_save()
+	return 0
 
 
 func apply_share_result(parsed: Dictionary, http_status: int, ok: bool) -> int:

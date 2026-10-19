@@ -48,6 +48,14 @@ func layout_width(value: String, height: float, gold_digits := false) -> float:
 	return total
 
 
+func resize_box(height: float, box: Vector2) -> void:
+	size = box
+	_glyph_h = height
+	if _fit_box:
+		clip_contents = true
+	_rebuild()
+
+
 func set_value(value: String) -> void:
 	var next := value.to_upper()
 	if _text == next and get_child_count() > 0:

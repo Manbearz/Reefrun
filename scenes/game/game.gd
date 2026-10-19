@@ -7,6 +7,7 @@ const GhostMatchScript := preload("res://scripts/ghost_match.gd")
 const CourseBuilderScript := preload("res://scripts/course_builder.gd")
 const ShareServiceScript := preload("res://scripts/share/share_service.gd")
 const ReferralRulesScript := preload("res://scripts/share/referral_rules.gd")
+const MissionOverlayScript := preload("res://scripts/daily_missions_overlay.gd")
 
 const SHARE_CARD_CROP_H := 798
 const SHARE_PLACE_RECT := Rect2(700, 398, 300, 100)
@@ -30,7 +31,12 @@ var scroll := 0.0
 var spawn_index := 0
 var score := 0
 var overlay: CanvasLayer
+var _mission_layer: CanvasLayer
 var pause_layer: CanvasLayer
+var _pause_dim: ColorRect
+var _pause_title: SpriteText
+var _pause_resume: TextureButton
+var _pause_leave: TextureButton
 var swimming := 100
 var _feed_wait := 0.0
 var school: Node2D
@@ -80,6 +86,10 @@ var _perf_phys_worst := 0.0
 var _ghost_match
 var _coins: Array[Sprite2D] = []
 var _run_coins := 0
+var _mission_run_id := ""
+var _mission_seconds := 0.0
+var _mission_track := false
+var _mission_folded := false
 var _over_rank := 0
 var _over_remaining := 0
 var _coin_reward_claimed := false
@@ -165,6 +175,10 @@ func _sync_screen_layout() -> void:
 		world.apply_screen_layout()
 	if hud:
 		hud.apply_screen_layout()
+	if _mission_layer and _mission_layer.has_method("layout_to_screen"):
+		_mission_layer.layout_to_screen()
+	if pause_layer and pause_layer.visible:
+		_layout_pause_controls(_mission_allowed() and not finished)
 	for pair in pipes:
 		pair.sync_screen()
 	for pair in _pipe_pool:
@@ -345,6 +359,10 @@ func _play_press(pos: Vector2, from_touch: bool) -> void:
 
 
 func _button_node_at(pos: Vector2) -> BaseButton:
+	if _mission_layer and is_instance_valid(_mission_layer) and _mission_layer.visible:
+		var mission_btn := _find_button_at(_mission_layer, pos)
+		if mission_btn:
+			return mission_btn
 	if _share_layer and is_instance_valid(_share_layer) and _share_layer.visible:
 		return _find_button_at(_share_layer, pos)
 	if pause_layer and pause_layer.visible:
@@ -371,6 +389,9 @@ func _find_button_at(node: Node, pos: Vector2) -> BaseButton:
 
 
 func _press_button_at(pos: Vector2) -> void:
+	if _mission_layer and is_instance_valid(_mission_layer) and _mission_layer.visible:
+		if _press_button_in(_mission_layer, pos):
+			return
 	if _share_layer and is_instance_valid(_share_layer) and _share_layer.visible:
 		_press_button_in(_share_layer, pos)
 		return
@@ -411,6 +432,22 @@ func _begin_run() -> void:
 	if started or finished:
 		return
 	started = true
+	# Locked for this swim. A later mode change cannot turn a Daily Challenge
+	# into mission progress, or an Unlimited swim into a Daily Challenge attempt.
+	_mission_track = (
+		GameSession.match_mode == GameSession.MODE_UNLIMITED
+		and not GameSession.practice_daily
+	)
+	_mission_run_id = ""
+	_mission_seconds = 0.0
+	if _mission_track:
+		_mission_run_id = "%d-%d" % [Time.get_ticks_usec(), randi()]
+		# The board already folded at 3 seconds. Starting the swim only keeps the widget.
+		if not _mission_folded:
+			_mission_folded = true
+			_set_mission_presentation("widget")
+	else:
+		_set_mission_presentation("hidden")
 	if GameSession.match_mode == GameSession.MODE_DAILY:
 		print("[daily] gameplay run_started seed=%d pipes=%d" % [GameSession.course_seed, layout.size()])
 	match_tick = 0
@@ -438,15 +475,91 @@ func _begin_run() -> void:
 func _begin_lobby() -> void:
 	_in_lobby = true
 	_lobby_t = 0.0
-	_lobby_len = RR.LOBBY_SECS
+	_mission_folded = false
+	_lobby_len = RR.lobby_length(_mission_allowed())
 	_shown_ghosts = 0
 	swimming = 1
+	if _mission_allowed():
+		_set_mission_presentation("board", true)
+	else:
+		_set_mission_presentation("hidden")
 	hud.set_lobby(true, ceili(_lobby_len))
 	hud.set_coins(0)
 
 
+func _mission_allowed() -> bool:
+	return (
+		GameSession.match_mode == GameSession.MODE_UNLIMITED
+		and not GameSession.practice_daily
+	)
+
+
+func _set_mission_presentation(mode: String, immediate := false) -> void:
+	if not _mission_allowed():
+		mode = "hidden"
+	elif mode == "board" and started and not paused and not finished:
+		mode = "widget"
+	if hud:
+		var show_board := mode == "board" and not started
+		var reveal := 0.0
+		var was_board: bool = _mission_layer != null and is_instance_valid(_mission_layer) and _mission_layer.mode() == "board"
+		if not show_board and not started and was_board and mode == "widget" and not immediate:
+			reveal = MissionOverlayScript.FOLD_SECS
+		hud.set_mission_card(show_board, reveal)
+	if mode == "hidden":
+		if _mission_layer and is_instance_valid(_mission_layer) and _mission_layer.has_method("present"):
+			_mission_layer.present("hidden")
+		elif _mission_layer and is_instance_valid(_mission_layer):
+			_mission_layer.visible = false
+		return
+	_ensure_mission_layer()
+	if _mission_layer.has_method("refresh_from_session"):
+		_mission_layer.refresh_from_session()
+	if _mission_layer.has_method("present"):
+		_mission_layer.present(mode, immediate)
+	else:
+		_mission_layer.visible = true
+	if mode == "board" and not started:
+		var backend_node := get_node_or_null("/root/Backend")
+		if backend_node and backend_node.has_method("refresh_daily_missions"):
+			backend_node.refresh_daily_missions()
+
+
+func _ensure_mission_layer() -> void:
+	if _mission_layer != null and is_instance_valid(_mission_layer):
+		return
+	_mission_layer = MissionOverlayScript.new()
+	_mission_layer.process_mode = Node.PROCESS_MODE_ALWAYS
+	add_child(_mission_layer)
+	var backend := get_node_or_null("/root/Backend")
+	if backend == null:
+		return
+	if backend.has_signal("daily_missions_changed") and not backend.daily_missions_changed.is_connected(_on_daily_missions_changed):
+		backend.daily_missions_changed.connect(_on_daily_missions_changed)
+	if backend.has_signal("mission_reward_granted") and not backend.mission_reward_granted.is_connected(_on_mission_reward_granted):
+		backend.mission_reward_granted.connect(_on_mission_reward_granted)
+
+
+func _on_daily_missions_changed() -> void:
+	if _mission_layer and is_instance_valid(_mission_layer) and _mission_layer.has_method("refresh_from_session"):
+		_mission_layer.refresh_from_session()
+
+
+func _on_mission_reward_granted(slot: String, coins: int, mission_date: String) -> void:
+	if not _mission_allowed():
+		return
+	if _mission_layer == null or not is_instance_valid(_mission_layer):
+		return
+	if _mission_layer.has_method("announce_reward"):
+		_mission_layer.announce_reward(slot, coins, mission_date)
+
+
 func _tick_lobby(delta: float) -> void:
 	_lobby_t += delta
+	# Mission loading must not hold this clock. The board folds on elapsed time.
+	if not _mission_folded and RR.lobby_fold_due(_lobby_t, _mission_allowed()):
+		_mission_folded = true
+		_set_mission_presentation("widget")
 	var u := clampf(_lobby_t / _lobby_len, 0.0, 1.0)
 	var filled := 1 + int(round(float(RR.GHOST_COUNT) * (1.0 - pow(1.0 - u, 2.15))))
 	if u >= 1.0:
@@ -454,7 +567,7 @@ func _tick_lobby(delta: float) -> void:
 	swimming = filled
 	_reveal_ghosts(mini(ghosts.size(), filled - 1))
 	hud.set_lobby(true, maxi(1, ceili(_lobby_len - _lobby_t)))
-	if _lobby_t < _lobby_len or not _roster_ready:
+	if not RR.lobby_finished(_lobby_t, _lobby_len) or not _roster_ready:
 		if _lobby_t >= _lobby_len and not _roster_ready:
 			hud.set_lobby(true, 1)
 		return
@@ -496,6 +609,8 @@ func _physics_process(delta: float) -> void:
 	if paused:
 		return
 	if started and not finished:
+		if _mission_track and player != null and player.alive:
+			_mission_seconds += delta
 		match_tick += 1
 		_advance_playback()
 		scroll += RR.PIPE_SPEED * delta
@@ -687,6 +802,8 @@ func _on_player_died() -> void:
 	var rank := remaining + 1
 	if not GameSession.practice_daily:
 		_save_ghost_run()
+		if _mission_track:
+			GameSession.remember_mission_run(_mission_run_id, score, int(_mission_seconds), _run_coins)
 		GameSession.record_run(score, rank, remaining)
 	_log_perf()
 	get_tree().create_timer(0.85).timeout.connect(_after_death.bind(rank, remaining))
@@ -774,6 +891,7 @@ func _show_coin_ad() -> void:
 	_coin_ad_note.position = Vector2(24, RR.VIEW_H - 70)
 	_coin_ad_note.configure("", 16, Vector2(RR.VIEW_W - 48, 28), HORIZONTAL_ALIGNMENT_CENTER)
 	overlay.add_child(_coin_ad_note)
+	_set_mission_presentation("aside")
 
 
 func _coin_ad_hotspot(origin: Vector2, scale: float, src: Rect2, pressed: Callable) -> Button:
@@ -821,6 +939,7 @@ func _finish_coin_ad() -> void:
 		_run_coins = 0
 		if hud:
 			hud.set_coins(GameSession.coins)
+		print("[ReefRun ads] bonus granted %d. wallet %d" % [bonus, GameSession.coins])
 	_show_over(_over_rank, _over_remaining)
 
 
@@ -832,6 +951,8 @@ func _abandon_coin_offer() -> void:
 
 
 func _restore_coin_ad(message: String) -> void:
+	var reason := message if not message.is_empty() else "closed before the reward"
+	print("[ReefRun ads] bonus not granted. %s" % reason)
 	_reward_request_active = false
 	if not _coin_offer_open or _coin_reward_claimed:
 		return
@@ -891,6 +1012,7 @@ func _show_over(rank: int, remaining: int) -> void:
 	dim.size = RR.screen_size()
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	overlay.add_child(dim)
+	_set_mission_presentation("aside")
 	var tex := Sprites.tex("death_overlay")
 	var src_w := 1024.0
 	var src_h := 1536.0
@@ -1315,8 +1437,13 @@ func _set_paused(value: bool) -> void:
 		return
 	paused = value
 	get_tree().paused = value
+	if value and started and _mission_allowed():
+		_set_mission_presentation("board")
+	elif not value and started and _mission_allowed():
+		_set_mission_presentation("widget")
 	if pause_layer:
 		pause_layer.visible = value
+		_layout_pause_controls(value and _mission_allowed())
 
 
 func _build_pause() -> void:
@@ -1325,21 +1452,52 @@ func _build_pause() -> void:
 	pause_layer.visible = false
 	pause_layer.process_mode = Node.PROCESS_MODE_ALWAYS
 	add_child(pause_layer)
-	var dim := ColorRect.new()
-	dim.color = Palette.SHADOW
-	dim.size = RR.screen_size()
-	dim.mouse_filter = Control.MOUSE_FILTER_STOP
-	pause_layer.add_child(dim)
-	var title := SpriteTextScript.new()
-	title.position = Vector2(0, RR.VIEW_H * 0.30)
-	title.configure("PAUSED", 34, Vector2(RR.VIEW_W, 42), HORIZONTAL_ALIGNMENT_CENTER)
-	pause_layer.add_child(title)
-	var resume := UIKit.make_icon_button(Sprites.tex("btn_play"), func(): _set_paused(false), 0.48)
-	resume.position = Vector2(RR.VIEW_W * 0.5 - 33, RR.VIEW_H * 0.42)
-	pause_layer.add_child(resume)
-	var leave := UIKit.make_icon_button(Sprites.tex("btn_close"), _menu, 0.35)
-	leave.position = Vector2(RR.VIEW_W * 0.5 - 24, RR.VIEW_H * 0.56)
-	pause_layer.add_child(leave)
+	_pause_dim = ColorRect.new()
+	_pause_dim.color = Palette.SHADOW
+	_pause_dim.size = RR.screen_size()
+	_pause_dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	pause_layer.add_child(_pause_dim)
+	_pause_title = SpriteTextScript.new()
+	_pause_title.position = Vector2(0, RR.VIEW_H * 0.30)
+	_pause_title.configure("PAUSED", 34, Vector2(RR.VIEW_W, 42), HORIZONTAL_ALIGNMENT_CENTER)
+	pause_layer.add_child(_pause_title)
+	_pause_resume = UIKit.make_icon_button(Sprites.tex("btn_play"), func(): _set_paused(false), 0.48)
+	_pause_resume.size = _pause_resume.custom_minimum_size
+	_pause_resume.position = Vector2(RR.VIEW_W * 0.5 - 33, RR.VIEW_H * 0.42)
+	pause_layer.add_child(_pause_resume)
+	_pause_leave = UIKit.make_icon_button(Sprites.tex("btn_close"), _menu, 0.35)
+	_pause_leave.size = _pause_leave.custom_minimum_size
+	_pause_leave.position = Vector2(RR.VIEW_W * 0.5 - 24, RR.VIEW_H * 0.56)
+	pause_layer.add_child(_pause_leave)
+
+
+func _layout_pause_controls(board_open: bool) -> void:
+	if pause_layer == null or _pause_resume == null or _pause_leave == null:
+		return
+	var screen := RR.screen_size()
+	pause_layer.layer = 36 if board_open else 30
+	if _pause_dim:
+		_pause_dim.size = screen
+		_pause_dim.visible = not board_open
+	if _pause_title:
+		_pause_title.visible = not board_open
+		_pause_title.position = Vector2(0, screen.y * 0.30)
+	if not board_open:
+		_pause_resume.position = Vector2(screen.x * 0.5 - 33, RR.VIEW_H * 0.42)
+		_pause_leave.position = Vector2(screen.x * 0.5 - 24, RR.VIEW_H * 0.56)
+		return
+	var resume_size := _pause_resume.size
+	if resume_size.y < 8.0:
+		resume_size = _pause_resume.custom_minimum_size
+	var leave_size := _pause_leave.size
+	if leave_size.y < 8.0:
+		leave_size = _pause_leave.custom_minimum_size
+	var gap := 18.0
+	var row_h := maxf(resume_size.y, leave_size.y)
+	var y := screen.y - 22.0 - row_h
+	var x := (screen.x - resume_size.x - gap - leave_size.x) * 0.5
+	_pause_resume.position = Vector2(x, y + (row_h - resume_size.y) * 0.5)
+	_pause_leave.position = Vector2(x + resume_size.x + gap, y + (row_h - leave_size.y) * 0.5)
 
 
 func _prewarm_pipes() -> void:

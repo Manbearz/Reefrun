@@ -9,6 +9,7 @@ const AdCfg := preload("res://scripts/ads/ad_config.gd")
 const MockScript := preload("res://scripts/ads/mock_rewarded_ads.gd")
 const WebScript := preload("res://scripts/ads/web_rewarded_ads.gd")
 const IosScript := preload("res://scripts/ads/ios_rewarded_ads.gd")
+const AndroidScript := preload("res://scripts/ads/android_rewarded_ads.gd")
 
 var _provider: RewardedAdProvider
 
@@ -46,11 +47,23 @@ func mock_show_count() -> int:
 func set_mock_outcome(outcome: int, duplicate_reward := false, delay := 0.0) -> bool:
 	if _provider == null or _provider.get_script() != MockScript:
 		return false
-	_provider.outcome = outcome
-	_provider.duplicate_reward_signal = duplicate_reward
-	_provider.resolve_delay = delay
-	_provider.show_calls = 0
+	_provider.mark_scripted(outcome, duplicate_reward, delay)
 	return true
+
+
+func prepare_interactive_simulator() -> bool:
+	if not AdCfg.development_reward_simulator():
+		return false
+	if _provider == null or _provider.get_script() != MockScript:
+		return false
+	_provider.prepare_interactive()
+	return true
+
+
+func simulator_button(action: String) -> BaseButton:
+	if _provider == null or _provider.get_script() != MockScript:
+		return null
+	return _provider.simulator_button(action)
 
 
 func _make_provider() -> RewardedAdProvider:
@@ -60,4 +73,6 @@ func _make_provider() -> RewardedAdProvider:
 		return WebScript.new()
 	if OS.has_feature("ios"):
 		return IosScript.new()
+	if OS.has_feature("android"):
+		return AndroidScript.new()
 	return WebScript.new()

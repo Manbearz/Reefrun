@@ -132,6 +132,11 @@ class Runner extends Node:
 		await _unavailable()
 		await _menu_after_ad()
 		await _next_match()
+		_export_gate()
+		await _simulator_complete()
+		await _simulator_repeat()
+		await _simulator_cancel()
+		await _simulator_unavailable()
 
 	func _expect(ok: bool, name: String, detail: String = "") -> void:
 		if ok:
@@ -247,3 +252,102 @@ class Runner extends Node:
 		_expect(offer.bonus_granted == 8, "match2_bonus")
 		_expect(session.coins == before + 16, "match2_wallet")
 		session.add_coins(-(session.coins - before))
+
+	func _export_gate() -> void:
+		var Cfg := preload("res://scripts/ads/ad_config.gd")
+		_expect(Cfg.simulator_allowed(PackedStringArray(["editor", "windows"])), "gate_editor_windows")
+		_expect(Cfg.simulator_allowed(PackedStringArray(["editor", "windows", "debug"])), "gate_editor_debug")
+		_expect(not Cfg.simulator_allowed(PackedStringArray(["editor", "windows", "release"])), "gate_release")
+		_expect(not Cfg.simulator_allowed(PackedStringArray(["editor", "windows", "template"])), "gate_template")
+		_expect(not Cfg.simulator_allowed(PackedStringArray(["editor", "windows", "template_release"])), "gate_template_release")
+		_expect(not Cfg.simulator_allowed(PackedStringArray(["editor", "windows", "template_debug"])), "gate_template_debug")
+		_expect(not Cfg.simulator_allowed(PackedStringArray(["ios", "release", "template"])), "gate_ios_release")
+		_expect(not Cfg.simulator_allowed(PackedStringArray(["android", "debug", "template"])), "gate_android_debug")
+		_expect(not Cfg.simulator_allowed(PackedStringArray(["editor", "ios"])), "gate_editor_ios")
+		_expect(not Cfg.simulator_allowed(PackedStringArray(["editor", "android"])), "gate_editor_android")
+		_expect(not Cfg.simulator_allowed(PackedStringArray(["windows", "release"])), "gate_windows_export")
+		_expect(not Cfg.simulator_allowed(PackedStringArray()), "gate_empty")
+		_expect(Cfg.development_reward_simulator(), "gate_this_editor")
+		_expect(not OS.has_feature("template") and not OS.has_feature("release"), "gate_runtime_not_export")
+		var game := FileAccess.get_file_as_string("res://scenes/game/game.gd")
+		var earned := game.find("func _on_rewarded_ad_earned")
+		var finish := game.find("func _finish_coin_ad")
+		_expect(earned >= 0 and finish >= 0 and game.find("_finish_coin_ad()", earned) > earned, "same_reward_handler")
+		var body := game.substr(finish, game.find("func _abandon_coin_offer") - finish)
+		_expect(body.contains("var bonus := _run_coins") and body.contains("GameSession.add_coins(bonus)"), "bonus_is_run_coins")
+		_expect(not body.contains("mission") and not body.contains("share"), "bonus_ignores_other_rewards")
+
+	func _simulator_complete() -> void:
+		var before: int = session.coins
+		var mission_reward := 25
+		var share_bonus := 100
+		_expect(ads.prepare_interactive_simulator(), "sim_prepared")
+		offer.open(11)
+		offer.watch()
+		var complete: BaseButton = ads.simulator_button("complete")
+		_expect(complete != null, "sim_complete_button")
+		if complete == null:
+			return
+		var card: Node = complete.get_parent()
+		var labeled := false
+		if card:
+			for child in card.get_children():
+				var label := child as Label
+				if label and (label.text == "TEST AD" or label.text == "SIMULATED REWARD"):
+					labeled = true
+		_expect(labeled, "sim_labeled")
+		complete.pressed.emit()
+		complete.pressed.emit()
+		await _await_ad()
+		var doubled: int = offer.bonus_granted
+		_expect(doubled == 11, "sim_doubles_run_coins", "bonus=%d" % doubled)
+		_expect(doubled != 11 + mission_reward and doubled != 11 + share_bonus and doubled != 11 + mission_reward + share_bonus, "sim_excludes_other_bonuses")
+		_expect(session.coins == before + 11, "sim_wallet", "wallet=%d" % session.coins)
+		_expect(offer.bonus_granted == 11 and session.coins == before + 11, "sim_second_press_ignored")
+		session.add_coins(-(session.coins - before))
+
+	func _simulator_repeat() -> void:
+		var before: int = session.coins
+		_expect(ads.prepare_interactive_simulator(), "sim_repeat_prepared")
+		offer.open(4)
+		offer.watch()
+		offer.watch()
+		_expect(ads.mock_show_count() == 1, "sim_one_panel", "shows=%d" % ads.mock_show_count())
+		var complete: BaseButton = ads.simulator_button("complete")
+		if complete:
+			complete.pressed.emit()
+			complete.pressed.emit()
+		await _await_ad()
+		_expect(offer.bonus_granted == 4, "sim_repeat_bonus")
+		_expect(session.coins == before + 4, "sim_repeat_wallet")
+		session.add_coins(-(session.coins - before))
+
+	func _simulator_cancel() -> void:
+		var before: int = session.coins
+		ads.prepare_interactive_simulator()
+		offer.open(9)
+		offer.watch()
+		var cancel: BaseButton = ads.simulator_button("cancel")
+		_expect(cancel != null, "sim_cancel_button")
+		if cancel:
+			cancel.pressed.emit()
+			cancel.pressed.emit()
+		await _await_ad()
+		_expect(offer.bonus_granted == 0, "sim_cancel_no_bonus")
+		_expect(session.coins == before, "sim_cancel_wallet")
+		_expect(offer.run_coins == 9 and offer.overlay_visible and not offer.claimed, "sim_cancel_keeps_offer")
+
+	func _simulator_unavailable() -> void:
+		var before: int = session.coins
+		ads.prepare_interactive_simulator()
+		offer.open(6)
+		offer.watch()
+		var unavailable: BaseButton = ads.simulator_button("unavailable")
+		_expect(unavailable != null, "sim_unavailable_button")
+		if unavailable:
+			unavailable.pressed.emit()
+			unavailable.pressed.emit()
+		await _await_ad()
+		_expect(offer.bonus_granted == 0, "sim_unavailable_no_bonus")
+		_expect(session.coins == before, "sim_unavailable_wallet")
+		_expect(offer.note == "No ad available" and offer.run_coins == 6 and not offer.claimed, "sim_unavailable_restores")

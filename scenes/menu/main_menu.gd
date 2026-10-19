@@ -19,13 +19,14 @@ const SCORE_NAME_W := 310.0
 const SCORE_VALUE_X := 554.0
 const SCORE_VALUE_W := 150.0
 const SCORE_PAGES := ["daily", "weekly", "monthly"]
-const MODE_W := 950.0
-const MODE_H := 1656.0
-const MODE_UNLIMITED := Rect2(52, 518, 846, 386)
-const MODE_DAILY := Rect2(52, 920, 846, 490)
-const MODE_BACK := Rect2(190, 1428, 570, 132)
-const MODE_NOTE := Rect2(140, 1320, 670, 70)
-const MODE_RESET_LINE := Rect2(150, 1304, 650, 48)
+const MODE_W := 845.0
+const MODE_H := 1860.0
+const MODE_UNLIMITED := Rect2(64, 608, 716, 338)
+const MODE_DAILY := Rect2(62, 976, 720, 310)
+const MODE_MISSIONS := Rect2(16, 1316, 784, 220)
+const MODE_BACK := Rect2(130, 1632, 520, 198)
+const MODE_NOTE := Rect2(90, 1148, 660, 52)
+const MODE_RESET_LINE := Rect2(90, 1250, 660, 28)
 const SWIPE_MIN := 48.0
 const ARROW_BOX := 96.0
 
@@ -91,16 +92,25 @@ var _bob_t := 0.0
 var _card_pos := Vector2.ZERO
 var _card_scale := 1.0
 var _score_pos := Vector2.ZERO
-var _score_scale := 1.0
+var _score_scale := Vector2.ONE
+var _score_back: Button
+var _score_arrow_left_icon: TextureRect
+var _score_arrow_right_icon: TextureRect
+var _score_arrow_left_btn: Button
+var _score_arrow_right_btn: Button
 var _check_t := 0.0
 var _modes: Control
 var _mode_origin := Vector2.ZERO
-var _mode_scale := 1.0
+var _mode_scale := Vector2.ONE
 var _mode_card: TextureRect
 var _mode_reset_cover: Control
 var _mode_note: SpriteTextScript
 var _mode_reset: SpriteTextScript
 var _daily_button: Button
+var _mode_unlimited: Button
+var _mode_back: Button
+var _mission_button: Button
+var _missions: DailyMissionsOverlay
 var _mode_token := 0
 var _mode_busy := false
 var _daily_locked := false
@@ -120,15 +130,18 @@ func _ready() -> void:
 	var card_size := Vector2(OVERLAY_W, OVERLAY_H) * _card_scale
 	var fish_strip := 210.0
 	_card_pos = Vector2((RR.VIEW_W - card_size.x) * 0.5, clampf((RR.VIEW_H - card_size.y - fish_strip) * 0.42, 10.0, 90.0))
-	_score_scale = minf(RR.VIEW_W / SCORE_W, RR.VIEW_H / SCORE_H)
-	var score_size := Vector2(SCORE_W, SCORE_H) * _score_scale
-	_score_pos = Vector2((RR.VIEW_W - score_size.x) * 0.5, (RR.VIEW_H - score_size.y) * 0.5)
 	_home = _layer()
 	_scores = _layer()
 	_scores.visible = false
 	_build_home(card_size)
-	_build_scores(score_size)
+	_build_scores()
 	_build_mode_overlay()
+	_missions = DailyMissionsOverlay.new()
+	_missions.use_screen_board()
+	add_child(_missions)
+	_missions.set_dismissible(true)
+	_missions.present("hidden")
+	_missions.dismissed.connect(_close_missions)
 	var backend := get_node_or_null("/root/Backend")
 	if backend and backend.has_method("prepare_menu"):
 		backend.prepare_menu()
@@ -140,6 +153,10 @@ func _ready() -> void:
 		backend.identity_ready.connect(_on_identity_ready)
 	if backend and backend.has_signal("share_rewards_changed") and not backend.share_rewards_changed.is_connected(_refresh_wallet):
 		backend.share_rewards_changed.connect(_refresh_wallet)
+	if backend and backend.has_signal("daily_missions_changed") and not backend.daily_missions_changed.is_connected(_refresh_wallet):
+		backend.daily_missions_changed.connect(_refresh_wallet)
+	if backend and backend.has_signal("daily_missions_changed") and not backend.daily_missions_changed.is_connected(_on_menu_missions):
+		backend.daily_missions_changed.connect(_on_menu_missions)
 	if not get_viewport().size_changed.is_connected(_sync_menu_anchor):
 		get_viewport().size_changed.connect(_sync_menu_anchor)
 
@@ -199,6 +216,11 @@ func _mark_input_handled() -> void:
 
 
 func _on_menu_touch_press(pos: Vector2) -> void:
+	if _missions and _missions.mode() == "board":
+		if not _missions.card_contains(pos):
+			_close_missions()
+		_mark_input_handled()
+		return
 	if _modes and _modes.visible:
 		if not _press_button_in(_modes, pos):
 			_mark_input_handled()
@@ -305,8 +327,10 @@ func _build_home(card_size: Vector2) -> void:
 	_build_hat_picker()
 
 
-func _build_scores(card_size: Vector2) -> void:
-	_score_card = _overlay_card(Sprites.tex("daily_overlay"), card_size, _score_pos)
+func _build_scores() -> void:
+	_score_card = _overlay_card(Sprites.tex("daily_overlay"), RR.screen_size(), Vector2.ZERO)
+	_score_card.stretch_mode = TextureRect.STRETCH_SCALE
+	_score_card.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	_score_card.z_index = 0
 	_scores.add_child(_score_card)
 	_score_rows = Control.new()
@@ -315,8 +339,10 @@ func _build_scores(card_size: Vector2) -> void:
 	_score_rows.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	_scores.add_child(_score_rows)
 	_build_score_labels()
-	_scores.add_child(_hotspot(BACK_BOX, _show_home, _score_pos, _score_scale))
+	_score_back = _hotspot(BACK_BOX, _show_home, Vector2.ZERO, 1.0)
+	_scores.add_child(_score_back)
 	_build_score_arrows()
+	_layout_scores()
 	_fill_scores()
 
 
@@ -356,6 +382,8 @@ func _sync_menu_anchor() -> void:
 	var bottom := RR.screen_bottom()
 	if _ground:
 		_ground.position = Vector2(0, bottom - RR.GROUND_H)
+	_layout_mode_overlay()
+	_layout_scores()
 	if _hat_clip == null:
 		return
 	var hat_y := minf(_hat_row_y(), bottom - _hat_clip.size.y - 6.0)
@@ -447,7 +475,7 @@ func _build_fish_picker() -> void:
 		hat.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		icon.add_child(hat)
 		_fish_hats.append(hat)
-		var price := _make_hat_price(cell, price_h, RR.FISH_PRICE)
+		var price := _make_hat_price(cell, price_h, RR.fish_price(fish_i))
 		price.position = Vector2(0.0, icon_h + 1.0)
 		price.visible = fish_i >= RR.FREE_FISH
 		_fish_prices.append(price)
@@ -535,7 +563,7 @@ func _build_hat_picker() -> void:
 			icon.add_child(off)
 		_hat_icons.append(icon)
 		holder.add_child(icon)
-		var price := _make_hat_price(cell, price_h)
+		var price := _make_hat_price(cell, price_h, 0 if hat_i < 0 else RR.hat_price(hat_i))
 		price.position = Vector2(0.0, icon_h + 2.0)
 		price.visible = hat_i >= 0
 		price.z_index = 2
@@ -545,7 +573,7 @@ func _build_hat_picker() -> void:
 	_refresh_hat_pick()
 
 
-func _make_hat_price(cell_w: float, price_h: float, amount: int = RR.HAT_PRICE) -> Control:
+func _make_hat_price(cell_w: float, price_h: float, amount: int = 0) -> Control:
 	var wrap := Control.new()
 	wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	wrap.size = Vector2(cell_w, price_h)
@@ -554,12 +582,12 @@ func _make_hat_price(cell_w: float, price_h: float, amount: int = RR.HAT_PRICE) 
 	coin.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	coin.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	coin.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	coin.size = Vector2(18, 18)
-	coin.position = Vector2(cell_w * 0.5 - 28.0, (price_h - 18.0) * 0.5)
+	coin.size = Vector2(16, 16)
+	coin.position = Vector2(1.0, (price_h - 16.0) * 0.5)
 	wrap.add_child(coin)
 	var num := SpriteTextScript.new()
-	num.position = Vector2(cell_w * 0.5 - 8.0, 1.0)
-	num.configure(str(amount), 16, Vector2(40, price_h - 2.0), HORIZONTAL_ALIGNMENT_LEFT, true)
+	num.position = Vector2(16.0, 0.0)
+	num.configure(str(amount), 14, Vector2(maxf(20.0, cell_w - 18.0), price_h), HORIZONTAL_ALIGNMENT_LEFT, true, true)
 	wrap.add_child(num)
 	return wrap
 
@@ -1190,8 +1218,42 @@ func _cycle_score_page(dir: int) -> void:
 
 
 func _score_back_hit(pos: Vector2) -> bool:
-	var box := Rect2(_score_pos + BACK_BOX.position * _score_scale, BACK_BOX.size * _score_scale)
-	return box.has_point(pos)
+	return _score_art_rect(BACK_BOX).has_point(pos)
+
+
+func _score_art_rect(src: Rect2) -> Rect2:
+	return Rect2(src.position * _score_scale, src.size * _score_scale)
+
+
+func _layout_scores() -> void:
+	if _score_card == null:
+		return
+	var screen := RR.screen_size()
+	_score_scale = Vector2(screen.x / SCORE_W, screen.y / SCORE_H)
+	_score_pos = Vector2.ZERO
+	_score_card.position = Vector2.ZERO
+	_score_card.size = screen
+	if _score_back:
+		var back := _score_art_rect(BACK_BOX)
+		_score_back.position = back.position
+		_score_back.size = back.size
+	var glyph_h := _score_glyph_height()
+	var name_h := _score_name_height()
+	for i in _score_names.size():
+		_place_score_line(_score_names[i], _row_content_rect(i, SCORE_NAME_X, SCORE_NAME_W, 2.0), name_h)
+		_place_score_line(_score_values[i], _row_content_rect(i, SCORE_VALUE_X, SCORE_VALUE_W), glyph_h)
+	if _score_status:
+		_place_score_line(_score_status, Rect2(210.0, 352.0, 520.0, 68.0), 0.0)
+	_layout_score_arrows()
+
+
+func _place_score_line(line: SpriteTextScript, src: Rect2, glyph_h: float) -> void:
+	if line == null:
+		return
+	var box := Vector2(src.size.x * _score_scale.x, src.size.y * _score_scale.y)
+	line.position = src.position * _score_scale
+	var height := glyph_h if glyph_h > 0.0 else box.y * 0.92
+	line.resize_box(height, box)
 
 
 func _score_arrow_hit(pos: Vector2) -> bool:
@@ -1200,19 +1262,44 @@ func _score_arrow_hit(pos: Vector2) -> bool:
 
 func _build_score_arrows() -> void:
 	var size := Vector2(ARROW_BOX, ARROW_BOX)
-	var back := Rect2(_score_pos + BACK_BOX.position * _score_scale, BACK_BOX.size * _score_scale)
+	var back := _score_art_rect(BACK_BOX)
 	var y := back.position.y + (back.size.y - size.y) * 0.5
 	var left := Rect2(4.0, y, size.x, size.y)
-	var right := Rect2(RR.VIEW_W - 4.0 - size.x, y, size.x, size.y)
+	var right := Rect2(RR.screen_size().x - 4.0 - size.x, y, size.x, size.y)
 	_score_arrow_left_rect = left.grow(6.0)
 	_score_arrow_right_rect = right.grow(6.0)
-	_score_arrow_icon("btn_score_left", left)
-	_score_arrow_icon("btn_score_right", right)
-	_scores.add_child(_screen_hotspot(_score_arrow_left_rect, _cycle_score_page.bind(-1)))
-	_scores.add_child(_screen_hotspot(_score_arrow_right_rect, _cycle_score_page.bind(1)))
+	_score_arrow_left_icon = _score_arrow_icon("btn_score_left", left)
+	_score_arrow_right_icon = _score_arrow_icon("btn_score_right", right)
+	_score_arrow_left_btn = _screen_hotspot(_score_arrow_left_rect, _cycle_score_page.bind(-1))
+	_score_arrow_right_btn = _screen_hotspot(_score_arrow_right_rect, _cycle_score_page.bind(1))
+	_scores.add_child(_score_arrow_left_btn)
+	_scores.add_child(_score_arrow_right_btn)
 
 
-func _score_arrow_icon(id: String, box: Rect2) -> void:
+func _layout_score_arrows() -> void:
+	if _score_arrow_left_icon == null:
+		return
+	var size := Vector2(ARROW_BOX, ARROW_BOX)
+	var back := _score_art_rect(BACK_BOX)
+	var y := back.position.y + (back.size.y - size.y) * 0.5
+	var left := Rect2(4.0, y, size.x, size.y)
+	var right := Rect2(RR.screen_size().x - 4.0 - size.x, y, size.x, size.y)
+	_score_arrow_left_rect = left.grow(6.0)
+	_score_arrow_right_rect = right.grow(6.0)
+	_place_score_arrow(_score_arrow_left_icon, _score_arrow_left_btn, left, _score_arrow_left_rect)
+	_place_score_arrow(_score_arrow_right_icon, _score_arrow_right_btn, right, _score_arrow_right_rect)
+
+
+func _place_score_arrow(icon: TextureRect, button: Button, box: Rect2, hit: Rect2) -> void:
+	if icon:
+		icon.position = box.position
+		icon.size = box.size
+	if button:
+		button.position = hit.position
+		button.size = hit.size
+
+
+func _score_arrow_icon(id: String, box: Rect2) -> TextureRect:
 	var icon := TextureRect.new()
 	icon.texture = Sprites.tex(id)
 	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
@@ -1221,6 +1308,7 @@ func _score_arrow_icon(id: String, box: Rect2) -> void:
 	icon.position = box.position
 	icon.size = box.size
 	_scores.add_child(icon)
+	return icon
 
 
 func _screen_hotspot(box: Rect2, pressed: Callable) -> Button:
@@ -1250,7 +1338,7 @@ func _score_glyph_height() -> float:
 	for raw in SCORE_ROWS_H:
 		row_h = minf(row_h, float(raw))
 	# Kept under the row height so a three-digit score still fits the column.
-	return row_h * _score_scale * 0.54
+	return row_h * _score_scale.y * 0.54
 
 
 func _score_name_height() -> float:
@@ -1258,7 +1346,7 @@ func _score_name_height() -> float:
 	for raw in SCORE_ROWS_H:
 		row_h = minf(row_h, float(raw))
 	# The row width is what actually sets the size. A wide name shrinks to the column.
-	return row_h * _score_scale
+	return row_h * _score_scale.y
 
 
 func _row_content_rect(index: int, x: float, width: float, inset: float = 10.0) -> Rect2:
@@ -1270,7 +1358,7 @@ func _row_content_rect(index: int, x: float, width: float, inset: float = 10.0) 
 func _add_score_text(src: Rect2, align: HorizontalAlignment, gold_digits: bool, glyph_h: float, fit_box: bool) -> SpriteTextScript:
 	var line := SpriteTextScript.new()
 	line.z_index = 2
-	var box := src.size * _score_scale
+	var box := Vector2(src.size.x * _score_scale.x, src.size.y * _score_scale.y)
 	line.position = _score_pos + src.position * _score_scale
 	var height := glyph_h if glyph_h > 0.0 else box.y * 0.92
 	line.configure("", height, box, align, gold_digits, fit_box)
@@ -1329,17 +1417,17 @@ func _build_mode_overlay() -> void:
 	dim.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	_modes.add_child(dim)
-	_mode_scale = minf(RR.VIEW_W / MODE_W, RR.VIEW_H / MODE_H)
-	var card_size := Vector2(MODE_W, MODE_H) * _mode_scale
-	_mode_origin = Vector2((RR.VIEW_W - card_size.x) * 0.5, (RR.VIEW_H - card_size.y) * 0.5)
-	_mode_card = _overlay_card(Sprites.tex("mode_unlocked"), card_size, _mode_origin)
+	_mode_card = _overlay_card(Sprites.tex("mode_unlocked"), Vector2(MODE_W, MODE_H), Vector2.ZERO)
+	_mode_card.stretch_mode = TextureRect.STRETCH_SCALE
+	_mode_card.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	_modes.add_child(_mode_card)
 	_mode_reset_cover = _mode_cover()
 	_modes.add_child(_mode_reset_cover)
-	var unlimited := _hotspot(MODE_UNLIMITED, _choose_unlimited, _mode_origin, _mode_scale)
-	var daily := _hotspot(MODE_DAILY, _choose_daily, _mode_origin, _mode_scale)
-	var back := _hotspot(MODE_BACK, _close_modes, _mode_origin, _mode_scale)
-	for btn in [unlimited, daily, back]:
+	_mode_unlimited = _hotspot(MODE_UNLIMITED, _choose_unlimited, Vector2.ZERO, 1.0)
+	var daily := _hotspot(MODE_DAILY, _choose_daily, Vector2.ZERO, 1.0)
+	_mode_back = _hotspot(MODE_BACK, _close_modes, Vector2.ZERO, 1.0)
+	_mission_button = _hotspot(MODE_MISSIONS, _open_missions, Vector2.ZERO, 1.0)
+	for btn in [_mode_unlimited, daily, _mode_back, _mission_button]:
 		btn.focus_mode = Control.FOCUS_NONE
 		_modes.add_child(btn)
 	_daily_button = daily
@@ -1353,7 +1441,49 @@ func _build_mode_overlay() -> void:
 	_mode_reset.visible = false
 	_mode_reset.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_modes.add_child(_mode_reset)
+	_layout_mode_overlay()
+
+
+func _open_missions() -> void:
+	if _missions == null:
+		return
+	_missions.refresh_from_session()
+	_missions.present("board", true)
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("refresh_daily_missions"):
+		backend.refresh_daily_missions()
+
+
+func _close_missions() -> void:
+	if _missions:
+		_missions.present("hidden")
+
+
+func _on_menu_missions() -> void:
+	if _missions and _missions.mode() == "board":
+		_missions.refresh_from_session()
+
+
+func _layout_mode_overlay() -> void:
+	if _mode_card == null or _modes == null:
+		return
+	var screen := RR.screen_size()
+	_mode_scale = Vector2(screen.x / MODE_W, screen.y / MODE_H)
+	_mode_origin = Vector2.ZERO
+	_mode_card.position = Vector2.ZERO
+	_mode_card.size = screen
+	_place_hotspot(_mode_unlimited, MODE_UNLIMITED)
+	_place_hotspot(_daily_button, MODE_DAILY)
+	_place_hotspot(_mission_button, MODE_MISSIONS)
+	_place_hotspot(_mode_back, MODE_BACK)
 	_layout_mode_status()
+
+
+func _place_hotspot(btn: Button, src: Rect2) -> void:
+	if btn == null:
+		return
+	btn.position = _mode_origin + src.position * _mode_scale
+	btn.size = src.size * _mode_scale
 
 
 func _mode_cover() -> Panel:
@@ -1404,6 +1534,7 @@ func _open_modes() -> void:
 	else:
 		_set_mode_note("")
 		_set_mode_reset("")
+	_layout_mode_overlay()
 	_refresh_daily_status()
 
 
@@ -1412,6 +1543,7 @@ func _close_modes() -> void:
 	_mode_busy = false
 	if _modes:
 		_modes.visible = false
+	_close_missions()
 	_set_mode_note("")
 	_set_mode_reset("")
 	var backend := get_node_or_null("/root/Backend")

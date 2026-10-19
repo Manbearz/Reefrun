@@ -1,3 +1,7 @@
+-- DO NOT RUN THIS FILE. It updates profiles.coins. The live profiles table
+-- used by ReefRun does not rely on that column. Review and run
+-- tools/supabase/share_rewards_safe.sql instead, and only after approval.
+--
 -- Share Rewards. Run this yourself in Supabase → SQL Editor → New query.
 -- Do not run it from the game. The game keeps using the anon key only.
 --

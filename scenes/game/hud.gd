@@ -19,6 +19,8 @@ var _score := -1
 var _coins := -1
 var _feed_tween: Tween
 var _glyph_probe: SpriteTextScript
+var _suppress_lobby_chrome := false
+var _chrome_fade: Tween
 
 
 func _ready() -> void:
@@ -116,16 +118,67 @@ func refresh(alive_count: int, score: int, started: bool, player_alive: bool) ->
 		crown.texture = Sprites.tex("crown_gold" if alive_count <= 3 else "crown_silver")
 
 
+func set_mission_card(active: bool, reveal_sec := 0.0) -> void:
+	_suppress_lobby_chrome = active
+	if active:
+		_stop_chrome_fade()
+		_show_lobby_chrome(false)
+		return
+	if reveal_sec > 0.0:
+		_fade_in_lobby_chrome(reveal_sec)
+
+
 func set_lobby(active: bool, starts_in: int) -> void:
-	lobby_text.visible = active
-	lobby_time.visible = active
+	var show_chrome := active and not _suppress_lobby_chrome
 	score_text.visible = not active
-	if jump_hint:
-		jump_hint.visible = active
+	if not show_chrome:
+		if _chrome_fade == null:
+			_show_lobby_chrome(false)
+	elif _chrome_fade == null:
+		_show_lobby_chrome(true)
 	if active:
 		hint_text.visible = false
 		lobby_text.set_value("LOBBY")
 		lobby_time.set_value(str(maxi(0, starts_in)))
+
+
+func _show_lobby_chrome(show: bool) -> void:
+	lobby_text.visible = show
+	lobby_time.visible = show
+	lobby_text.modulate.a = 1.0 if show else 0.0
+	lobby_time.modulate.a = 1.0 if show else 0.0
+	if jump_hint:
+		jump_hint.visible = show
+		jump_hint.modulate.a = 1.0 if show else 0.0
+
+
+func _stop_chrome_fade() -> void:
+	if _chrome_fade:
+		_chrome_fade.kill()
+		_chrome_fade = null
+
+
+func _fade_in_lobby_chrome(seconds: float) -> void:
+	_stop_chrome_fade()
+	lobby_text.visible = true
+	lobby_time.visible = true
+	lobby_text.modulate.a = 0.0
+	lobby_time.modulate.a = 0.0
+	if jump_hint:
+		jump_hint.visible = true
+		jump_hint.modulate.a = 0.0
+	var fade := create_tween()
+	_chrome_fade = fade
+	fade.set_pause_mode(Tween.TWEEN_PAUSE_PROCESS)
+	fade.set_parallel(true)
+	fade.tween_property(lobby_text, "modulate:a", 1.0, seconds).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	fade.tween_property(lobby_time, "modulate:a", 1.0, seconds).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	if jump_hint:
+		fade.tween_property(jump_hint, "modulate:a", 1.0, seconds).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	fade.finished.connect(func() -> void:
+		if _chrome_fade == fade:
+			_chrome_fade = null
+	)
 
 
 func set_countdown(value: String) -> void:

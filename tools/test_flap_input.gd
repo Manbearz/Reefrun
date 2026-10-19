@@ -9,7 +9,8 @@ class Runner extends Node:
 		var game: Node = load("res://scenes/game/game.tscn").instantiate()
 		add_child(game)
 		var waited := 0.0
-		while not bool(game.get("started")) and waited < 8.0:
+		# Unlimited lobby is 8 seconds, so the old 8 second cap quit on the start frame.
+		while not bool(game.get("started")) and waited < 10.5:
 			await get_tree().process_frame
 			waited += get_process_delta_time()
 		if not bool(game.get("started")):

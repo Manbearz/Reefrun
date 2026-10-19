@@ -15,12 +15,16 @@ const CourseBuilderScript := preload("res://scripts/course_builder.gd")
 const GhostMatchScript := preload("res://scripts/ghost_match.gd")
 const FallbackScript := preload("res://scripts/fallback_ghost_factory.gd")
 const ShareRewardScript := preload("res://scripts/backend/share_reward_repository.gd")
+const DailyMissionRepoScript := preload("res://scripts/backend/daily_mission_repository.gd")
+const DailyMissionsScript := preload("res://scripts/daily_missions.gd")
 const ReferralRulesScript := preload("res://scripts/share/referral_rules.gd")
 
 signal signed_in(user_id: String)
 signal identity_ready
 signal leaderboards_ready
 signal share_rewards_changed
+signal daily_missions_changed
+signal mission_reward_granted(slot: String, coins: int, mission_date: String)
 
 var auth = null
 var _client = null
@@ -28,6 +32,13 @@ var _profiles = null
 var _seeds = null
 var _leaderboards = null
 var _share_rewards = null
+var _missions = null
+var _mission_busy := false
+var _mission_flush_again := false
+var _mission_auto_claim := false
+var _mission_claim_blocked := ""
+var _mission_claim_date := ""
+var mission_note := ""
 var _share_reward_busy := false
 var global_daily: Array = []
 var global_weekly: Array = []
@@ -60,6 +71,7 @@ func _ready() -> void:
 	_seeds = CourseSeedScript.new()
 	_leaderboards = LeaderboardScript.new()
 	_share_rewards = ShareRewardScript.new()
+	_missions = DailyMissionRepoScript.new()
 	if not ConfigScript.is_configured():
 		_resolve_identity()
 		_log_daily_auth("unconfigured")
@@ -365,6 +377,7 @@ func _resolve_identity() -> void:
 		GameSession.ensure_local_fallback_id()
 	_auth_logged = true
 	identity_ready.emit()
+	call_deferred("flush_daily_missions")
 
 
 func _adopt_supabase_user(uid: String) -> void:
@@ -1269,3 +1282,151 @@ func _log_share(rpc_name: String, result: Dictionary) -> void:
 		int(parsed.get("granted_coins", 0)),
 		str(bool(parsed.get("first_run", false))),
 	])
+
+
+func mission_busy() -> bool:
+	return _mission_busy
+
+
+func refresh_daily_missions() -> void:
+	flush_daily_missions()
+
+
+func flush_daily_missions() -> void:
+	if _mission_busy:
+		_mission_flush_again = true
+		return
+	if not is_configured() or _missions == null:
+		if GameSession.mission_board.is_empty():
+			mission_note = "error"
+			daily_missions_changed.emit()
+		return
+	if not has_session():
+		if GameSession.mission_board.is_empty():
+			mission_note = "loading"
+			daily_missions_changed.emit()
+		return
+	_mission_claim_blocked = ""
+	_mission_busy = true
+	if GameSession.mission_board.is_empty():
+		mission_note = "loading"
+		daily_missions_changed.emit()
+	var pending: Array = GameSession.pending_mission_runs.duplicate()
+	var stopped := false
+	for run in pending:
+		if typeof(run) != TYPE_DICTIONARY:
+			continue
+		var result: Dictionary = await _authed_request(
+			"POST",
+			_missions.record_url(),
+			_missions.record_body(
+				str(run.get("id", "")),
+				int(run.get("pipes", 0)),
+				int(run.get("seconds", 0)),
+				int(run.get("coins", 0))
+			),
+			true,
+			false
+		)
+		var data: Variant = result.get("data", {})
+		var reason := ""
+		var accepted := false
+		if typeof(data) == TYPE_DICTIONARY:
+			reason = str(data.get("reason", ""))
+			accepted = bool(data.get("ok", false))
+		if reason == "rejected" or reason == "duplicate" or accepted:
+			GameSession.drop_mission_run(str(run.get("id", "")))
+			if accepted:
+				GameSession.apply_mission_board(data)
+		else:
+			stopped = true
+			break
+	if not stopped:
+		var board_result: Dictionary = await _authed_request("POST", _missions.board_url(), "{}", true, false)
+		var board: Variant = board_result.get("data", {})
+		if bool(board_result.get("ok", false)) and typeof(board) == TYPE_DICTIONARY and bool(board.get("ok", false)):
+			GameSession.apply_mission_board(board)
+			mission_note = ""
+		elif GameSession.mission_board.is_empty():
+			mission_note = "error"
+	elif GameSession.mission_board.is_empty():
+		mission_note = "error"
+	_mission_busy = false
+	daily_missions_changed.emit()
+	_finish_mission_flush()
+
+
+func claim_daily_mission(slot: String) -> void:
+	if _mission_busy:
+		_mission_auto_claim = true
+		return
+	var board: Dictionary = GameSession.mission_board if GameSession.mission_board is Dictionary else {}
+	var wanted := DailyMissionsScript.next_auto_claim(board, _mission_claim_blocked)
+	if wanted == "":
+		return
+	slot = wanted
+	if not is_configured() or not has_session() or _missions == null:
+		_mission_claim_blocked = slot
+		return
+	_mission_busy = true
+	var result: Dictionary = await _authed_request(
+		"POST",
+		_missions.claim_url(),
+		_missions.claim_body(slot),
+		true,
+		false
+	)
+	var data: Variant = result.get("data", {})
+	var credited := bool(result.get("ok", false)) and typeof(data) == TYPE_DICTIONARY and bool(data.get("ok", false))
+	var reason := ""
+	var granted := 0
+	if typeof(data) == TYPE_DICTIONARY:
+		reason = str(data.get("reason", ""))
+		granted = int(data.get("granted_now", 0))
+	if credited:
+		var delta := GameSession.apply_mission_board(data)
+		mission_note = ""
+		var follow := DailyMissionsScript.next_auto_claim(GameSession.mission_board)
+		# The same slot still being eligible means the board did not record the claim.
+		_mission_claim_blocked = slot if follow == slot else ""
+		if delta > 0:
+			print("[missions] claimed slot=%s coins=%d" % [slot, delta])
+		# "already" and board refreshes credit nothing new, so they stay silent.
+		if reason == "claimed" and granted > 0:
+			var mission_date := str(GameSession.mission_board.get("mission_date", ""))
+			mission_reward_granted.emit(slot, granted, mission_date)
+	else:
+		_mission_claim_blocked = slot
+		if not bool(result.get("ok", false)):
+			_log_rpc("claim_daily_mission", result)
+		if GameSession.mission_board.is_empty():
+			mission_note = "error"
+	_mission_busy = false
+	daily_missions_changed.emit()
+	_finish_mission_flush()
+
+
+func _schedule_auto_claim() -> void:
+	if _mission_busy:
+		_mission_auto_claim = true
+		return
+	var board: Dictionary = GameSession.mission_board if GameSession.mission_board is Dictionary else {}
+	var date := str(board.get("mission_date", ""))
+	if date != _mission_claim_date:
+		if _mission_claim_date != "":
+			_mission_claim_blocked = ""
+		_mission_claim_date = date
+	var slot := DailyMissionsScript.next_auto_claim(board, _mission_claim_blocked)
+	if slot == "":
+		return
+	claim_daily_mission(slot)
+
+
+func _finish_mission_flush() -> void:
+	if _mission_flush_again:
+		_mission_flush_again = false
+		_mission_auto_claim = false
+		call_deferred("flush_daily_missions")
+		return
+	_mission_auto_claim = false
+	_schedule_auto_claim()

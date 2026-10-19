@@ -15,6 +15,8 @@ const FLOOR_THICK := 80.0
 const PLAYER_X := 108.0
 const COUNTDOWN := 3.0
 const LOBBY_SECS := 5.0
+const UNLIMITED_LOBBY_SECS := 8.0
+const UNLIMITED_BOARD_SECS := 3.0
 
 # Flappy Royale values scaled to this 960px playfield.
 const GRAVITY := 1840.0
@@ -49,8 +51,34 @@ const HARPOON_FRAME := 0.02
 const HARPOON_HOLD := 0.5
 
 const FREE_FISH := 6
-const FISH_PRICE := 50
 const FISH_COUNT := 70
+const RARITY_COMMON := 0
+const RARITY_RARE := 1
+const RARITY_LEGENDARY := 2
+const HAT_TIER_PRICE: PackedInt32Array = [250, 500, 1000]
+const FISH_TIER_PRICE: PackedInt32Array = [500, 1000, 2000]
+# Index matches FISH_IDS. The first FREE_FISH entries stay free regardless of tier.
+const FISH_RARITY: PackedInt32Array = [
+	0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
+	0, 0, 1, 0, 0, 0, 0, 0, 2, 0,
+	0, 1, 2, 0, 1, 1, 0, 0, 0, 1,
+	1, 1, 0, 1, 1, 1, 1, 0, 1, 0,
+	1, 0, 2, 0, 0, 2, 0, 0, 1, 0,
+	1, 0, 0, 0, 2, 1, 0, 0, 1, 1,
+	2, 0, 2, 0, 2, 1, 1, 1, 1, 0,
+]
+# Index matches hat_00 .. hat_87.
+const HAT_RARITY: PackedInt32Array = [
+	2, 0, 1, 0, 1, 0, 0, 0, 1, 2,
+	0, 0, 1, 0, 1, 1, 1, 0, 0, 1,
+	1, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+	1, 0, 1, 1, 0, 1, 1, 0, 1, 2,
+	2, 1, 1, 1, 1, 2, 2, 0, 0, 0,
+	0, 1, 1, 1, 0, 0, 1, 1, 1, 2,
+	1, 2, 0, 0, 0, 0, 2, 2, 0, 1,
+	1, 1, 0, 1, 1, 0, 1, 1, 2, 1,
+	1, 2, 2, 0, 2, 1, 1, 2,
+]
 const FISH_IDS: PackedStringArray = [
 	"fish_blue", "fish_clown", "fish_yellow", "fish_green", "fish_pink", "fish_purple",
 	"fish_06", "fish_07", "fish_08", "fish_09", "fish_10", "fish_11", "fish_12", "fish_13",
@@ -66,7 +94,6 @@ const FISH_NAMES: PackedStringArray = [
 	"Blue Tang", "Clown", "Goldie", "Kelp", "Pinkfin", "Violet"
 ]
 const HAT_COUNT := 88
-const HAT_PRICE := 50
 const HAT_SCALE := 0.185
 const GAME_HAT_SCALE := 0.24
 const HAT_BRIM := 0.46
@@ -99,6 +126,42 @@ static func screen_bottom() -> float:
 
 static func screen_size() -> Vector2:
 	return Vector2(VIEW_W, screen_bottom())
+
+
+static func lobby_length(show_missions: bool) -> float:
+	if show_missions:
+		return UNLIMITED_LOBBY_SECS
+	return LOBBY_SECS
+
+
+static func lobby_fold_due(elapsed: float, show_missions: bool) -> bool:
+	return show_missions and elapsed >= UNLIMITED_BOARD_SECS
+
+
+static func lobby_finished(elapsed: float, length: float) -> bool:
+	return elapsed >= length
+
+
+static func fish_price(index: int) -> int:
+	if index < FREE_FISH:
+		return 0
+	return _tier_price(FISH_TIER_PRICE, _rarity_at(FISH_RARITY, index))
+
+
+static func hat_price(index: int) -> int:
+	return _tier_price(HAT_TIER_PRICE, _rarity_at(HAT_RARITY, index))
+
+
+static func _rarity_at(table: PackedInt32Array, index: int) -> int:
+	if index < 0 or index >= table.size():
+		return RARITY_COMMON
+	return clampi(table[index], RARITY_COMMON, RARITY_LEGENDARY)
+
+
+static func _tier_price(table: PackedInt32Array, rarity: int) -> int:
+	if rarity < 0 or rarity >= table.size():
+		return table[0]
+	return table[rarity]
 
 
 static func hat_id(index: int) -> String:
