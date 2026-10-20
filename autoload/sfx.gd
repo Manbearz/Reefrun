@@ -17,6 +17,7 @@ func _ready() -> void:
 	_streams["coin"] = load("res://assets/sfx/coin.wav")
 	_streams["splat"] = load("res://assets/sfx/splat.wav")
 	_streams["death"] = load("res://assets/sfx/death.wav")
+	_streams["whoosh"] = load("res://assets/sfx/whoosh.wav")
 	bypass_swim = _detect_bypass_swim()
 	for i in POOL_SIZE:
 		var player := AudioStreamPlayer.new()
@@ -50,8 +51,17 @@ func play(id: String, volume_db: float = 0.0) -> void:
 	player.play()
 
 
+func stop(id: String) -> void:
+	var stream := _streams.get(id) as AudioStream
+	if stream == null:
+		return
+	for player in _players:
+		if player.playing and player.stream == stream:
+			player.stop()
+
+
 func prewarm() -> void:
-	for id in ["swim", "checkpoint", "coin", "grappling"]:
+	for id in ["swim", "checkpoint", "coin", "grappling", "whoosh"]:
 		play(id, -80.0)
 
 

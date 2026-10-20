@@ -4,7 +4,7 @@ extends CanvasLayer
 const GlyphScript := preload("res://scripts/mission_glyph.gd")
 const SpriteTextScript := preload("res://scripts/sprite_text.gd")
 
-const ART_PATH := "res://assets/sprites/daily_missions_card.png"
+const ART_PATH := "res://assets/sprites/daily_missions_card_board.png"
 const CHECK_PATH := "res://assets/sprites/checkmark.png"
 const ART_SIZE := Vector2(1145, 1374)
 # Missions artwork only. The baked "Tap to Jump Up" banner starts lower and stays clipped.
@@ -14,89 +14,124 @@ const SHADE := Color(0.0, 0.07, 0.16, 0.5)
 const SLOTS: PackedStringArray = ["easy", "medium", "hard"]
 
 const DESC := [
-	Rect2(312, 460, 478, 68),
-	Rect2(312, 604, 478, 68),
-	Rect2(312, 748, 478, 68),
+	Rect2(348, 486, 280, 30),
+	Rect2(348, 630, 280, 30),
+	Rect2(348, 776, 280, 30),
 ]
+# Interior of the painted bar, inside the frame. The fill is clipped to this groove.
 const TRACK := [
-	Rect2(312, 532, 320, 40),
-	Rect2(312, 676, 320, 40),
-	Rect2(312, 820, 320, 40),
+	Rect2(344, 538, 300, 30),
+	Rect2(344, 683, 300, 30),
+	Rect2(344, 828, 300, 30),
 ]
+const LOBBY_COIN := [
+	Rect2(802, 476, 71, 92),
+	Rect2(802, 622, 72, 92),
+	Rect2(802, 769, 72, 93),
+]
+const LOBBY_COIN_TEX: PackedStringArray = [
+	"res://assets/sprites/lobby_coin_1.png",
+	"res://assets/sprites/lobby_coin_2.png",
+	"res://assets/sprites/lobby_coin_3.png",
+]
+const LOBBY_BONUS_COIN := Rect2(802, 910, 75, 97)
+const LOBBY_BONUS_COIN_TEX := "res://assets/sprites/lobby_coin_bonus.png"
 const COUNT := [
-	Rect2(642, 530, 140, 44),
-	Rect2(642, 674, 140, 44),
-	Rect2(642, 818, 140, 44),
+	Rect2(668, 536, 104, 34),
+	Rect2(668, 681, 104, 34),
+	Rect2(668, 826, 104, 34),
 ]
 const REWARD := [
-	Rect2(858, 488, 136, 76),
-	Rect2(858, 632, 136, 76),
-	Rect2(858, 776, 136, 76),
+	Rect2(878, 500, 70, 52),
+	Rect2(878, 645, 70, 52),
+	Rect2(878, 790, 70, 52),
 ]
 const CHECK := [
-	Rect2(830, 478, 140, 96),
-	Rect2(830, 622, 140, 96),
-	Rect2(830, 766, 140, 96),
+	Rect2(821, 468, 108, 108),
+	Rect2(821, 613, 108, 108),
+	Rect2(821, 758, 108, 108),
 ]
 const COIN_COVER := [
 	Rect2(796, 470, 176, 106),
 	Rect2(796, 614, 176, 106),
 	Rect2(796, 762, 176, 106),
 ]
-const BONUS_REWARD := Rect2(858, 928, 136, 80)
-const BONUS_CHECK := Rect2(830, 922, 140, 96)
+const BONUS_REWARD := Rect2(888, 944, 72, 44)
+const BONUS_CHECK := Rect2(830, 906, 108, 108)
+const BONUS_TITLE := Rect2(368, 914, 390, 36)
 const BONUS_COIN_COVER := Rect2(796, 902, 190, 128)
 const ICONS := [
-	Rect2(216, 481, 84, 84),
-	Rect2(216, 626, 84, 84),
-	Rect2(216, 771, 84, 84),
+	Rect2(218, 486, 80, 80),
+	Rect2(218, 630, 80, 80),
+	Rect2(218, 776, 80, 80),
 ]
 const STATUS := [
-	Rect2(388, 961, 30, 30),
-	Rect2(550, 961, 30, 30),
-	Rect2(711, 961, 30, 30),
+	Rect2(379, 963, 48, 48),
+	Rect2(540, 963, 48, 48),
+	Rect2(702, 963, 48, 48),
 ]
 # Full-screen board shown from the Daily Missions button. Lobby keeps the folding card.
-const SCREEN_PATH := "res://assets/sprites/main_daily_missions.png"
+const SCREEN_PATH := "res://assets/sprites/main_daily_missions_board.png"
 const SCREEN_SIZE := Vector2(941, 1672)
-const SCREEN_PLATE := Color8(2, 66, 126)
+# Header, board, and BACK button. Side water outside this band may be cropped.
+const SCREEN_KEEP := Rect2(64, 140, 820, 1476)
+# Icon circles through the reward checks. This is the part that must stay on screen.
+const SCREEN_FOCUS := Rect2(108, 140, 780, 1476)
+# Right edge of the blue mission card. The picture shifts so this meets the screen.
+const SCREEN_CARD_RIGHT := 865.0
+const SCREEN_WATER := Color8(2, 16, 40)
+const COIN_ICON := "res://assets/ui/mission_icons/collect_coins.png"
 const SCREEN_DESC := [
-	Rect2(244, 698, 408, 64),
-	Rect2(244, 846, 408, 76),
-	Rect2(244, 1002, 408, 76),
+	Rect2(248, 704, 390, 52),
+	Rect2(248, 848, 390, 68),
+	Rect2(248, 1004, 390, 68),
 ]
+# Interior of the painted capsule, after the baked green fill was removed.
 const SCREEN_TRACK := [
-	Rect2(248, 770, 270, 28),
-	Rect2(248, 926, 270, 32),
-	Rect2(248, 1084, 270, 32),
+	Rect2(254, 768, 260, 26),
+	Rect2(254, 928, 260, 26),
+	Rect2(254, 1086, 260, 26),
 ]
 const SCREEN_COUNT := [
-	Rect2(526, 766, 118, 32),
-	Rect2(520, 922, 124, 34),
-	Rect2(514, 1080, 136, 34),
+	Rect2(528, 764, 108, 32),
+	Rect2(528, 924, 108, 32),
+	Rect2(528, 1082, 108, 32),
 ]
+# One shared cluster: 46px coin, 8px gap, 76px number, centered in each reward well.
 const SCREEN_REWARD := [
-	Rect2(668, 708, 160, 96),
-	Rect2(660, 856, 172, 108),
-	Rect2(660, 1014, 172, 108),
+	Rect2(741, 733, 76, 40),
+	Rect2(739, 895, 76, 40),
+	Rect2(741, 1053, 76, 40),
+]
+const SCREEN_COIN_ICON := [
+	Rect2(687, 730, 46, 46),
+	Rect2(685, 892, 46, 46),
+	Rect2(687, 1050, 46, 46),
 ]
 const SCREEN_CHECK := [
-	Rect2(692, 712, 120, 90),
-	Rect2(684, 864, 128, 92),
-	Rect2(684, 1022, 128, 92),
+	Rect2(698, 699, 108, 108),
+	Rect2(696, 861, 108, 108),
+	Rect2(698, 1019, 108, 108),
 ]
 const SCREEN_COIN := [
-	Rect2(656, 692, 200, 124),
-	Rect2(656, 848, 200, 124),
-	Rect2(656, 1006, 200, 124),
+	Rect2(0, 0, 0, 0),
+	Rect2(0, 0, 0, 0),
+	Rect2(0, 0, 0, 0),
 ]
-const SCREEN_BONUS_REWARD := Rect2(664, 1180, 168, 104)
-const SCREEN_BONUS_CHECK := Rect2(692, 1184, 120, 92)
-const SCREEN_BONUS_COIN := Rect2(656, 1168, 200, 124)
+const SCREEN_BONUS_REWARD := Rect2(743, 1215, 76, 40)
+const SCREEN_BONUS_COIN_ICON := Rect2(689, 1212, 46, 46)
+const SCREEN_BONUS_CHECK := Rect2(700, 1181, 108, 108)
+# Left, middle, and right circles under "COMPLETE ALL 3 MISSIONS".
+const SCREEN_STATUS := [
+	Rect2(274, 1227, 50, 50),
+	Rect2(415, 1227, 50, 50),
+	Rect2(555, 1227, 50, 50),
+]
+const SCREEN_BONUS_COIN := Rect2(0, 0, 0, 0)
 const SCREEN_ICONS := [
-	Rect2(0, 0, 0, 0),
-	Rect2(0, 0, 0, 0),
-	Rect2(0, 0, 0, 0),
+	Rect2(131, 716, 80, 80),
+	Rect2(131, 868, 80, 80),
+	Rect2(133, 1026, 80, 80),
 ]
 const SCREEN_BACK := Rect2(200, 1418, 540, 168)
 signal dismissed
@@ -105,12 +140,11 @@ const FOLD_SECS := 0.30
 const WIDGET_SIZE := Vector2(168, 54)
 const TOAST_SIZE := Vector2(210, 56)
 const BORDER := Color8(146, 210, 240)
+const REWARD_PLATE := Color8(0, 64, 116)
 
 const TRACK_COLOR := Color8(1, 38, 76)
 const FILL_COLOR := Color8(49, 227, 97)
-const PILL := Color8(0, 39, 79)
 const PANEL := Color8(0, 64, 113)
-const DESC_PLATE := Color8(4, 74, 128)
 
 var _host: Control
 var _descriptions: Array[_BubbleText] = []
@@ -119,13 +153,21 @@ var _counters: Array[SpriteText] = []
 var _reward_text: Array[SpriteText] = []
 var _reward_backs: Array[CanvasItem] = []
 var _coin_covers: Array[Panel] = []
+var _coin_icons: Array[TextureRect] = []
 var _marks: Array[_RewardMark] = []
 var _icon_holders: Array[Control] = []
 var _status: Array = []
 var _bonus_text: SpriteText
 var _bonus_back: CanvasItem
 var _bonus_cover: Panel
+var _bonus_coin_icon: TextureRect
 var _bonus_mark: _RewardMark
+var _screen_fill: ColorRect
+var _edge_top: TextureRect
+var _edge_bottom: TextureRect
+var _edge_top_tex: ImageTexture
+var _edge_bottom_tex: ImageTexture
+var _board_pixels: Image
 var _fill_ratio: Array[float] = [0.0, 0.0, 0.0]
 var _applied := false
 var _widget: Panel
@@ -156,7 +198,6 @@ var _status_rect: Array = STATUS
 var _bonus_reward: Rect2 = BONUS_REWARD
 var _bonus_check: Rect2 = BONUS_CHECK
 var _bonus_coin: Rect2 = BONUS_COIN_COVER
-var _desc_color: Color = DESC_PLATE
 
 
 func use_screen_board() -> void:
@@ -168,11 +209,10 @@ func use_screen_board() -> void:
 	_check = SCREEN_CHECK
 	_coin = SCREEN_COIN
 	_icons = SCREEN_ICONS
-	_status_rect = []
+	_status_rect = SCREEN_STATUS
 	_bonus_reward = SCREEN_BONUS_REWARD
 	_bonus_check = SCREEN_BONUS_CHECK
 	_bonus_coin = SCREEN_BONUS_COIN
-	_desc_color = SCREEN_PLATE
 
 
 func _ready() -> void:
@@ -181,6 +221,7 @@ func _ready() -> void:
 	var root := Control.new()
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.clip_contents = _screen
 	add_child(root)
 	_shade = ColorRect.new()
 	_shade.color = SHADE
@@ -189,6 +230,16 @@ func _ready() -> void:
 	_shade.visible = false
 	_shade.gui_input.connect(_on_shade_input)
 	root.add_child(_shade)
+	if _screen:
+		_screen_fill = ColorRect.new()
+		_screen_fill.color = SCREEN_WATER
+		_screen_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_screen_fill.visible = false
+		root.add_child(_screen_fill)
+		_edge_top = _bleed_rect()
+		_edge_bottom = _bleed_rect()
+		root.add_child(_edge_top)
+		root.add_child(_edge_bottom)
 	_host = Control.new()
 	_host.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_host.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
@@ -209,16 +260,21 @@ func _ready() -> void:
 		_build_row(i)
 	_bonus_text = _reward_label(_bonus_reward, "+25", true)
 	_bonus_cover = _add_coin_cover(_bonus_coin)
-	_bonus_mark = _add_mark(_bonus_coin)
+	var bonus_coin := SCREEN_BONUS_COIN_ICON if _screen else LOBBY_BONUS_COIN
+	var bonus_tex := COIN_ICON if _screen else LOBBY_BONUS_COIN_TEX
+	_bonus_coin_icon = _add_coin_icon(bonus_coin, bonus_tex)
+	_bonus_mark = _add_mark(_bonus_check)
 	if _screen:
 		_build_screen_back()
+	else:
+		var title := _BubbleText.new()
+		title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		title.position = BONUS_TITLE.position
+		title.size = BONUS_TITLE.size
+		_host.add_child(title)
+		title.show_text("Complete all 3 missions")
 	for i in _status_rect.size():
-		var dot := _StatusDot.new()
-		dot.position = _status_rect[i].position
-		dot.size = _status_rect[i].size
-		dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_host.add_child(dot)
-		_status.append(dot)
+		_status.append(_add_mark(_status_rect[i]))
 	_build_widget()
 	_build_toast()
 	if not get_viewport().size_changed.is_connected(layout_to_screen):
@@ -256,6 +312,7 @@ func present(next: String, immediate := false) -> void:
 		visible = false
 		if _host:
 			_host.visible = false
+		_hide_screen_fill()
 		if _widget:
 			_widget.visible = false
 		_clear_toast_motion()
@@ -279,12 +336,78 @@ func present(next: String, immediate := false) -> void:
 	_pump_toast()
 
 
+static func screen_board_rect(screen: Vector2, margins: Vector4) -> Rect2:
+	# One scale. Fill the viewport when that still keeps the mission board on
+	# screen. On a taller phone, crop the side water and pin the picture to the
+	# top so the header meets the top of the screen.
+	var focus := SCREEN_FOCUS
+	var cover_scale := maxf(screen.x / SCREEN_SIZE.x, screen.y / SCREEN_SIZE.y)
+	var fit_scale := minf(screen.x / focus.size.x, screen.y / focus.size.y)
+	var scale := minf(cover_scale, fit_scale)
+	var art_size := SCREEN_SIZE * scale
+	var min_x := margins.x - focus.position.x * scale
+	var max_x := screen.x - margins.z - (focus.position.x + focus.size.x) * scale
+	if min_x > max_x:
+		var mid_x := (min_x + max_x) * 0.5
+		min_x = mid_x
+		max_x = mid_x
+	var origin_x := (screen.x - art_size.x) * 0.5
+	if art_size.x >= screen.x - 0.5:
+		var lo_x := maxf(min_x, screen.x - art_size.x)
+		var hi_x := minf(max_x, 0.0)
+		if lo_x <= hi_x:
+			origin_x = (lo_x + hi_x) * 0.5
+		else:
+			origin_x = clampf((screen.x - art_size.x) * 0.5, minf(min_x, max_x), maxf(min_x, max_x))
+	else:
+		origin_x = clampf(origin_x, minf(min_x, max_x), maxf(min_x, max_x))
+	if art_size.x >= screen.x - 0.5:
+		var card_x := screen.x - SCREEN_CARD_RIGHT * scale
+		origin_x = clampf(card_x, screen.x - art_size.x, 0.0)
+	var min_y := margins.y - focus.position.y * scale
+	var back_bottom := SCREEN_BACK.position.y + SCREEN_BACK.size.y
+	var max_y := minf(screen.y - (focus.position.y + focus.size.y) * scale, screen.y - margins.w - back_bottom * scale)
+	if min_y > max_y:
+		var mid_y := (min_y + max_y) * 0.5
+		min_y = mid_y
+		max_y = mid_y
+	var origin_y := clampf(0.0, min_y, max_y)
+	if art_size.y >= screen.y - 0.5 and (origin_y > 0.5 or origin_y + art_size.y < screen.y - 0.5):
+		var lo_y := maxf(min_y, screen.y - art_size.y)
+		var hi_y := minf(max_y, 0.0)
+		if lo_y <= hi_y:
+			origin_y = lo_y
+	return Rect2(Vector2(origin_x, origin_y), art_size)
+
+
+func placed_screen_board() -> Rect2:
+	var screen := _viewport_size()
+	return screen_board_rect(screen, _safe_margins(screen))
+
+
+static func screen_cover_rect(screen: Vector2) -> Rect2:
+	return Rect2(Vector2.ZERO, screen)
+
+
 func board_fills_screen() -> bool:
-	if not _screen or _host == null or _mode != "board":
+	if not _screen or _host == null or _screen_fill == null or _mode != "board":
 		return false
 	var screen := _viewport_size()
-	var scale := Vector2(screen.x / SCREEN_SIZE.x, screen.y / SCREEN_SIZE.y)
-	return _host.visible and _host.position.is_equal_approx(Vector2.ZERO) and _host.scale.is_equal_approx(scale) and is_equal_approx(_host.size.x, SCREEN_SIZE.x) and is_equal_approx(_host.size.y, SCREEN_SIZE.y)
+	var placed := placed_screen_board()
+	var scale := placed.size.x / SCREEN_SIZE.x
+	var covered := _screen_fill.visible and _screen_fill.position.is_equal_approx(Vector2.ZERO) and _screen_fill.size.is_equal_approx(screen)
+	var content := _host.visible and _host.position.is_equal_approx(placed.position) and _host.scale.is_equal_approx(Vector2(scale, scale))
+	var art_count := 0
+	for child in _host.get_children():
+		if child is TextureRect and str(child.name) == "art":
+			art_count += 1
+	var span := placed
+	if _edge_top != null and _edge_top.visible:
+		span = span.merge(Rect2(_edge_top.position, _edge_top.size))
+	if _edge_bottom != null and _edge_bottom.visible:
+		span = span.merge(Rect2(_edge_bottom.position, _edge_bottom.size))
+	var fills := span.grow(1.0).encloses(Rect2(Vector2.ZERO, screen))
+	return covered and content and fills and art_count == 1 and is_equal_approx(_host.size.x, SCREEN_SIZE.x) and is_equal_approx(_host.size.y, SCREEN_SIZE.y)
 
 
 func set_dismissible(enabled: bool) -> void:
@@ -331,9 +454,12 @@ func card_contains(point: Vector2) -> bool:
 		var screen := _viewport_size()
 		if not Rect2(Vector2.ZERO, screen).has_point(point):
 			return false
-		var fit := Vector2(screen.x / SCREEN_SIZE.x, screen.y / SCREEN_SIZE.y)
-		var back := Rect2(SCREEN_BACK.position * fit, SCREEN_BACK.size * fit)
-		return not back.has_point(point)
+		var placed := placed_screen_board()
+		var scale := placed.size.x / SCREEN_SIZE.x
+		if scale <= 0.0:
+			return true
+		var local := (point - placed.position) / scale
+		return not SCREEN_BACK.has_point(local)
 	var placed := _layout_transform(_viewport_size(), _safe_margins(_viewport_size()))
 	var scale := float(placed.scale)
 	var origin: Vector2 = placed.position
@@ -427,6 +553,7 @@ func _dismiss_from_back() -> void:
 
 func _park() -> void:
 	visible = true
+	_hide_screen_fill()
 	if _host:
 		_host.visible = false
 	if _widget:
@@ -518,8 +645,7 @@ func show_board(board: Dictionary, note: String) -> void:
 			elif loading:
 				description = "Loading daily missions" if i == 0 else ""
 		_set_description(i, description)
-		var icon_text := "" if row.is_empty() else str(row.get("description", ""))
-		_set_icon(i, "" if row.is_empty() else DailyMissions.icon_kind(int(row.get("mission_id", 0)), icon_text))
+		_set_icon(i, 0 if row.is_empty() else int(row.get("mission_id", 0)))
 		var ratio := 0.0 if goal <= 0 else DailyMissions.progress_ratio(progress, goal)
 		if complete:
 			ratio = 1.0
@@ -528,7 +654,7 @@ func show_board(board: Dictionary, note: String) -> void:
 		_counters[i].set_value("0/0" if goal <= 0 else "%d/%d" % [shown, goal])
 		_set_reward(i, reward, complete, claimed, not row.is_empty())
 		if i < _status.size():
-			_status[i].set_on(claimed)
+			_status[i].set_mode("done" if complete or claimed else "")
 	var bonus: Dictionary = board.get("bonus", {})
 	var bonus_reward := int(bonus.get("reward", DailyMissions.REWARDS.bonus))
 	var bonus_claimed := bool(bonus.get("claimed", false))
@@ -539,37 +665,35 @@ func show_board(board: Dictionary, note: String) -> void:
 
 
 func _build_row(index: int) -> void:
-	var plate := Panel.new()
-	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	plate.position = _desc[index].position
-	plate.size = _desc[index].size
-	plate.add_theme_stylebox_override("panel", _rounded(_desc_color, 18))
-	_host.add_child(plate)
 	var description := _BubbleText.new()
 	description.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	description.position = _desc[index].position + Vector2(12, 6)
-	description.size = _desc[index].size - Vector2(24, 12)
+	var inset := Vector2(12, 6) if _screen else Vector2(4, 1)
+	description.position = _desc[index].position + inset
+	description.size = _desc[index].size - inset * 2.0
 	_host.add_child(description)
 	_descriptions.append(description)
 	var track := Panel.new()
 	track.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	track.clip_contents = true
 	track.position = _track[index].position
 	track.size = _track[index].size
-	track.add_theme_stylebox_override("panel", _rounded(TRACK_COLOR, 18))
+	var pad := _fill_pad()
+	var groove := int(round((_track[index].size.y - pad * 2.0) * 0.5))
+	track.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
 	_host.add_child(track)
 	var fill := Panel.new()
 	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	fill.position = Vector2(5, 5)
-	fill.size = Vector2(0, _track[index].size.y - 10)
+	fill.position = Vector2(pad, pad)
+	fill.size = Vector2(0, _track[index].size.y - pad * 2.0)
 	fill.visible = false
-	fill.add_theme_stylebox_override("panel", _rounded(FILL_COLOR, 14))
+	fill.add_theme_stylebox_override("panel", _rounded(FILL_COLOR, groove))
 	track.add_child(fill)
 	_fills.append(fill)
 	var pill := Panel.new()
 	pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pill.position = _count[index].position
 	pill.size = _count[index].size
-	pill.add_theme_stylebox_override("panel", _rounded(PILL, 16))
+	pill.visible = false
 	_host.add_child(pill)
 	var counter := SpriteTextScript.new()
 	counter.configure("0/0", _count[index].size.y * 0.78, _count[index].size, HORIZONTAL_ALIGNMENT_CENTER, false, true)
@@ -578,7 +702,10 @@ func _build_row(index: int) -> void:
 	_counters.append(counter)
 	_reward_text.append(_reward_label(_reward[index], "+%d" % int(DailyMissions.REWARDS.get(SLOTS[index], 0))))
 	_coin_covers.append(_add_coin_cover(_coin[index]))
-	_marks.append(_add_mark(_coin[index]))
+	var icon_rect: Rect2 = SCREEN_COIN_ICON[index] if _screen else LOBBY_COIN[index]
+	var icon_tex := COIN_ICON if _screen else LOBBY_COIN_TEX[index]
+	_coin_icons.append(_add_coin_icon(icon_rect, icon_tex))
+	_marks.append(_add_mark(_check[index]))
 	var holder := Control.new()
 	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	holder.clip_contents = true
@@ -594,37 +721,60 @@ func _add_coin_cover(rect: Rect2) -> Panel:
 	cover.position = rect.position
 	cover.size = rect.size
 	cover.visible = false
-	cover.add_theme_stylebox_override("panel", _rounded(_desc_color if _screen else PANEL, 8))
+	cover.z_index = 1
+	var radius := 36 if _screen else 8
+	cover.add_theme_stylebox_override("panel", _rounded(Color8(1, 66, 128) if _screen else PANEL, radius))
 	_host.add_child(cover)
 	return cover
+
+
+func _add_coin_icon(rect: Rect2, texture_path: String) -> TextureRect:
+	var coin := TextureRect.new()
+	coin.texture = load(texture_path) if rect.size.x > 1.0 else null
+	coin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	coin.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	coin.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	coin.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	coin.position = rect.position
+	coin.size = rect.size
+	coin.visible = false
+	coin.z_index = 4
+	_host.add_child(coin)
+	return coin
+
+
+func _fill_pad() -> float:
+	return 2.0
 
 
 func _add_mark(rect: Rect2) -> _RewardMark:
 	var mark := _RewardMark.new()
 	mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	mark.clip_contents = true
+	mark.clip_contents = false
 	mark.position = rect.position
 	mark.size = rect.size
 	mark.visible = false
-	mark.z_index = 2
+	mark.z_index = 8
 	_host.add_child(mark)
 	return mark
 
 
 func _reward_label(rect: Rect2, value: String, bonus := false) -> SpriteText:
 	var back := ColorRect.new()
-	back.color = PANEL
+	back.color = Color(0, 0, 0, 0) if _screen else REWARD_PLATE
 	back.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	back.position = rect.position
 	back.size = rect.size
+	back.z_index = 1
 	_host.add_child(back)
 	if bonus:
 		_bonus_back = back
 	else:
 		_reward_backs.append(back)
 	var text := SpriteTextScript.new()
-	text.configure(value, rect.size.y * 0.86, rect.size, HORIZONTAL_ALIGNMENT_CENTER, true, true)
+	text.configure(value, rect.size.y * 0.78, rect.size, HORIZONTAL_ALIGNMENT_CENTER, true, true)
 	text.position = rect.position
+	text.z_index = 2
 	_host.add_child(text)
 	return text
 
@@ -633,43 +783,33 @@ func _set_description(index: int, text: String) -> void:
 	_descriptions[index].show_text(text)
 
 
-func _set_icon(index: int, kind: String) -> void:
+func _set_icon(index: int, mission_id: int) -> void:
 	var holder := _icon_holders[index]
-	if str(holder.get_meta("kind", "")) == kind and (kind.is_empty() or holder.get_child_count() > 0):
+	var key := str(mission_id)
+	if str(holder.get_meta("kind", "")) == key and (mission_id <= 0 or holder.get_child_count() > 0):
 		return
-	holder.set_meta("kind", kind)
+	holder.set_meta("kind", key)
 	for child in holder.get_children():
 		holder.remove_child(child)
 		child.free()
-	if kind.is_empty():
+	if mission_id <= 0 or holder.size.x < 1.0 or holder.size.y < 1.0:
 		return
-	if kind == "pipe" or kind == "stopwatch" or kind == "flag" or kind == "medal":
-		var glyph := GlyphScript.new()
-		glyph.position = Vector2.ZERO
-		glyph.size = holder.size
-		holder.add_child(glyph)
-		glyph.set_kind(kind)
-		return
-	var icon := TextureRect.new()
+	var icon := _MissionIcon.new()
+	icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	icon.position = Vector2.ZERO
 	icon.size = holder.size
-	match kind:
-		"fish":
-			icon.texture = Sprites.tex("fish_blue")
-		"coin":
-			icon.texture = Sprites.tex("coin")
-		_:
-			icon.texture = Sprites.tex("pipe_kelp")
+	icon.show_icon(DailyMissions.icon_texture(mission_id), true)
 	holder.add_child(icon)
 
 
 func _set_fill(index: int, ratio: float) -> void:
 	var fill := _fills[index]
-	var inner := Vector2(_track[index].size.x - 10.0, _track[index].size.y - 10.0)
-	var target := Vector2(inner.x * ratio, inner.y)
+	var groove: Rect2 = _track[index]
+	var pad := _fill_pad()
+	var inner := Vector2(maxf(0.0, groove.size.x - pad * 2.0), maxf(0.0, groove.size.y - pad * 2.0))
+	fill.position = Vector2(pad, pad)
+	var target := Vector2(inner.x * clampf(ratio, 0.0, 1.0), inner.y)
 	var previous := _fill_ratio[index]
 	_fill_ratio[index] = ratio
 	if not _applied:
@@ -687,39 +827,35 @@ func _set_fill(index: int, ratio: float) -> void:
 		)
 
 
-func _set_reward(index: int, reward: int, complete: bool, claimed: bool, known: bool) -> void:
-	var pending := known and complete and not claimed
-	var finished := claimed or pending
-	var show_amount := not finished
-	_reward_text[index].visible = show_amount
+func _set_reward(index: int, reward: int, _complete: bool, claimed: bool, known: bool) -> void:
+	var rewarded := known and claimed
+	var show_coins := known and not rewarded
+	_reward_text[index].visible = show_coins
 	if index < _reward_backs.size():
-		_reward_backs[index].visible = show_amount
+		_reward_backs[index].visible = false
 	if index < _coin_covers.size():
-		_coin_covers[index].visible = finished
-	if claimed:
-		_marks[index].set_mode("done")
-	elif pending:
-		_marks[index].set_mode("pending")
-	else:
-		_marks[index].set_mode("")
+		_coin_covers[index].visible = false
+	if index < _coin_icons.size():
+		_coin_icons[index].visible = show_coins and _coin_icons[index].size.x > 1.0
+	if show_coins:
 		_set_reward_text(_reward_text[index], "+%d" % reward, _reward[index].size)
+	_marks[index].set_mode("done" if rewarded else "")
 
 
 func _show_bonus_reward(reward: int, pending: bool, claimed: bool) -> void:
-	var finished := claimed or pending
-	var show_amount := not finished
-	_bonus_text.visible = show_amount
+	var known := pending or claimed or reward > 0
+	var rewarded := known and claimed
+	var show_coins := known and not rewarded
+	_bonus_text.visible = show_coins
 	if _bonus_back:
-		_bonus_back.visible = show_amount
+		_bonus_back.visible = false
 	if _bonus_cover:
-		_bonus_cover.visible = finished
-	if claimed:
-		_bonus_mark.set_mode("done")
-	elif pending:
-		_bonus_mark.set_mode("pending")
-	else:
-		_bonus_mark.set_mode("")
+		_bonus_cover.visible = false
+	if _bonus_coin_icon:
+		_bonus_coin_icon.visible = show_coins and _bonus_coin_icon.size.x > 1.0
+	if show_coins:
 		_set_reward_text(_bonus_text, "+%d" % reward, _bonus_reward.size)
+	_bonus_mark.set_mode("done" if rewarded else "")
 
 
 func _slots_by_name(board: Dictionary) -> Dictionary:
@@ -779,14 +915,99 @@ func _layout_transform(screen: Vector2, margins: Vector4) -> Dictionary:
 	}
 
 
+func _bleed_rect() -> TextureRect:
+	var strip := TextureRect.new()
+	strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	strip.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	strip.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	strip.stretch_mode = TextureRect.STRETCH_SCALE
+	strip.visible = false
+	return strip
+
+
+func _board_image() -> Image:
+	if _board_pixels != null and not _board_pixels.is_empty():
+		return _board_pixels
+	var tex := load(SCREEN_PATH) as Texture2D
+	if tex == null:
+		return null
+	_board_pixels = tex.get_image()
+	return _board_pixels
+
+
+func _continuation(from_bottom: bool, rows: int) -> Image:
+	var src := _board_image()
+	if src == null or src.is_empty():
+		return null
+	var width := src.get_width()
+	var height := src.get_height()
+	var band := mini(72, height)
+	var img := Image.create(width, maxi(rows, 1), false, Image.FORMAT_RGBA8)
+	for y in img.get_height():
+		var dist := y if from_bottom else img.get_height() - 1 - y
+		var local := dist % (band * 2)
+		var src_y := 0
+		if from_bottom:
+			src_y = height - 1 - local if local < band else height - band + (local - band)
+		else:
+			src_y = local if local < band else band * 2 - local
+		src_y = clampi(src_y, 0, height - 1)
+		img.blit_rect(src, Rect2i(0, src_y, width, 1), Vector2i(0, y))
+	return img
+
+
+func _show_bleed(strip: TextureRect, tex: ImageTexture, gap: Rect2, from_bottom: bool, scale: float) -> ImageTexture:
+	if strip == null:
+		return tex
+	var show := _mode == "board" and gap.size.x > 1.0 and gap.size.y > 1.0
+	strip.visible = show
+	if not show:
+		return tex
+	var rows := maxi(1, int(ceil(gap.size.y / maxf(scale, 0.001))))
+	var img := _continuation(from_bottom, rows)
+	if img == null:
+		strip.visible = false
+		return tex
+	if tex == null:
+		tex = ImageTexture.create_from_image(img)
+	else:
+		tex.set_image(img)
+	strip.texture = tex
+	strip.position = gap.position
+	strip.size = gap.size
+	return tex
+
+
+func _hide_screen_fill() -> void:
+	if _screen_fill == null:
+		return
+	_screen_fill.visible = false
+	_screen_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if _edge_top:
+		_edge_top.visible = false
+	if _edge_bottom:
+		_edge_bottom.visible = false
+
+
 func _apply_board_layout() -> void:
 	if _host == null:
 		return
 	if _screen:
 		var screen := _viewport_size()
-		_host.position = Vector2.ZERO
-		_host.scale = Vector2(screen.x / SCREEN_SIZE.x, screen.y / SCREEN_SIZE.y)
+		if _screen_fill:
+			_screen_fill.position = Vector2.ZERO
+			_screen_fill.size = screen
+			_screen_fill.visible = _mode == "board"
+			_screen_fill.mouse_filter = Control.MOUSE_FILTER_STOP if _mode == "board" else Control.MOUSE_FILTER_IGNORE
+		var placed := placed_screen_board()
+		var scale := placed.size.x / SCREEN_SIZE.x
+		_host.position = placed.position
+		_host.scale = Vector2(scale, scale)
 		_host.modulate.a = 1.0
+		var top_gap := placed.position.y
+		var bottom_gap := screen.y - placed.end.y
+		_edge_top_tex = _show_bleed(_edge_top, _edge_top_tex, Rect2(placed.position.x, 0.0, placed.size.x, maxf(0.0, top_gap + 1.0)), false, scale)
+		_edge_bottom_tex = _show_bleed(_edge_bottom, _edge_bottom_tex, Rect2(placed.position.x, placed.end.y - 1.0, placed.size.x, maxf(0.0, bottom_gap + 1.0)), true, scale)
 		return
 	var placed := _layout_transform(_viewport_size(), _safe_margins(_viewport_size()))
 	var scale := float(placed.scale)
@@ -927,6 +1148,7 @@ func _build_widget() -> void:
 	_widget.add_child(_widget_count)
 	_widget_track = Panel.new()
 	_widget_track.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_widget_track.clip_contents = true
 	_widget_track.add_theme_stylebox_override("panel", _rounded(TRACK_COLOR, 4))
 	_widget.add_child(_widget_track)
 	_widget_fill = Panel.new()
@@ -1282,7 +1504,7 @@ class _RewardMark extends Control:
 			return
 		# The glyph fills most of the file. Scale that body over the coin stack.
 		var body := Rect2(tex_size.x * 0.051, tex_size.y * 0.079, tex_size.x * 0.924, tex_size.y * 0.877)
-		var fitted := maxf(size.x / body.size.x, size.y / body.size.y)
+		var fitted := minf(size.x / body.size.x, size.y / body.size.y)
 		var draw_size := tex_size * fitted
 		var body_size := body.size * fitted
 		var origin := (size - body_size) * 0.5 - body.position * fitted
@@ -1299,23 +1521,23 @@ class _RewardMark extends Control:
 			draw_circle(dot, radius * 0.14, Color8(214, 246, 255))
 
 
-class _StatusDot extends Control:
-	var _on := false
+class _MissionIcon extends Control:
+	var texture: Texture2D
+	var _circular := false
 
-	func set_on(value: bool) -> void:
-		_on = value
-		visible = value
+	func show_icon(next: Texture2D, circular: bool) -> void:
+		texture = next
+		_circular = circular
 		queue_redraw()
 
 	func _draw() -> void:
-		if not _on:
+		if not _circular:
+			draw_rect(Rect2(Vector2.ZERO, size), Color8(0, 64, 113), true)
+		if texture == null or texture.get_width() < 1 or texture.get_height() < 1:
 			return
-		var center := size * 0.5
-		var radius := minf(size.x, size.y) * 0.42
-		draw_circle(center, radius, Color8(49, 227, 97))
-		var mark := PackedVector2Array([
-			center + Vector2(-radius * 0.45, 0.05 * radius),
-			center + Vector2(-radius * 0.1, radius * 0.4),
-			center + Vector2(radius * 0.5, -radius * 0.4),
-		])
-		draw_polyline(mark, Color(0.95, 1, 1), maxf(2.0, radius * 0.28), true)
+		var pad := 0.14 if _circular else 0.12
+		var box := Rect2(size * pad, size * (1.0 - pad * 2.0))
+		var source := Vector2(texture.get_width(), texture.get_height())
+		var fit := minf(box.size.x / source.x, box.size.y / source.y)
+		var drawn := source * fit
+		draw_texture_rect(texture, Rect2(box.position + (box.size - drawn) * 0.5, drawn), false)

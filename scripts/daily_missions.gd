@@ -41,7 +41,7 @@ static func gameplay_payload(picked_up: int, _ad_bonus: int) -> int:
 	return maxi(0, picked_up)
 
 
-static func accept_run(pipes: int, seconds: int, coins: int) -> bool:
+static func accept_run(pipes: int, seconds: int, coins: int, dives_entered: int = 0) -> bool:
 	if pipes < 0 or pipes > MAX_PIPES_PER_RUN:
 		return false
 	if seconds < 0 or seconds > 1800:
@@ -51,9 +51,13 @@ static func accept_run(pipes: int, seconds: int, coins: int) -> bool:
 	if pipes > 0 and seconds < pipes - 1:
 		return false
 	# Matches record_unlimited_mission_run:
-	# floor(1.8 + pipes * 1.5 + 12 + 12 * (pipes / 20)).
+	# floor(1.8 + pipes * 1.5 + 12 + 12 * (pipes / 20))
+	# plus 28 seconds for each Deep Dive the run actually entered.
+	if dives_entered < 0 or dives_entered > 2:
+		return false
 	var harpoon_slack: int = 12 * int(pipes / 20)
 	var survival_limit: int = int(floorf(1.8 + float(pipes) * 1.5 + 12.0 + float(harpoon_slack)))
+	survival_limit += 28 * dives_entered
 	if pipes < MAX_PIPES_PER_RUN and seconds > survival_limit:
 		return false
 	return true
@@ -73,8 +77,43 @@ static func valid_run_id(run_id: String) -> bool:
 	return true
 
 
-static func enqueue(pending: Array, run_id: String, pipes: int, seconds: int, coins: int) -> Array:
-	if not valid_run_id(run_id) or not accept_run(pipes, seconds, coins):
+static func accept_dive(pipes: int, dive: Dictionary) -> bool:
+	var entered := int(dive.get("dives_entered", 0))
+	var completed := int(dive.get("dives_completed", 0))
+	var dive_seconds := int(dive.get("dive_seconds", 0))
+	var lanes := int(dive.get("lane_changes", 0))
+	var left := int(dive.get("lanes_left", 0))
+	var right := int(dive.get("lanes_right", 0))
+	var obstacles := int(dive.get("obstacles", 0))
+	var mines := int(dive.get("mines", 0))
+	if entered < 0 or entered > 2 or completed < 0 or completed > entered:
+		return false
+	if pipes < 30 and entered > 0:
+		return false
+	if pipes < 60 and entered > 1:
+		return false
+	if dive_seconds < 0 or dive_seconds > entered * 20:
+		return false
+	if lanes < 0 or lanes > 400 or left < 0 or right < 0 or left + right != lanes:
+		return false
+	if obstacles < 0 or obstacles > 80 or mines < 0 or mines > obstacles:
+		return false
+	if entered == 0 and (completed > 0 or dive_seconds > 0 or lanes > 0 or obstacles > 0):
+		return false
+	return true
+
+
+static func count_lane_change(before: int, after: int) -> Dictionary:
+	if after == before:
+		return {"lanes": 0, "left": 0, "right": 0}
+	if after < before:
+		return {"lanes": 1, "left": 1, "right": 0}
+	return {"lanes": 1, "left": 0, "right": 1}
+
+
+static func enqueue(pending: Array, run_id: String, pipes: int, seconds: int, coins: int, dive: Dictionary = {}) -> Array:
+	var entered := int(dive.get("dives_entered", 0))
+	if not valid_run_id(run_id) or not accept_run(pipes, seconds, coins, entered) or not accept_dive(pipes, dive):
 		return pending
 	for item in pending:
 		if typeof(item) != TYPE_DICTIONARY:
@@ -89,6 +128,14 @@ static func enqueue(pending: Array, run_id: String, pipes: int, seconds: int, co
 		"pipes": pipes,
 		"seconds": seconds,
 		"coins": coins,
+		"dives_entered": entered,
+		"dives_completed": int(dive.get("dives_completed", 0)),
+		"dive_seconds": int(dive.get("dive_seconds", 0)),
+		"lane_changes": int(dive.get("lane_changes", 0)),
+		"lanes_left": int(dive.get("lanes_left", 0)),
+		"lanes_right": int(dive.get("lanes_right", 0)),
+		"obstacles": int(dive.get("obstacles", 0)),
+		"mines": int(dive.get("mines", 0)),
 	})
 	return next
 
@@ -195,6 +242,26 @@ static func evaluate(rule: String, goal: int, goal_b: int, stats: Dictionary) ->
 		"window_sum":
 			progress = _window_sum(samples, goal_b)
 			target = goal
+		"dives_entered":
+			progress = int(stats.get("dives_entered", 0))
+		"dives_completed":
+			progress = int(stats.get("dives_completed", 0))
+		"dives_best":
+			progress = int(stats.get("best_dives", 0))
+		"dive_seconds":
+			progress = int(stats.get("dive_seconds", 0))
+		"lanes_total":
+			progress = int(stats.get("lane_changes", 0))
+		"lanes_left":
+			progress = int(stats.get("lanes_left", 0))
+		"lanes_right":
+			progress = int(stats.get("lanes_right", 0))
+		"obstacles_total":
+			progress = int(stats.get("obstacles_dodged", 0))
+		"obstacles_best":
+			progress = int(stats.get("best_obstacles", 0))
+		"mines_total":
+			progress = int(stats.get("mines_passed", 0))
 		_:
 			progress = 0
 	return {
@@ -238,8 +305,12 @@ static func icon_kind(mission_id: int, description: String = "") -> String:
 			return "stopwatch"
 		"earn_coins", "coin_runs":
 			return "coin"
-		"multi_threshold", "window_sum":
+		"multi_threshold", "window_sum", "dive_lanes", "dive_left", "dive_right", "dive_dodge", "dive_mines":
 			return "medal"
+		"dive_enter", "dive_complete", "dive_one_run":
+			return "fish"
+		"dive_time":
+			return "stopwatch"
 		_:
 			if lower.contains("second"):
 				return "stopwatch"
@@ -250,6 +321,60 @@ static func icon_kind(mission_id: int, description: String = "") -> String:
 			if lower.contains("run"):
 				return "fish"
 			return "medal"
+
+
+const ICON_DIR := "res://assets/ui/mission_icons/"
+const ICON_FALLBACK := "mystery_mission"
+const RULE_ICONS := {
+	"pipes_total": "pipes",
+	"runs_at_least": "pipes",
+	"window_sum": "pipes",
+	"pipes_best": "high_score",
+	"runs": "complete_runs",
+	"survive_best": "survive_x_seconds",
+	"coins_total": "collect_x_coins",
+	"coin_runs": "collect_coins",
+	"dives_entered": "enter_deep_dive",
+	"dive_seconds": "time_in_deep_dive",
+	"dives_completed": "complete_deep_dives",
+	"lanes_total": "change_lanes",
+	"lanes_left": "move_left",
+	"lanes_right": "move_right",
+	"obstacles_total": "dodge_obstacles",
+	"obstacles_best": "dodge_obstacles",
+	"mines_total": "mine",
+	"dives_best": "survive_without_hitting",
+}
+
+static var _icon_textures: Dictionary = {}
+static var _icon_warnings: Dictionary = {}
+
+
+static func icon_file(mission_id: int) -> String:
+	var mission := mission_by_id(mission_id)
+	var rule := str(mission.get("rule", ""))
+	if mission.is_empty() or not RULE_ICONS.has(rule):
+		if mission_id > 0 and not _icon_warnings.has(mission_id):
+			_icon_warnings[mission_id] = true
+			push_warning("Daily Missions has no icon for mission %d (rule '%s'). Using mystery_mission." % [mission_id, rule])
+		return ICON_FALLBACK
+	return str(RULE_ICONS[rule])
+
+
+static func icon_texture(mission_id: int) -> Texture2D:
+	var file := icon_file(mission_id)
+	if _icon_textures.has(file):
+		return _icon_textures[file]
+	var path := ICON_DIR + file + ".png"
+	var texture: Texture2D = null
+	if ResourceLoader.exists(path):
+		texture = load(path) as Texture2D
+	if texture == null:
+		push_warning("Daily Missions icon file is missing: %s" % path)
+		if file != ICON_FALLBACK and ResourceLoader.exists(ICON_DIR + ICON_FALLBACK + ".png"):
+			texture = load(ICON_DIR + ICON_FALLBACK + ".png") as Texture2D
+	_icon_textures[file] = texture
+	return texture
 
 
 static func format_countdown(seconds: int) -> String:
@@ -356,6 +481,51 @@ static func _build_catalog() -> Array:
 		_m(43, "hard", "multi_threshold", "Pass at least 20 pipes in 3 different runs.", 20, "runs_at_least", 20, 3, true),
 		_m(44, "hard", "multi_threshold", "Reach 25 pipes in 2 different runs.", 20, "runs_at_least", 25, 2, true),
 		_m(45, "hard", "window_sum", "Pass 100 pipes across no more than 5 runs.", 20, "window_sum", 100, 5, true),
+		_m(46, "easy", "dive_enter", "Deep Diver: enter a dive.", 5, "dives_entered", 1, 0, true),
+		_m(47, "easy", "dive_lanes", "First Splash: switch lanes 10 times.", 5, "lanes_total", 10, 0, true),
+		_m(48, "easy", "dive_time", "Into the Abyss: spend 20 seconds diving.", 5, "dive_seconds", 20, 0, true),
+		_m(49, "easy", "dive_left", "Side Stepper: move left 10 times.", 5, "lanes_left", 10, 0, true),
+		_m(50, "easy", "dive_enter", "Deep Traveler: enter 2 dives.", 5, "dives_entered", 2, 0, true),
+		_m(51, "easy", "dive_dodge", "Quick Fins: dodge 5 obstacles.", 5, "obstacles_total", 5, 0, true),
+		_m(52, "easy", "dive_right", "Right Turn: move right 10 times.", 5, "lanes_right", 10, 0, true),
+		_m(53, "easy", "dive_time", "Warm Up: spend 10 seconds diving.", 5, "dive_seconds", 10, 0, true),
+		_m(54, "easy", "dive_dodge", "Light Dodge: dodge 3 obstacles.", 5, "obstacles_total", 3, 0, true),
+		_m(55, "easy", "dive_complete", "Surface: finish a dive.", 5, "dives_completed", 1, 0, true),
+		_m(56, "easy", "dive_lanes", "Little Nudge: switch lanes 5 times.", 5, "lanes_total", 5, 0, true),
+		_m(57, "easy", "dive_left", "Port Side: move left 5 times.", 5, "lanes_left", 5, 0, true),
+		_m(58, "easy", "dive_right", "Starboard: move right 5 times.", 5, "lanes_right", 5, 0, true),
+		_m(59, "easy", "dive_dodge", "Clear Path: dodge 8 obstacles.", 5, "obstacles_total", 8, 0, true),
+		_m(60, "easy", "dive_time", "Hold Breath: spend 15 seconds diving.", 5, "dive_seconds", 15, 0, true),
+		_m(61, "medium", "dive_dodge", "Close Call: dodge 15 obstacles.", 10, "obstacles_total", 15, 0, true),
+		_m(62, "medium", "dive_enter", "Deep Explorer: enter 3 dives.", 10, "dives_entered", 3, 0, true),
+		_m(63, "medium", "dive_dodge", "Slippery Fish: dodge 30 obstacles.", 10, "obstacles_total", 30, 0, true),
+		_m(64, "medium", "dive_lanes", "Ocean Navigator: switch lanes 30 times.", 10, "lanes_total", 30, 0, true),
+		_m(65, "medium", "dive_complete", "Deep Survivor: finish 2 dives.", 10, "dives_completed", 2, 0, true),
+		_m(66, "medium", "dive_mines", "Mine Dodger: pass 5 mines.", 10, "mines_total", 5, 0, true),
+		_m(67, "medium", "dive_time", "Deep Breath: spend 40 seconds diving.", 10, "dive_seconds", 40, 0, true),
+		_m(68, "medium", "dive_left", "Left Current: move left 20 times.", 10, "lanes_left", 20, 0, true),
+		_m(69, "medium", "dive_right", "Right Current: move right 20 times.", 10, "lanes_right", 20, 0, true),
+		_m(70, "medium", "dive_enter", "Return Trip: enter 4 dives.", 10, "dives_entered", 4, 0, true),
+		_m(71, "medium", "dive_dodge", "Steady Weave: dodge 20 obstacles.", 10, "obstacles_total", 20, 0, true),
+		_m(72, "medium", "dive_mines", "Mine Watch: pass 3 mines.", 10, "mines_total", 3, 0, true),
+		_m(73, "medium", "dive_lanes", "Lane Hopper: switch lanes 20 times.", 10, "lanes_total", 20, 0, true),
+		_m(74, "medium", "dive_time", "One Minute: spend 60 seconds diving.", 10, "dive_seconds", 60, 0, true),
+		_m(75, "medium", "dive_mines", "Mine Line: pass 8 mines.", 10, "mines_total", 8, 0, true),
+		_m(76, "hard", "dive_complete", "Survivor of the Deep: finish 3 dives.", 20, "dives_completed", 3, 0, true),
+		_m(77, "hard", "dive_complete", "Depth Master: finish 4 dives.", 20, "dives_completed", 4, 0, true),
+		_m(78, "hard", "dive_one_run", "Untouchable: finish 2 dives in one run.", 20, "dives_best", 2, 0, true),
+		_m(79, "hard", "dive_dodge", "Danger Below: dodge 60 obstacles.", 20, "obstacles_total", 60, 0, true),
+		_m(80, "hard", "dive_lanes", "Master Navigator: switch lanes 75 times.", 20, "lanes_total", 75, 0, true),
+		_m(81, "hard", "dive_mines", "Minefield Expert: pass 15 mines.", 20, "mines_total", 15, 0, true),
+		_m(82, "hard", "dive_dodge", "Wide Berth: dodge 45 obstacles.", 20, "obstacles_total", 45, 0, true),
+		_m(83, "hard", "dive_lanes", "Swift Fins: switch lanes 50 times.", 20, "lanes_total", 50, 0, true),
+		_m(84, "hard", "dive_mines", "Mine Course: pass 10 mines.", 20, "mines_total", 10, 0, true),
+		_m(85, "hard", "dive_time", "Stay Down: spend 50 seconds diving.", 20, "dive_seconds", 50, 0, true),
+		_m(86, "hard", "dive_left", "Port Master: move left 35 times.", 20, "lanes_left", 35, 0, true),
+		_m(87, "hard", "dive_right", "Starboard Master: move right 35 times.", 20, "lanes_right", 35, 0, true),
+		_m(88, "hard", "dive_enter", "Frequent Diver: enter 6 dives.", 20, "dives_entered", 6, 0, true),
+		_m(89, "hard", "dive_dodge", "Full Course: dodge 18 obstacles in one run.", 20, "obstacles_best", 18, 0, true),
+		_m(90, "hard", "dive_enter", "Five Down: enter 5 dives.", 20, "dives_entered", 5, 0, true),
 	]
 
 

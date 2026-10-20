@@ -111,6 +111,7 @@ var _mode_unlimited: Button
 var _mode_back: Button
 var _mission_button: Button
 var _missions: DailyMissionsOverlay
+var _modes_return := false
 var _mode_token := 0
 var _mode_busy := false
 var _daily_locked := false
@@ -374,8 +375,24 @@ void fragment() {
 	return mat
 
 
-func _hat_row_y() -> float:
-	return RR.screen_bottom() - RR.GROUND_H + 12.0
+func _fish_band_bottom() -> float:
+	return RR.screen_bottom() - RR.GROUND_H - 16.0
+
+
+func _layout_fish_y(clip_h: float) -> float:
+	var hs_bottom := _card_pos.y + (SCORE_BOX.position.y + SCORE_BOX.size.y) * _card_scale
+	var gap_top := hs_bottom + 6.0
+	var gap_bottom := _fish_band_bottom() - 6.0
+	var row_y := gap_top + maxf(0.0, gap_bottom - gap_top - clip_h) * 0.5
+	return minf(row_y, gap_bottom - clip_h)
+
+
+func _hat_row_under_fish(hat_clip_h: float) -> float:
+	var bottom := RR.screen_bottom()
+	var hat_y := _fish_band_bottom()
+	if _fish_clip:
+		hat_y = _fish_clip.position.y + _fish_clip.size.y + 8.0
+	return minf(hat_y, bottom - hat_clip_h - 6.0)
 
 
 func _sync_menu_anchor() -> void:
@@ -384,9 +401,11 @@ func _sync_menu_anchor() -> void:
 		_ground.position = Vector2(0, bottom - RR.GROUND_H)
 	_layout_mode_overlay()
 	_layout_scores()
+	if _fish_clip:
+		_fish_clip.position.y = _layout_fish_y(_fish_clip.size.y)
 	if _hat_clip == null:
 		return
-	var hat_y := minf(_hat_row_y(), bottom - _hat_clip.size.y - 6.0)
+	var hat_y := _hat_row_under_fish(_hat_clip.size.y)
 	var hat_delta := hat_y - _hat_clip.position.y
 	_hat_clip.position.y = hat_y
 	if _wallet_coin and not is_zero_approx(hat_delta):
@@ -395,13 +414,6 @@ func _sync_menu_anchor() -> void:
 		_wallet_coin.position.y = _wallet_rest.y
 		if _wallet_text:
 			_wallet_text.position.y = _wallet_text_rest.y
-	if _fish_clip:
-		var hs_bottom := _card_pos.y + (SCORE_BOX.position.y + SCORE_BOX.size.y) * _card_scale
-		var gap_top := hs_bottom + 6.0
-		var gap_bottom := hat_y - 6.0
-		var clip_h := _fish_clip.size.y
-		var row_y := gap_top + maxf(0.0, gap_bottom - gap_top - clip_h) * 0.5
-		_fish_clip.position.y = minf(row_y, gap_bottom - clip_h)
 
 
 func _build_fish_picker() -> void:
@@ -417,11 +429,7 @@ func _build_fish_picker() -> void:
 	# Extra room so the selection stroke stays inside the clip at both ends of the bob.
 	var edge := 14.0
 	var clip_h := row_h + hat_room + bob + edge * 2.0
-	var hs_bottom := _card_pos.y + (SCORE_BOX.position.y + SCORE_BOX.size.y) * _card_scale
-	var gap_top := hs_bottom + 6.0
-	var gap_bottom := _hat_row_y() - 6.0
-	var row_y := gap_top + maxf(0.0, gap_bottom - gap_top - clip_h) * 0.5
-	row_y = minf(row_y, gap_bottom - clip_h)
+	var row_y := _layout_fish_y(clip_h)
 	_fish_clip = Control.new()
 	_fish_clip.position = Vector2(pad, row_y)
 	_fish_clip.size = Vector2(RR.VIEW_W - pad * 2.0, clip_h)
@@ -503,8 +511,7 @@ func _build_hat_picker() -> void:
 	var bob := 12.0
 	var edge := 14.0
 	var clip_h := row_h + bob + edge * 2.0
-	var row_y := _hat_row_y()
-	row_y = minf(row_y, RR.screen_bottom() - clip_h - 6.0)
+	var row_y := _hat_row_under_fish(clip_h)
 	var wallet_w := 92.0
 	_build_wallet(Vector2(pad, row_y + edge + 18.0), Vector2(wallet_w, 48.0))
 	_hat_clip = Control.new()
@@ -714,34 +721,20 @@ func _flash_wallet() -> void:
 
 
 func _hat_display_order() -> PackedInt32Array:
-	var order := PackedInt32Array()
-	order.append(-1)
-	var seen := {}
-	seen[-1] = true
-	for i in range(GameSession.owned_hats.size() - 1, -1, -1):
-		var id := int(GameSession.owned_hats[i])
-		if id < 0 or id >= RR.HAT_COUNT or seen.has(id):
-			continue
-		seen[id] = true
-		order.append(id)
-	for i in RR.HAT_COUNT:
-		if seen.has(i):
-			continue
-		order.append(i)
-	return order
+	return RR.hat_shop_order(GameSession.owned_hats)
 
 
-func _relayout_hats() -> void:
+func _relayout_hats() -> bool:
 	var order := _hat_display_order()
 	if order.size() != _hat_ids.size():
-		return
+		return false
 	var same := true
 	for n in order.size():
 		if order[n] != _hat_ids[n]:
 			same = false
 			break
 	if same:
-		return
+		return false
 	var slot_of := {}
 	for n in _hat_ids.size():
 		slot_of[_hat_ids[n]] = n
@@ -774,6 +767,7 @@ func _relayout_hats() -> void:
 	_hat_rings = rings
 	_hat_icons = icons
 	_hat_prices = prices
+	return true
 
 
 func _choose_hat(index: int) -> void:
@@ -788,8 +782,7 @@ func _choose_hat(index: int) -> void:
 	elif not GameSession.buy_hat(index):
 		_flash_wallet()
 		return
-	if GameSession.owned_hats.size() > owned_before:
-		_relayout_hats()
+	if GameSession.owned_hats.size() > owned_before and _relayout_hats():
 		_hat_scroll_x = 0.0
 		_apply_hat_scroll()
 	_refresh_wallet()
@@ -914,8 +907,7 @@ func _choose_fish(index: int) -> void:
 	if not GameSession.buy_fish(index):
 		_flash_wallet()
 		return
-	if GameSession.owned_fish.size() > owned_before:
-		_relayout_fish()
+	if GameSession.owned_fish.size() > owned_before and _relayout_fish():
 		_fish_scroll_x = 0.0
 		_apply_fish_scroll()
 	_refresh_wallet()
@@ -924,35 +916,20 @@ func _choose_fish(index: int) -> void:
 
 
 func _fish_display_order() -> PackedInt32Array:
-	var order := PackedInt32Array()
-	var seen := {}
-	for i in range(GameSession.owned_fish.size() - 1, -1, -1):
-		var id := int(GameSession.owned_fish[i])
-		if id < RR.FREE_FISH or id >= RR.FISH_IDS.size() or seen.has(id):
-			continue
-		seen[id] = true
-		order.append(id)
-	for i in RR.FREE_FISH:
-		order.append(i)
-		seen[i] = true
-	for i in RR.FISH_IDS.size():
-		if seen.has(i):
-			continue
-		order.append(i)
-	return order
+	return RR.fish_shop_order(GameSession.owned_fish)
 
 
-func _relayout_fish() -> void:
+func _relayout_fish() -> bool:
 	var order := _fish_display_order()
 	if order.size() != _fish_order.size():
-		return
+		return false
 	var same := true
 	for n in order.size():
 		if order[n] != _fish_order[n]:
 			same = false
 			break
 	if same:
-		return
+		return false
 	var slot_of := {}
 	for n in _fish_order.size():
 		slot_of[_fish_order[n]] = n
@@ -988,6 +965,7 @@ func _relayout_fish() -> void:
 	_fish_icons = icons
 	_fish_hats = hats
 	_fish_prices = prices
+	return true
 
 
 func _refresh_fish_pick() -> void:
@@ -1447,6 +1425,9 @@ func _build_mode_overlay() -> void:
 func _open_missions() -> void:
 	if _missions == null:
 		return
+	_modes_return = _modes != null and _modes.visible
+	if _modes:
+		_modes.visible = false
 	_missions.refresh_from_session()
 	_missions.present("board", true)
 	var backend := get_node_or_null("/root/Backend")
@@ -1457,6 +1438,9 @@ func _open_missions() -> void:
 func _close_missions() -> void:
 	if _missions:
 		_missions.present("hidden")
+	if _modes_return and _modes:
+		_modes.visible = true
+	_modes_return = false
 
 
 func _on_menu_missions() -> void:
@@ -1541,6 +1525,7 @@ func _open_modes() -> void:
 func _close_modes() -> void:
 	_mode_token += 1
 	_mode_busy = false
+	_modes_return = false
 	if _modes:
 		_modes.visible = false
 	_close_missions()

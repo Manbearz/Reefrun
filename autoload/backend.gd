@@ -35,6 +35,7 @@ var _share_rewards = null
 var _missions = null
 var _mission_busy := false
 var _mission_flush_again := false
+var _mission_legacy_record := false
 var _mission_auto_claim := false
 var _mission_claim_blocked := ""
 var _mission_claim_date := ""
@@ -1292,6 +1293,13 @@ func refresh_daily_missions() -> void:
 	flush_daily_missions()
 
 
+func _mission_schema_mismatch(result: Dictionary) -> bool:
+	if int(result.get("status", 0)) == 404:
+		return true
+	var text := JSON.stringify(result).to_lower()
+	return text.contains("pgrst202") or text.contains("could not find the function")
+
+
 func flush_daily_missions() -> void:
 	if _mission_busy:
 		_mission_flush_again = true
@@ -1316,18 +1324,21 @@ func flush_daily_missions() -> void:
 	for run in pending:
 		if typeof(run) != TYPE_DICTIONARY:
 			continue
-		var result: Dictionary = await _authed_request(
-			"POST",
-			_missions.record_url(),
-			_missions.record_body(
-				str(run.get("id", "")),
-				int(run.get("pipes", 0)),
-				int(run.get("seconds", 0)),
-				int(run.get("coins", 0))
-			),
-			true,
-			false
-		)
+		var run_id := str(run.get("id", ""))
+		var pipes := int(run.get("pipes", 0))
+		var seconds := int(run.get("seconds", 0))
+		var coins := int(run.get("coins", 0))
+		var body: String = _missions.legacy_record_body(run_id, pipes, seconds, coins) if _mission_legacy_record else _missions.record_body(run_id, pipes, seconds, coins, run)
+		var result: Dictionary = await _authed_request("POST", _missions.record_url(), body, true, false)
+		if not _mission_legacy_record and _mission_schema_mismatch(result):
+			_mission_legacy_record = true
+			result = await _authed_request(
+				"POST",
+				_missions.record_url(),
+				_missions.legacy_record_body(run_id, pipes, seconds, coins),
+				true,
+				false
+			)
 		var data: Variant = result.get("data", {})
 		var reason := ""
 		var accepted := false

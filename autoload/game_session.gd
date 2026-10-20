@@ -787,13 +787,14 @@ func remember_referral_code(code: String) -> bool:
 	return true
 
 
-func remember_mission_run(run_id: String, pipes: int, seconds: int, gameplay_coins: int) -> void:
+func remember_mission_run(run_id: String, pipes: int, seconds: int, gameplay_coins: int, dive: Dictionary = {}) -> void:
 	if not DailyMissionsScript.should_report(match_mode, practice_daily):
 		return
-	if not DailyMissionsScript.valid_run_id(run_id) or not DailyMissionsScript.accept_run(pipes, seconds, gameplay_coins):
+	var entered := int(dive.get("dives_entered", 0))
+	if not DailyMissionsScript.valid_run_id(run_id) or not DailyMissionsScript.accept_run(pipes, seconds, gameplay_coins, entered) or not DailyMissionsScript.accept_dive(pipes, dive):
 		push_warning("[missions] run not counted pipes=%d seconds=%d coins=%d" % [pipes, seconds, gameplay_coins])
 		return
-	var queued: Array = DailyMissionsScript.enqueue(pending_mission_runs, run_id, pipes, seconds, gameplay_coins)
+	var queued: Array = DailyMissionsScript.enqueue(pending_mission_runs, run_id, pipes, seconds, gameplay_coins, dive)
 	if queued == pending_mission_runs:
 		return
 	pending_mission_runs = queued

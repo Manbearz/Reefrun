@@ -25,13 +25,16 @@ func _run() -> void:
 	ok = _check(await _test_shade_fold(), "shade fold") and ok
 	ok = _check(_test_screen_board(), "screen board") and ok
 	ok = _check(_test_claim_marks(), "claim marks") and ok
+	ok = _check(_test_board_chrome(), "board chrome") and ok
+	ok = _check(_test_deep_dive_missions(), "deep dive missions") and ok
+	ok = _check(_test_mission_icons(), "mission icons") and ok
 	print("[missions] ok=%s" % ok)
 	quit(0 if ok else 1)
 
 
 func _test_catalog() -> bool:
 	var rows: Array = Missions.catalog()
-	if rows.size() != 45:
+	if rows.size() != 90:
 		return false
 	var enabled := 0
 	var seen := {}
@@ -59,7 +62,104 @@ func _test_catalog() -> bool:
 			if seen.has(key):
 				return false
 			seen[key] = mission_id
-	return enabled == 39
+	return enabled == 84
+
+
+func _test_deep_dive_missions() -> bool:
+	var regular := {"easy": 0, "medium": 0, "hard": 0}
+	var added := {"easy": 0, "medium": 0, "hard": 0}
+	var slots := {"easy": 0, "medium": 0, "hard": 0}
+	for mission in Missions.catalog():
+		var mission_id := int(mission.get("id", 0))
+		var tier := str(mission.get("tier", ""))
+		if mission_id <= 45:
+			regular[tier] = int(regular[tier]) + 1
+		else:
+			added[tier] = int(added[tier]) + 1
+			if str(mission.get("description", "")).length() > 56:
+				return false
+			if not bool(mission.get("enabled", false)):
+				return false
+	if regular.easy != 15 or regular.medium != 15 or regular.hard != 15:
+		return false
+	if added.easy != 15 or added.medium != 15 or added.hard != 15:
+		return false
+	var board: Dictionary = Missions.preview_rotation("2026-10-19", [])
+	for tier in ["easy", "medium", "hard"]:
+		slots[tier] = int(board.get(tier, 0))
+		if int(Missions.REWARDS.get(tier, 0)) != (5 if tier == "easy" else 10 if tier == "medium" else 20):
+			return false
+	if slots.easy == 0 or slots.medium == 0 or slots.hard == 0:
+		return false
+	if board.size() != 6:
+		return false
+	var edge := Missions.count_lane_change(1, 1)
+	var left := Missions.count_lane_change(3, 2)
+	var right := Missions.count_lane_change(2, 3)
+	if int(edge.lanes) != 0 or int(left.left) != 1 or int(left.right) != 0 or int(right.right) != 1:
+		return false
+	var dive := {
+		"dives_entered": 1,
+		"dives_completed": 1,
+		"dive_seconds": 20,
+		"lane_changes": 4,
+		"lanes_left": 2,
+		"lanes_right": 2,
+		"obstacles": 6,
+		"mines": 1,
+	}
+	if Missions.accept_dive(20, dive) or not Missions.accept_dive(30, dive):
+		return false
+	if Missions.accept_dive(30, {"dives_entered": 1, "dives_completed": 0, "obstacles": 2, "mines": 3}):
+		return false
+	var first: Array = Missions.enqueue([], "dive-run-1", 40, 80, 4, dive)
+	var again: Array = Missions.enqueue(first, "dive-run-1", 40, 80, 4, dive)
+	var second: Array = Missions.enqueue(again, "dive-run-2", 70, 160, 8, {
+		"dives_entered": 2,
+		"dives_completed": 1,
+		"dive_seconds": 20,
+		"lane_changes": 1,
+		"lanes_left": 1,
+		"lanes_right": 0,
+		"obstacles": 4,
+		"mines": 0,
+	})
+	if first.size() != 1 or again.size() != 1 or second.size() != 2:
+		return false
+	if int(second[0].get("obstacles", 0)) != 6 or int(second[1].get("dives_completed", 0)) != 1:
+		return false
+	if Missions.accept_run(40, 110, 4, 0):
+		return false
+	if not Missions.accept_run(40, 110, 4, 1):
+		return false
+	var daily_game := _read_project("res://scenes/game/game.gd")
+	var resume := _function_body(daily_game, "_enter_swim_resume")
+	var halt := _function_body(daily_game, "_halt_dive")
+	var play := _function_body(daily_game, "_enter_dive_play")
+	if not resume.contains("_mission_dives_completed += 1"):
+		return false
+	if halt.contains("_mission_dives_completed"):
+		return false
+	if not play.contains("_mission_dives_entered += 1"):
+		return false
+	if not daily_game.contains("_mission_dives_entered = 0"):
+		return false
+	var repo = load("res://scripts/backend/daily_mission_repository.gd").new()
+	var extended := str(repo.record_body("dive-run-1", 40, 80, 4, dive))
+	var legacy := str(repo.legacy_record_body("dive-run-1", 40, 80, 4))
+	if not extended.contains("p_dives_entered") or legacy.contains("p_dives_entered"):
+		return false
+	return Missions.should_report("unlimited", false) and not Missions.should_report("daily", false)
+
+
+func _function_body(source: String, function_name: String) -> String:
+	var start := source.find("func %s" % function_name)
+	if start < 0:
+		return ""
+	var next := source.find("\nfunc ", start + 5)
+	if next < 0:
+		return source.substr(start)
+	return source.substr(start, next - start)
 
 
 func _test_same_rotation() -> bool:
@@ -145,7 +245,12 @@ func _test_progress_rules() -> bool:
 	if int(window.progress) != 75 or not bool(window.complete):
 		return false
 	var sparse: Dictionary = Missions.evaluate("window_sum", 50, 3, {"run_pipes": [30, 0, 30]})
-	return int(sparse.progress) == 60
+	if int(sparse.progress) != 60:
+		return false
+	var entered: Dictionary = Missions.evaluate("dives_entered", 2, 0, {"dives_entered": 2})
+	var one_run: Dictionary = Missions.evaluate("dives_best", 2, 0, {"dives_completed": 4, "best_dives": 1})
+	var mines: Dictionary = Missions.evaluate("mines_total", 5, 0, {"mines_passed": 5})
+	return bool(entered.complete) and not bool(one_run.complete) and bool(mines.complete)
 
 
 func _test_rewards() -> bool:
@@ -275,8 +380,12 @@ func _test_overlay_mapping() -> bool:
 					expected = "stopwatch"
 				"earn_coins", "coin_runs":
 					expected = "coin"
-				"multi_threshold", "window_sum":
+				"multi_threshold", "window_sum", "dive_lanes", "dive_left", "dive_right", "dive_dodge", "dive_mines":
 					expected = "medal"
+				"dive_enter", "dive_complete", "dive_one_run":
+					expected = "fish"
+				"dive_time":
+					expected = "stopwatch"
 		if kind != expected:
 			return false
 		var tier := str(mission.get("tier", ""))
@@ -509,9 +618,16 @@ func _test_screen_board() -> bool:
 	overlay.set_dismissible(true)
 	overlay.present("board", true)
 	var screen: Vector2 = overlay.get_viewport().get_visible_rect().size
-	var back_center: Vector2 = (Overlay.SCREEN_BACK.position + Overlay.SCREEN_BACK.size * 0.5) * Vector2(screen.x / Overlay.SCREEN_SIZE.x, screen.y / Overlay.SCREEN_SIZE.y)
+	var placed: Rect2 = overlay.placed_screen_board()
+	var fit: float = placed.size.x / float(Overlay.SCREEN_SIZE.x)
+	var back_center: Vector2 = placed.position + (Overlay.SCREEN_BACK.position + Overlay.SCREEN_BACK.size * 0.5) * fit
 	var ok: bool = overlay.board_fills_screen() and overlay.board_brightness() >= 0.99 and overlay.shade_alpha() <= 0.001 and not overlay.shade_blocks_play()
-	ok = ok and overlay.card_contains(screen * 0.5) and not overlay.card_contains(back_center)
+	var card := Rect2(placed.position + Vector2(Overlay.SCREEN_FOCUS.position.x, Overlay.SCREEN_FOCUS.position.y) * fit, Vector2(Overlay.SCREEN_CARD_RIGHT - Overlay.SCREEN_FOCUS.position.x, Overlay.SCREEN_FOCUS.size.y) * fit)
+	var visible := Rect2(Vector2.ZERO, screen)
+	ok = ok and visible.grow(1.0).encloses(card)
+	ok = ok and visible.has_point(back_center)
+	ok = ok and is_equal_approx(placed.size.x / placed.size.y, Overlay.SCREEN_SIZE.x / Overlay.SCREEN_SIZE.y)
+	ok = ok and overlay.card_contains(visible.get_center()) and not overlay.card_contains(back_center)
 	if not ok:
 		push_error("[missions] screen board did not fill the display")
 	overlay.queue_free()
@@ -542,11 +658,212 @@ func _test_claim_marks() -> bool:
 	lobby.show_board(board, "")
 	var lobby_modes: PackedStringArray = _reward_modes(lobby)
 	lobby.queue_free()
-	var expected := PackedStringArray(["pending", "done", "", "pending"])
-	if screen_modes != expected or lobby_modes != expected:
+	var expected_screen := PackedStringArray(["", "done", "", ""])
+	var expected_lobby := PackedStringArray(["", "done", "", ""])
+	if screen_modes != expected_screen or lobby_modes != expected_lobby:
 		push_error("[missions] checkmark before claim screen=%s lobby=%s" % [screen_modes, lobby_modes])
 		return false
 	return true
+
+
+func _test_board_chrome() -> bool:
+	var Overlay = load("res://scripts/daily_missions_overlay.gd")
+	var partial := {
+		"ok": true,
+		"slots": [
+			{"slot": "easy", "complete": false, "claimed": false, "goal": 10, "progress": 0, "reward": 5, "description": "Easy"},
+			{"slot": "medium", "complete": false, "claimed": false, "goal": 10, "progress": 5, "reward": 10, "description": "Medium"},
+			{"slot": "hard", "complete": true, "claimed": true, "goal": 10, "progress": 10, "reward": 20, "description": "Hard"},
+		],
+		"bonus": {"unlocked": false, "claimed": false, "reward": 25},
+	}
+	var finished := {
+		"ok": true,
+		"slots": [
+			{"slot": "easy", "complete": true, "claimed": true, "goal": 10, "progress": 10, "reward": 5, "description": "Easy"},
+			{"slot": "medium", "complete": true, "claimed": true, "goal": 10, "progress": 10, "reward": 10, "description": "Medium"},
+			{"slot": "hard", "complete": true, "claimed": true, "goal": 10, "progress": 10, "reward": 20, "description": "Hard"},
+		],
+		"bonus": {"unlocked": true, "claimed": true, "reward": 25},
+	}
+	if not _assert_chrome(Overlay, true, partial, PackedStringArray(["", "", "done", ""]), [0.0, 0.5, 1.0]):
+		return false
+	if not _assert_chrome(Overlay, true, finished, PackedStringArray(["done", "done", "done", "done"]), [1.0, 1.0, 1.0]):
+		return false
+	if not _screen_covers_phones(Overlay):
+		return false
+	if not _assert_chrome(Overlay, false, partial, PackedStringArray(["", "", "done", ""]), [0.0, 0.5, 1.0]):
+		return false
+	var ref: Rect2 = Overlay.screen_board_rect(Vector2(540, 960), Vector4(0, 0, 0, 0))
+	if ref.position.x > 1.0 or ref.position.y > 1.0 or ref.end.x < 539.0 or ref.end.y < 958.0:
+		push_error("[missions] reference board left a gap %s" % ref)
+		return false
+	if absf(ref.size.x / ref.size.y - Overlay.SCREEN_SIZE.x / Overlay.SCREEN_SIZE.y) > 0.01:
+		push_error("[missions] reference board scale is not uniform")
+		return false
+	return true
+
+
+func _screen_covers_phones(Overlay) -> bool:
+	var phones := [
+		{"screen": Vector2(540, 960), "margins": Vector4(0, 0, 0, 0)},
+		{"screen": Vector2(540, 960), "margins": Vector4(0, 59, 0, 34)},
+		{"screen": Vector2(390, 844), "margins": Vector4(0, 47, 0, 34)},
+		{"screen": Vector2(393, 852), "margins": Vector4(0, 59, 0, 34)},
+		{"screen": Vector2(360, 780), "margins": Vector4(0, 44, 0, 30)},
+		{"screen": Vector2(540, 1169), "margins": Vector4(0, 65, 0, 47)},
+		{"screen": Vector2(540, 1171), "margins": Vector4(0, 81, 0, 47)},
+		{"screen": Vector2(540, 1170), "margins": Vector4(0, 66, 0, 45)},
+	]
+	for phone in phones:
+		var screen: Vector2 = phone.screen
+		var margins: Vector4 = phone.margins
+		var cover: Rect2 = Overlay.screen_cover_rect(screen)
+		var board: Rect2 = Overlay.screen_board_rect(screen, margins)
+		if cover.position != Vector2.ZERO or cover.size != screen:
+			push_error("[missions] fill left the viewport %s" % cover)
+			return false
+		if absf(board.size.x / board.size.y - Overlay.SCREEN_SIZE.x / Overlay.SCREEN_SIZE.y) > 0.01:
+			push_error("[missions] board aspect changed %s" % board)
+			return false
+		var scale: float = board.size.x / Overlay.SCREEN_SIZE.x
+		var card := Rect2(board.position + Vector2(Overlay.SCREEN_FOCUS.position.x, Overlay.SCREEN_FOCUS.position.y) * scale, Vector2(Overlay.SCREEN_CARD_RIGHT - Overlay.SCREEN_FOCUS.position.x, Overlay.SCREEN_FOCUS.size.y) * scale)
+		if board.position.y > 1.0:
+			push_error("[missions] artwork starts below the top %s" % board)
+			return false
+		if board.position.x > 1.0 or board.end.x < screen.x - 1.0:
+			push_error("[missions] artwork left a side gap %s" % board)
+			return false
+		if not Rect2(Vector2.ZERO, screen).grow(1.0).encloses(card):
+			push_error("[missions] mission board left the screen %s" % card)
+			return false
+		if board.size.x > screen.x + 8.0 and absf(card.end.x - screen.x) > 1.5:
+			push_error("[missions] blue card did not meet the screen edge %s" % card)
+			return false
+		var back := Rect2(board.position + Overlay.SCREEN_BACK.position * scale, Overlay.SCREEN_BACK.size * scale)
+		if not Rect2(Vector2.ZERO, screen).grow(1.0).encloses(back):
+			push_error("[missions] back button left the screen %s" % back)
+			return false
+		if not card.grow(8.0).encloses(back):
+			push_error("[missions] back button left the board %s" % back)
+			return false
+		var safe := Rect2(Vector2(margins.x, margins.y), Vector2(screen.x - margins.x - margins.z, screen.y - margins.y - margins.w))
+		if safe.size.y + 1.0 >= card.size.y and safe.size.x + 1.0 >= card.size.x and not safe.grow(2.0).encloses(card):
+			push_error("[missions] mission board entered the unsafe area %s safe %s" % [card, safe])
+			return false
+		var art_aspect: float = Overlay.SCREEN_SIZE.x / Overlay.SCREEN_SIZE.y
+		if absf(screen.x / screen.y - art_aspect) < 0.01:
+			if board.position.x > 1.0 or board.position.y > 1.0 or board.end.x < screen.x - 1.0 or board.end.y < screen.y - 1.0:
+				push_error("[missions] artwork left a gap on the reference viewport %s" % board)
+				return false
+	return true
+
+
+func _assert_chrome(Overlay, screen_board: bool, board: Dictionary, modes: PackedStringArray, expected: Array) -> bool:
+	var overlay = Overlay.new()
+	if screen_board:
+		overlay.use_screen_board()
+	root.add_child(overlay)
+	overlay.present("board", true)
+	overlay.set("_applied", false)
+	overlay.show_board(board, "")
+	var fills: Array = overlay.get("_fills")
+	var tracks: Array = overlay.get("_track")
+	var rewards: Array = overlay.get("_reward")
+	var backs: Array = overlay.get("_reward_backs")
+	var covers: Array = overlay.get("_coin_covers")
+	var marks: Array = overlay.get("_marks")
+	var texts: Array = overlay.get("_reward_text")
+	var ok := fills.size() == 3 and marks.size() == 3
+	for i in fills.size():
+		var fill: Control = fills[i]
+		var track: Control = fill.get_parent()
+		var groove: Rect2 = tracks[i]
+		var reward: Rect2 = rewards[i]
+		var back: Control = backs[i]
+		var mark: Control = marks[i]
+		if not track.clip_contents:
+			ok = false
+		var pad := 2.0
+		if fill.position.distance_to(Vector2(pad, pad)) > 0.01:
+			ok = false
+		var inner := Vector2(maxf(0.0, groove.size.x - pad * 2.0), maxf(0.0, groove.size.y - pad * 2.0))
+		if absf(fill.size.y - inner.y) > 0.01:
+			ok = false
+		if absf(fill.size.x - inner.x * expected[i]) > 0.01:
+			ok = false
+		if fill.position.x < -0.01 or fill.position.y < -0.01:
+			ok = false
+		if fill.position.x + fill.size.x > track.size.x + 0.01 or fill.position.y + fill.size.y > track.size.y + 0.01:
+			ok = false
+		if expected[i] <= 0.001 and fill.visible:
+			ok = false
+		if expected[i] > 0.001 and not fill.visible:
+			ok = false
+		if not is_equal_approx(track.size.x, groove.size.x) or not is_equal_approx(track.size.y, groove.size.y):
+			ok = false
+		var reward_box := Rect2(reward.position, reward.size)
+		var mark_box := Rect2(mark.position, mark.size)
+		var descs: Array = overlay.get("_desc")
+		var desc_box: Rect2 = descs[i]
+		var track_box: Rect2 = tracks[i]
+		if mark.clip_contents or mark.z_index < 2:
+			ok = false
+		var rewarded := modes[i] == "done"
+		if texts[i].visible == rewarded:
+			ok = false
+		if covers[i].visible or back.visible:
+			ok = false
+		var coins: Array = overlay.get("_coin_icons")
+		var coin_icon: Control = coins[i]
+		if coin_icon.size.x > 1.0 and coin_icon.visible == rewarded:
+			ok = false
+		if rewarded and mark_box.intersects(desc_box):
+			ok = false
+		if rewarded and mark_box.intersects(track_box):
+			ok = false
+		if rewarded and screen_board:
+			var coin_rect: Rect2 = Overlay.SCREEN_COIN_ICON[i]
+			var cluster_center := Vector2((coin_rect.position.x + reward_box.end.x) * 0.5, coin_rect.position.y + coin_rect.size.y * 0.5)
+			var mark_center := mark_box.position + mark_box.size * 0.5
+			if mark_center.distance_to(cluster_center) > 4.0:
+				ok = false
+		if rewarded and not screen_board:
+			var mark_center := mark_box.position + mark_box.size * 0.5
+			var number_center := reward_box.position + reward_box.size * 0.5
+			if mark_center.x > number_center.x:
+				ok = false
+			if mark_center.distance_to(number_center) > 70.0:
+				ok = false
+	for i in marks.size():
+		for j in range(i + 1, marks.size()):
+			var a := Rect2((marks[i] as Control).position, (marks[i] as Control).size)
+			var b := Rect2((marks[j] as Control).position, (marks[j] as Control).size)
+			if a.intersects(b):
+				ok = false
+	var seen := _reward_modes(overlay)
+	if seen != modes:
+		ok = false
+	var status: Array = overlay.get("_status")
+	var rows: Array = board.get("slots", [])
+	var circles: Array = Overlay.SCREEN_STATUS if screen_board else Overlay.STATUS
+	if status.size() != 3 or rows.size() < 3:
+		ok = false
+	else:
+		for i in status.size():
+			var row: Dictionary = rows[i]
+			var want := "done" if bool(row.get("complete", false)) or bool(row.get("claimed", false)) else ""
+			if str(status[i].get("_mode")) != want:
+				ok = false
+			var circle: Rect2 = circles[i]
+			var mark_center := (status[i] as Control).position + (status[i] as Control).size * 0.5
+			var circle_center := circle.position + circle.size * 0.5
+			if mark_center.distance_to(circle_center) > 1.0:
+				ok = false
+	if not ok:
+		push_error("[missions] chrome screen=%s modes=%s" % [screen_board, seen])
+	overlay.queue_free()
+	return ok
 
 
 func _reward_modes(overlay) -> PackedStringArray:
@@ -586,6 +903,116 @@ func _read_project(path: String) -> String:
 	var text := file.get_as_text()
 	file.close()
 	return text
+
+
+func _test_mission_icons() -> bool:
+	var expected := {
+		1: "pipes",
+		3: "high_score",
+		4: "complete_runs",
+		6: "high_score",
+		7: "survive_x_seconds",
+		8: "collect_x_coins",
+		10: "collect_coins",
+		11: "pipes",
+		30: "pipes",
+		46: "enter_deep_dive",
+		47: "change_lanes",
+		48: "time_in_deep_dive",
+		49: "move_left",
+		51: "dodge_obstacles",
+		52: "move_right",
+		55: "complete_deep_dives",
+		66: "mine",
+		78: "survive_without_hitting",
+		89: "dodge_obstacles",
+		90: "enter_deep_dive",
+	}
+	var used := {}
+	for mission in Missions.catalog():
+		var mission_id := int(mission.get("id", 0))
+		var file := Missions.icon_file(mission_id)
+		if file == "" or file == "mystery_mission":
+			push_error("[missions] mission %d has no icon" % mission_id)
+			return false
+		if expected.has(mission_id) and str(expected[mission_id]) != file:
+			push_error("[missions] mission %d icon %s" % [mission_id, file])
+			return false
+		var path := "res://assets/ui/mission_icons/%s.png" % file
+		if not ResourceLoader.exists(path):
+			push_error("[missions] missing %s" % path)
+			return false
+		var texture: Texture2D = load(path) as Texture2D
+		if texture == null or texture.get_width() < 8 or texture.get_height() < 8:
+			push_error("[missions] broken texture %s" % path)
+			return false
+		var image := texture.get_image()
+		if image == null or image.is_empty():
+			push_error("[missions] empty image %s" % path)
+			return false
+		if image.get_pixel(0, 0).a > 0.05 and image.get_pixel(image.get_width() - 1, image.get_height() - 1).a > 0.05:
+			push_error("[missions] %s still has a solid background" % file)
+			return false
+		used[file] = true
+	if Missions.icon_file(999) != "mystery_mission":
+		return false
+	if used.size() < 15:
+		return false
+	var Overlay = load("res://scripts/daily_missions_overlay.gd")
+	var iphone: Rect2 = Overlay.screen_board_rect(Vector2(390, 844), Vector4(0, 47, 0, 34))
+	var fit: float = iphone.size.x / float(Overlay.SCREEN_SIZE.x)
+	var icon_size: Vector2 = Overlay.SCREEN_ICONS[0].size
+	for i in Overlay.SCREEN_ICONS.size():
+		var icon: Rect2 = Overlay.SCREEN_ICONS[i]
+		if icon.size != icon_size or icon.size.x < 64.0:
+			return false
+		if icon.intersects(Overlay.SCREEN_DESC[i]) or icon.intersects(Overlay.SCREEN_TRACK[i]):
+			return false
+		if icon.intersects(Overlay.SCREEN_REWARD[i]) or icon.intersects(Overlay.SCREEN_CHECK[i]):
+			return false
+		if icon.intersects(Overlay.SCREEN_COUNT[i]) or icon.end.x > Overlay.SCREEN_DESC[i].position.x:
+			return false
+		var placed := Rect2(iphone.position + icon.position * fit, icon.size * fit)
+		if not iphone.encloses(placed):
+			push_error("[missions] icon leaves the iPhone board %s" % placed)
+			return false
+	var board := {
+		"ok": true,
+		"slots": [
+			{"slot": "easy", "mission_id": 46, "complete": true, "claimed": true, "goal": 1, "progress": 1, "reward": 5, "description": "Deep Diver: enter a dive."},
+			{"slot": "medium", "mission_id": 66, "complete": false, "claimed": false, "goal": 5, "progress": 2, "reward": 10, "description": "Mine Dodger: pass 5 mines."},
+			{"slot": "hard", "mission_id": 1, "complete": false, "claimed": false, "goal": 10, "progress": 0, "reward": 20, "description": "Pass 10 pipes total."},
+		],
+		"bonus": {"unlocked": false, "claimed": false, "reward": 25},
+	}
+	var overlay = Overlay.new()
+	overlay.use_screen_board()
+	root.add_child(overlay)
+	overlay.present("board", true)
+	overlay.show_board(board, "")
+	var holders: Array = overlay.get("_icon_holders")
+	var marks: Array = overlay.get("_marks")
+	var ok := holders.size() == 3 and marks.size() == 3
+	var files := ["enter_deep_dive", "mine", "pipes"]
+	for i in holders.size():
+		var holder: Control = holders[i]
+		if holder.get_child_count() != 1:
+			ok = false
+			continue
+		var icon: Control = holder.get_child(0)
+		if icon.texture_filter != CanvasItem.TEXTURE_FILTER_NEAREST:
+			ok = false
+		var shown := icon.get("texture") as Texture2D
+		if shown == null or shown.resource_path != "res://assets/ui/mission_icons/%s.png" % files[i]:
+			ok = false
+		if holder.position.x + holder.size.x > Overlay.SCREEN_DESC[i].position.x:
+			ok = false
+	if str(marks[0].get("_mode")) != "done":
+		ok = false
+	overlay.queue_free()
+	if not ok:
+		push_error("[missions] mission icons did not land on the cards")
+	return ok
 
 
 func _check(ok: bool, label: String) -> bool:

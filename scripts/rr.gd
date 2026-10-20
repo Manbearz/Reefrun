@@ -41,9 +41,12 @@ const PHYSICS_VERSION := 1
 const COURSE_VERSION := 1
 # VIEW_W+lead(80) + cull(120) + PLAYER_X + pipe width, divided by spacing (PIPE_SPEED*INTERVAL=300), plus spare.
 const PIPE_POOL_SIZE := 12
+# Daily Challenge still starts a volley every this many spawned pipes.
+# Unlimited mode uses DeepDiveConfig for harpoons and Deep Dives.
 const HARPOON_EVERY := 20
 const HARPOON_WARN := 2.0
 const HARPOON_SHOTS := 3
+const HARPOON_LANES := 4
 const HARPOON_PER_LANE := 3
 const HARPOON_SCALE_X := 0.62
 const HARPOON_SCALE_Y := 0.32
@@ -110,6 +113,45 @@ const GHOST_NAMES: PackedStringArray = [
 ]
 
 
+# Vertical band the harpoon volley covers. Four lanes share it, and the
+# lowest lane reaches the playable water above the ground and the home indicator.
+static func harpoon_band() -> Vector2:
+	var top := PLAY_TOP + 10.0
+	var bottom := screen_bottom() - 108.0
+	if bottom < top + 360.0:
+		bottom = top + 360.0
+	return Vector2(top, bottom)
+
+
+static func harpoon_lane_height() -> float:
+	var band := harpoon_band()
+	return (band.y - band.x) / float(HARPOON_LANES)
+
+
+static func harpoon_lane_center(lane: int) -> float:
+	var band := harpoon_band()
+	var index := clampi(lane, 0, HARPOON_LANES - 1)
+	return band.x + harpoon_lane_height() * (float(index) + 0.5)
+
+
+static func harpoon_lane_y(lane: int, slot: int) -> float:
+	var band := harpoon_band()
+	var height := harpoon_lane_height()
+	var index := clampi(lane, 0, HARPOON_LANES - 1)
+	var top := band.x + height * float(index)
+	var along := (float(clampi(slot, 0, HARPOON_PER_LANE - 1)) + 0.5) / float(HARPOON_PER_LANE)
+	# The lowest lane's bottom spear sits near the floor of that lane so the
+	# old gap above the ground is part of the pattern, not a hiding spot.
+	if index == HARPOON_LANES - 1:
+		along = lerpf(0.18, 0.92, float(clampi(slot, 0, HARPOON_PER_LANE - 1)) / float(HARPOON_PER_LANE - 1))
+	return top + height * along
+
+
+static func harpoon_lane_of(y: float) -> int:
+	var band := harpoon_band()
+	return clampi(int((y - band.x) / harpoon_lane_height()), 0, HARPOON_LANES - 1)
+
+
 static func screen_bottom() -> float:
 	# KEEP_WIDTH on a tall phone grows the viewport past VIEW_H. Desktop KEEP
 	# stays at 540x960, so this returns VIEW_H and the original layout is unchanged.
@@ -150,6 +192,47 @@ static func fish_price(index: int) -> int:
 
 static func hat_price(index: int) -> int:
 	return _tier_price(HAT_TIER_PRICE, _rarity_at(HAT_RARITY, index))
+
+
+# Shop rows: unlocked items sit first, then locked items. Each group is cheapest first.
+# Equal prices keep the original index order. Hats reserve index -1 for Off.
+static func fish_shop_order(owned: PackedInt32Array = PackedInt32Array()) -> PackedInt32Array:
+	return _shop_order(FISH_IDS.size(), fish_price, func(index: int) -> bool:
+		if index < FREE_FISH:
+			return true
+		return owned.has(index)
+	)
+
+
+static func hat_shop_order(owned: PackedInt32Array = PackedInt32Array()) -> PackedInt32Array:
+	var order := _shop_order(HAT_COUNT, hat_price, func(index: int) -> bool:
+		return owned.has(index)
+	)
+	order.insert(0, -1)
+	return order
+
+
+static func _shop_order(count: int, price_of: Callable, owns: Callable) -> PackedInt32Array:
+	var ids: Array[int] = []
+	ids.resize(count)
+	for i in count:
+		ids[i] = i
+	ids.sort_custom(func(a: int, b: int) -> bool:
+		var owned_a := bool(owns.call(a))
+		var owned_b := bool(owns.call(b))
+		if owned_a != owned_b:
+			return owned_a
+		var pa := int(price_of.call(a))
+		var pb := int(price_of.call(b))
+		if pa == pb:
+			return a < b
+		return pa < pb
+	)
+	var packed := PackedInt32Array()
+	packed.resize(ids.size())
+	for i in ids.size():
+		packed[i] = ids[i]
+	return packed
 
 
 static func _rarity_at(table: PackedInt32Array, index: int) -> int:

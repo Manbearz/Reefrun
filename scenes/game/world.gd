@@ -22,6 +22,8 @@ var _shark_speed := 0.0
 var _shark_bob := 0.0
 var _shark_y := 0.0
 var _shark_rng := RandomNumberGenerator.new()
+var _depth_blend := 0.0
+var _dive_fall := 0.0
 
 
 func _ready() -> void:
@@ -110,6 +112,30 @@ func _tile(tex: Texture2D, y: float, scale: float, z: int) -> Sprite2D:
 	return spr
 
 
+func set_depth_blend(amount: float) -> void:
+	_depth_blend = clampf(amount, 0.0, 1.0)
+	if _bg:
+		_bg.modulate = Color(1, 1, 1).lerp(Color(0.42, 0.6, 0.86), _depth_blend)
+	var ground_alpha := 1.0 - _depth_blend
+	if _ground_a:
+		_ground_a.modulate.a = ground_alpha
+	if _ground_b:
+		_ground_b.modulate.a = ground_alpha
+	var bounds := _depth_blend < 0.25
+	# Death can call this from inside the fish's collision signal. Setting
+	# monitorable directly is illegal there, so only queue a change.
+	if _ceiling and _ceiling.monitorable != bounds:
+		_ceiling.set_deferred("monitorable", bounds)
+	if _floor and _floor.monitorable != bounds:
+		_floor.set_deferred("monitorable", bounds)
+	if _shark and _depth_blend > 0.2:
+		_shark.visible = false
+
+
+func set_dive_fall(speed: float) -> void:
+	_dive_fall = maxf(speed, 0.0)
+
+
 func follow(scroll: float) -> void:
 	_scroll = scroll
 	if _ground_a == null or _ground_a.texture == null:
@@ -131,6 +157,8 @@ func tick_decor(delta: float) -> void:
 	for i in _bubbles.size():
 		_bubble_phase[i] += delta
 		_bubble_y[i] -= _bubble_speed[i] * delta
+		_bubble_y[i] -= 96.0 * _depth_blend * delta
+		_bubble_y[i] -= _dive_fall * 0.45 * delta
 		_bubble_x[i] -= drift * 0.28
 		if _bubble_y[i] < top:
 			_bubble_y[i] += span
@@ -186,6 +214,9 @@ func _build_shark() -> void:
 
 func _tick_shark(delta: float) -> void:
 	if _shark == null:
+		return
+	if _depth_blend > 0.2:
+		_shark.visible = false
 		return
 	if not _shark_active:
 		_shark_wait -= delta

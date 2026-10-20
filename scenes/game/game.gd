@@ -89,6 +89,14 @@ var _run_coins := 0
 var _mission_run_id := ""
 var _mission_seconds := 0.0
 var _mission_track := false
+var _mission_dive_seconds := 0.0
+var _mission_dives_entered := 0
+var _mission_dives_completed := 0
+var _mission_lanes := 0
+var _mission_lanes_left := 0
+var _mission_lanes_right := 0
+var _mission_obstacles := 0
+var _mission_mines := 0
 var _mission_folded := false
 var _over_rank := 0
 var _over_remaining := 0
@@ -108,6 +116,18 @@ var _wipe_share: TextureButton
 var _wipe_menu: TextureButton
 var _share_busy := false
 var _roster_ready := false
+var _events: GameplayEvents
+var _motion := DiveMotion.new()
+var _dive_field: DiveField
+var _dive_overlay: DiveOverlay
+var _dive_origin := Vector2.ZERO
+var _dive_leave_from := Vector2.ZERO
+var _swim_home := Vector2(RR.PLAYER_X, RR.VIEW_H * 0.42)
+var _synced_state := 0
+var _count_cue := 0
+var _whoosh_dive := -1
+var _survived_cue := false
+var _dive_ghosts_hidden := false
 
 
 func _ready() -> void:
@@ -198,6 +218,7 @@ func _spawn_player() -> void:
 	player = _make_fish(GameSession.selected_fish(), true, Vector2(RR.PLAYER_X, RR.VIEW_H * 0.42), _player_label())
 	player.control = ReefFish.CTRL_PLAYER
 	player.died.connect(_on_player_died)
+	_setup_deep_dive()
 	swimming = 1
 
 
@@ -313,8 +334,10 @@ func _configure_web_touch() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if event is InputEventScreenTouch:
-		if event.pressed:
+	if event is InputEventScreenTouch or event is InputEventScreenDrag:
+		if _route_dive_pointer(event):
+			return
+		if event is InputEventScreenTouch and event.pressed:
 			_play_press(event.position, true)
 		_mark_input_handled()
 		return
@@ -325,6 +348,25 @@ func _input(event: InputEvent) -> void:
 		_mark_input_handled()
 		return
 	if paused:
+		return
+	if event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_F6 or event.physical_keycode == KEY_F6):
+		if OS.has_feature("editor") and _events_on():
+			_events.debug_queue_dive()
+			_mark_input_handled()
+			return
+	if _route_dive_pointer(event):
+		return
+	if _events_on() and _events.steer_active() and event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_LEFT or event.keycode == KEY_A or event.physical_keycode == KEY_LEFT or event.physical_keycode == KEY_A:
+			_motion.nudge(-1.0)
+			_mark_input_handled()
+			return
+		if event.keycode == KEY_RIGHT or event.keycode == KEY_D or event.physical_keycode == KEY_RIGHT or event.physical_keycode == KEY_D:
+			_motion.nudge(1.0)
+			_mark_input_handled()
+			return
+	if _events_on() and _events.suppresses_flap() and event is InputEventKey and event.pressed and event.is_action("flap"):
+		_mark_input_handled()
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		if _eat_emulated_mouse:
@@ -419,6 +461,9 @@ func _press_button_in(node: Node, pos: Vector2) -> bool:
 func _try_player_flap() -> void:
 	if finished or paused:
 		return
+	if _events_on() and _events.suppresses_flap():
+		_pending_start_flap = false
+		return
 	if player == null or not player.alive:
 		return
 	if not started:
@@ -440,6 +485,14 @@ func _begin_run() -> void:
 	)
 	_mission_run_id = ""
 	_mission_seconds = 0.0
+	_mission_dive_seconds = 0.0
+	_mission_dives_entered = 0
+	_mission_dives_completed = 0
+	_mission_lanes = 0
+	_mission_lanes_left = 0
+	_mission_lanes_right = 0
+	_mission_obstacles = 0
+	_mission_mines = 0
 	if _mission_track:
 		_mission_run_id = "%d-%d" % [Time.get_ticks_usec(), randi()]
 		# The board already folded at 3 seconds. Starting the swim only keeps the widget.
@@ -608,23 +661,40 @@ func _tick_countdown(delta: float) -> void:
 func _physics_process(delta: float) -> void:
 	if paused:
 		return
+	if _events_on():
+		_events.set_corridor_clear(_corridor_clear())
+		_events.tick(delta)
+		if _harpoon_live():
+			_tick_harpoons(delta)
+		_sync_events()
+	var diving := _events_on() and _events.blocks_swim()
 	if started and not finished:
 		if _mission_track and player != null and player.alive:
 			_mission_seconds += delta
-		match_tick += 1
-		_advance_playback()
-		scroll += RR.PIPE_SPEED * delta
-		course.position.x = -scroll
-		if _harpoon_beat == 0:
+			if _events_on() and _events.state == GameplayEvents.State.DEEP_DIVE:
+				_mission_dive_seconds += delta
+		if not diving:
+			match_tick += 1
+			_advance_playback()
+			scroll += RR.PIPE_SPEED * delta
+			course.position.x = -scroll
+		if _can_spawn_pipes():
 			_spawn_pipes()
 		_cull_pipes()
-		_tick_harpoons(delta)
-		_guide_ghosts()
-		_collect_coins()
-		_score_pipes()
+		if not _events_on() and _harpoon_beat != 0:
+			_tick_harpoons(delta)
+		if diving:
+			_update_dive_actor(delta)
+		if not diving:
+			_guide_ghosts()
+			_collect_coins()
+			if _scoring_open():
+				_score_pipes()
 		_sample_perf()
+	if diving:
+		_present_dive()
 	player.tick(delta)
-	if not finished:
+	if not finished and not (_events_on() and _events.ghosts_frozen()):
 		for ghost in ghosts:
 			if ghost.alive:
 				ghost.tick(delta)
@@ -640,9 +710,15 @@ func _process(delta: float) -> void:
 			_warmup.visible = false
 			if hud:
 				hud.hide_prewarm()
-	if not finished and not paused:
+	var dive_hold := _events_on() and _events.blocks_swim()
+	if world:
+		var fall := 0.0
+		if dive_hold and _dive_field:
+			fall = _dive_field.fall_speed()
+		world.set_dive_fall(fall)
+	if not finished and not paused and not dive_hold:
 		world_scroll += RR.PIPE_SPEED * delta
-	if started and not finished and not paused:
+	if started and not finished and not paused and not dive_hold:
 		visual_scroll += RR.PIPE_SPEED * delta
 		if _harpoon_beat >= 2:
 			for spear in _harpoons:
@@ -669,6 +745,7 @@ func _process(delta: float) -> void:
 
 
 func _spawn_pipes() -> void:
+	_extend_unlimited_course()
 	var lead := RR.VIEW_W + 80.0
 	while spawn_index < layout.size() and layout[spawn_index]["x"] <= scroll + lead:
 		_take_pipe_from_layout()
@@ -697,6 +774,8 @@ func _take_pipe_from_layout() -> void:
 	spawn_index += 1
 	if spawn_index % RR.COIN_EVERY == 0:
 		_spawn_coin_after_pipe(spawn_index - 1)
+	if _events_on():
+		return
 	_pipes_until_harpoon -= 1
 	if _pipes_until_harpoon <= 0:
 		_harpoon_beat = 1
@@ -772,6 +851,8 @@ func _score_pipes() -> void:
 				score += 1
 				player.pipes_cleared = score
 				Sfx.play("checkpoint", -10.0)
+				if _events_on():
+					_events.note_pipes_passed(score)
 
 
 func _alive_count() -> int:
@@ -796,6 +877,10 @@ func _on_player_died() -> void:
 		return
 	if player.alive:
 		return
+	if _events_on():
+		_events.notify_death()
+		_synced_state = _events.state
+		_halt_dive()
 	Sfx.play_death(-10.0)
 	swimming = maxi(swimming - 1, 0)
 	var remaining := swimming
@@ -803,7 +888,7 @@ func _on_player_died() -> void:
 	if not GameSession.practice_daily:
 		_save_ghost_run()
 		if _mission_track:
-			GameSession.remember_mission_run(_mission_run_id, score, int(_mission_seconds), _run_coins)
+			GameSession.remember_mission_run(_mission_run_id, score, int(_mission_seconds), _run_coins, _mission_dive_facts())
 		GameSession.record_run(score, rank, remaining)
 	_log_perf()
 	get_tree().create_timer(0.85).timeout.connect(_after_death.bind(rank, remaining))
@@ -1436,11 +1521,16 @@ func _set_paused(value: bool) -> void:
 	if finished:
 		return
 	paused = value
+	if _events_on():
+		_events.set_paused(value)
 	get_tree().paused = value
 	if value and started and _mission_allowed():
 		_set_mission_presentation("board")
 	elif not value and started and _mission_allowed():
-		_set_mission_presentation("widget")
+		if _events_on() and _events.blocks_swim():
+			_set_mission_presentation("hidden")
+		else:
+			_set_mission_presentation("widget")
 	if pause_layer:
 		pause_layer.visible = value
 		_layout_pause_controls(value and _mission_allowed())
@@ -1540,28 +1630,20 @@ func _make_pooled_pipe() -> PipePair:
 
 
 func _setup_harpoons() -> void:
-	for lane in 3:
+	for lane in RR.HARPOON_LANES:
 		for slot in RR.HARPOON_PER_LANE:
 			var spear = HarpoonScript.new()
 			add_child(spear)
-			spear.setup(lane, _lane_slot_y(lane, slot))
+			spear.setup(lane, RR.harpoon_lane_y(lane, slot))
 			_harpoons.append(spear)
 
 
 func _lane_center(lane: int) -> float:
-	var h := (RR.PLAY_BOTTOM - RR.PLAY_TOP) / 3.0
-	return RR.PLAY_TOP + h * (float(lane) + 0.5)
-
-
-func _lane_slot_y(lane: int, slot: int) -> float:
-	var h := (RR.PLAY_BOTTOM - RR.PLAY_TOP) / 3.0
-	var top := RR.PLAY_TOP + h * float(lane)
-	return top + h * (float(slot) + 0.5) / float(RR.HARPOON_PER_LANE)
+	return RR.harpoon_lane_center(lane)
 
 
 func _lane_of(y: float) -> int:
-	var h := (RR.PLAY_BOTTOM - RR.PLAY_TOP) / 3.0
-	return clampi(int((y - RR.PLAY_TOP) / h), 0, 2)
+	return RR.harpoon_lane_of(y)
 
 
 func _pipes_ahead() -> bool:
@@ -1613,6 +1695,8 @@ func _begin_harpoon_warn() -> void:
 			spear.arm()
 	if _harpoon_round == 0:
 		hud.show_feed("Harpoons incoming")
+	if _events_on():
+		_events.notify_harpoon_phase(GameplayEvents.State.HARPOON_WARNING)
 
 
 func _pick_safe_lane() -> int:
@@ -1628,6 +1712,8 @@ func _begin_harpoon_fire() -> void:
 	Sfx.play("grappling")
 	for spear in _harpoons:
 		spear.fire()
+	if _events_on():
+		_events.notify_harpoon_phase(GameplayEvents.State.HARPOON_ACTIVE)
 
 
 func _strike_harpoon_ghosts() -> void:
@@ -1650,15 +1736,13 @@ func _finish_harpoon_volley() -> void:
 	if _harpoon_round < RR.HARPOON_SHOTS:
 		_begin_harpoon_warn()
 		return
-	if spawn_index < layout.size():
-		var next_x: float = scroll + RR.VIEW_W + 120.0
-		var shift: float = next_x - float(layout[spawn_index]["x"])
-		if shift > 0.0:
-			for i in range(spawn_index, layout.size()):
-				layout[i]["x"] = float(layout[i]["x"]) + shift
-	_pipes_until_harpoon = RR.HARPOON_EVERY
+	_shift_upcoming_pipes(RR.VIEW_W + 120.0)
 	_harpoon_round = 0
 	_harpoon_beat = 0
+	if _events_on():
+		_events.notify_harpoon_finished()
+		return
+	_pipes_until_harpoon = RR.HARPOON_EVERY
 
 
 func _advance_playback() -> void:
@@ -1803,3 +1887,360 @@ func _sample_pipe_spike(delta: float) -> void:
 		return
 	if p1 < 220.0:
 		_spike_phase = "pipe1_approach"
+
+
+func _events_on() -> bool:
+	return _events != null
+
+
+func _setup_deep_dive() -> void:
+	if not GameplayEvents.applies_to(GameSession.match_mode, GameSession.practice_daily):
+		return
+	_events = GameplayEvents.new()
+	_motion.configure(RR.VIEW_W)
+	_dive_field = preload("res://scenes/deep_dive/dive_field.tscn").instantiate()
+	_dive_field.process_mode = Node.PROCESS_MODE_PAUSABLE
+	add_child(_dive_field)
+	_dive_overlay = preload("res://scenes/deep_dive/dive_overlay.tscn").instantiate()
+	add_child(_dive_overlay)
+	_synced_state = GameplayEvents.State.NORMAL
+
+
+func _extend_unlimited_course() -> void:
+	if not _events_on():
+		return
+	if layout.size() - spawn_index > 16:
+		return
+	var built: Dictionary = CourseBuilderScript.generate(
+		GameSession.course_seed + layout.size() * 13 + 3,
+		40,
+		layout.size()
+	)
+	var extra: Array = built["layout"]
+	if extra.is_empty():
+		return
+	var base := RR.PIPE_SPEED * RR.PIPE_INTERVAL
+	if not layout.is_empty():
+		base = float(layout[layout.size() - 1]["x"]) + RR.PIPE_SPEED * RR.PIPE_INTERVAL
+	var origin := float(extra[0]["x"])
+	for spec in extra:
+		var copy: Dictionary = (spec as Dictionary).duplicate()
+		copy["x"] = base + float(copy["x"]) - origin
+		layout.append(copy)
+	var lanes: PackedInt32Array = built["harpoon_lanes"]
+	for lane in lanes:
+		_harpoon_lanes.append(int(lane))
+
+
+func _can_spawn_pipes() -> bool:
+	if _events_on():
+		return _events.pipes_allowed()
+	return _harpoon_beat == 0
+
+
+func _scoring_open() -> bool:
+	if not _events_on():
+		return true
+	return _events.scoring_allowed()
+
+
+func _harpoon_live() -> bool:
+	if not _events_on():
+		return false
+	return (
+		_events.state == GameplayEvents.State.HARPOON_WARNING
+		or _events.state == GameplayEvents.State.HARPOON_ACTIVE
+		or _harpoon_beat != 0
+	)
+
+
+func _corridor_clear() -> bool:
+	if _harpoon_beat != 0:
+		return false
+	for spear in _harpoons:
+		if spear.armed or spear.flying:
+			return false
+	for pair in pipes:
+		var screen_x := pair.position.x - scroll
+		if screen_x > -90.0 and screen_x < RR.VIEW_W + 36.0:
+			return false
+	return true
+
+
+func _shift_upcoming_pipes(lead: float) -> void:
+	if spawn_index >= layout.size():
+		return
+	var next_x := scroll + lead
+	var shift := next_x - float(layout[spawn_index]["x"])
+	if shift <= 0.0:
+		return
+	for i in range(spawn_index, layout.size()):
+		layout[i]["x"] = float(layout[i]["x"]) + shift
+
+
+func _sync_events() -> void:
+	if not _events_on():
+		return
+	var now: int = _events.state
+	if now == _synced_state:
+		return
+	var prev := _synced_state
+	_synced_state = now
+	if now == GameplayEvents.State.HARPOON_WARNING and prev != GameplayEvents.State.HARPOON_ACTIVE and _harpoon_beat == 0:
+		_harpoon_round = 0
+		_begin_harpoon_warn()
+	elif now == GameplayEvents.State.DIVE_TRANSITION_IN:
+		_enter_dive_transition()
+	elif now == GameplayEvents.State.DEEP_DIVE:
+		_enter_dive_play()
+	elif now == GameplayEvents.State.DIVE_TRANSITION_OUT:
+		_enter_dive_outro()
+	elif now == GameplayEvents.State.RESUME_SWIMMING:
+		_enter_swim_resume()
+	elif now == GameplayEvents.State.NORMAL:
+		if player and player.motion_lock:
+			_restore_swim_physics()
+	elif now == GameplayEvents.State.GAME_OVER:
+		_halt_dive()
+
+
+func _enter_dive_transition() -> void:
+	for spear in _harpoons:
+		spear.hide_idle()
+	_harpoon_beat = 0
+	_harpoon_round = 0
+	_dive_origin = player.position if player else _swim_home
+	_motion.reset(RR.VIEW_W * 0.5)
+	_count_cue = 0
+	_survived_cue = false
+	if player:
+		player.velocity = Vector2.ZERO
+		player.hold_dive(0.0)
+	if _dive_field:
+		_dive_field.begin_ambient()
+	_set_dive_ghosts(true)
+	_shift_upcoming_pipes(RR.VIEW_W + 180.0)
+	if _mission_track:
+		_set_mission_presentation("hidden")
+	var dive_n := _events.dive_number if _events else 0
+	if dive_n != _whoosh_dive:
+		_whoosh_dive = dive_n
+		_cue("whoosh")
+	_cue("checkpoint")
+
+
+func _enter_dive_play() -> void:
+	if player:
+		_motion.reset(player.position.x)
+		player.hold_dive(1.0)
+	if _dive_field:
+		var seed := GameSession.course_seed
+		if seed == 0:
+			seed = 1
+		_dive_field.start(maxi(_events.dive_number, 1), seed + _events.dive_number * 997)
+	if _mission_track:
+		_mission_dives_entered += 1
+
+
+func _enter_dive_outro() -> void:
+	_dive_leave_from = player.position if player else Vector2(RR.VIEW_W * 0.5, DeepDiveConfig.FISH_Y)
+	if _dive_field:
+		_dive_field.stop_and_clear()
+	if not _survived_cue:
+		_survived_cue = true
+		_cue("checkpoint")
+
+
+func _enter_swim_resume() -> void:
+	_restore_swim_physics()
+	_shift_upcoming_pipes(RR.VIEW_W + 200.0)
+	if world:
+		world.set_depth_blend(0.0)
+	if _dive_field:
+		_dive_field.halt()
+	if _dive_overlay:
+		_dive_overlay.hide_all()
+	if hud:
+		hud.set_dive_timer("", false)
+	_set_dive_ghosts(false)
+	if _mission_track:
+		_mission_dives_completed += 1
+	if _mission_track and not paused:
+		_set_mission_presentation("widget")
+
+
+func _halt_dive() -> void:
+	var sfx := get_node_or_null("/root/Sfx")
+	if sfx:
+		sfx.stop("whoosh")
+	if player:
+		player.release_dive()
+	_motion.reset(RR.PLAYER_X)
+	if world:
+		world.set_depth_blend(0.0)
+	if _dive_field:
+		_dive_field.halt()
+	if _dive_overlay:
+		_dive_overlay.hide_all()
+	if hud:
+		hud.set_dive_timer("", false)
+
+
+func _restore_swim_physics() -> void:
+	# The dive used to keep calling hold_dive through the resume window, which
+	# left motion_lock set after the state returned to normal. Release once,
+	# put the fish on the swim lane, and let tick() own gravity again.
+	_motion.reset(RR.PLAYER_X)
+	if player == null:
+		return
+	player.position = _swim_home
+	player.release_dive()
+	if started:
+		player.started = true
+
+
+func _update_dive_actor(delta: float) -> void:
+	if player == null or _events == null:
+		return
+	if _events.steer_active():
+		_motion.tick(delta)
+	var tilt := 0.0
+	if _events.steer_active() and absf(_motion.velocity) > 20.0:
+		tilt = -signf(_motion.velocity) * 0.16
+	player.set_dive_facing(_events.turn_amount(), tilt)
+	player.hold_dive(0.0)
+	var home := Vector2(_motion.x, DeepDiveConfig.FISH_Y)
+	var turn := _events.turn_amount()
+	match _events.state:
+		GameplayEvents.State.DIVE_TRANSITION_IN:
+			player.position = _dive_origin.lerp(home, _smoothstep(turn))
+			if _dive_field:
+				_dive_field.tick(delta, DeepDiveConfig.FISH_Y)
+		GameplayEvents.State.DEEP_DIVE:
+			player.position = home
+			if _dive_field:
+				var cleared := _dive_field.tick(delta, DeepDiveConfig.FISH_Y)
+				_events.note_obstacles_dodged(cleared.x)
+				_note_mission_dodges(cleared.x, cleared.y)
+		GameplayEvents.State.DIVE_TRANSITION_OUT:
+			var u := _smoothstep(1.0 - turn)
+			player.position = _dive_leave_from.lerp(_swim_home, u)
+			if _dive_field:
+				_dive_field.tick(delta, DeepDiveConfig.FISH_Y)
+		_:
+			player.position = _swim_home
+
+
+func _present_dive() -> void:
+	if not _events_on():
+		return
+	var blend := _events.depth_blend()
+	if world:
+		world.set_depth_blend(blend)
+	if _dive_field:
+		_dive_field.set_blend(blend)
+	if _dive_overlay:
+		_dive_overlay.sync(_events)
+	if hud:
+		var show_timer := _events.state == GameplayEvents.State.DEEP_DIVE
+		hud.set_dive_timer(str(_events.seconds_left()), show_timer)
+	var count := _events.intro_count()
+	if count > 0 and count != _count_cue:
+		_count_cue = count
+		_cue("checkpoint")
+
+
+func _set_dive_ghosts(should_hide: bool) -> void:
+	_dive_ghosts_hidden = should_hide
+	if should_hide:
+		for ghost in ghosts:
+			ghost.visible = false
+		return
+	var shown := mini(_shown_ghosts, ghosts.size())
+	for i in ghosts.size():
+		ghosts[i].visible = i < shown and ghosts[i].alive
+
+
+func _route_dive_pointer(event: InputEvent) -> bool:
+	if not _events_on() or paused or finished:
+		return false
+	var diving := _events.steer_active()
+	var owned := diving or _events.suppresses_flap()
+	if not owned:
+		return false
+	if event is InputEventScreenTouch:
+		var touch := event as InputEventScreenTouch
+		if touch.pressed and _button_node_at(touch.position):
+			return false
+		if touch.pressed and diving:
+			_dive_tap(touch.position.x)
+		_mark_input_handled()
+		return true
+	if event is InputEventScreenDrag:
+		_mark_input_handled()
+		return true
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed and _button_node_at(event.position):
+			return false
+		if event.pressed and diving:
+			_dive_tap(event.position.x)
+		_mark_input_handled()
+		return true
+	return false
+
+
+func _dive_tap(screen_x: float) -> void:
+	var before := _motion.lane
+	_motion.nudge(-1.0 if screen_x < RR.VIEW_W * 0.5 else 1.0)
+	if not _mission_track:
+		return
+	var change := DailyMissions.count_lane_change(before, _motion.lane)
+	_mission_lanes += int(change.lanes)
+	_mission_lanes_left += int(change.left)
+	_mission_lanes_right += int(change.right)
+
+
+func _note_mission_dodges(obstacles: int, mines: int) -> void:
+	if not _mission_track or obstacles <= 0:
+		return
+	_mission_obstacles += obstacles
+	_mission_mines += mines
+
+
+func _mission_dive_facts() -> Dictionary:
+	var seconds := mini(int(floorf(_mission_dive_seconds + 0.05)), _mission_dives_entered * 20)
+	return {
+		"dives_entered": _mission_dives_entered,
+		"dives_completed": _mission_dives_completed,
+		"dive_seconds": maxi(0, seconds),
+		"lane_changes": _mission_lanes,
+		"lanes_left": _mission_lanes_left,
+		"lanes_right": _mission_lanes_right,
+		"obstacles": _mission_obstacles,
+		"mines": _mission_mines,
+	}
+
+
+func _smoothstep(u: float) -> float:
+	u = clampf(u, 0.0, 1.0)
+	return u * u * (3.0 - 2.0 * u)
+
+
+func _cue(id: String) -> void:
+	var sfx := get_node_or_null("/root/Sfx")
+	if sfx:
+		sfx.play(id, -11.0)
+
+
+func debug_force_dive_play() -> void:
+	if not _events_on() or player == null:
+		return
+	started = true
+	_in_lobby = false
+	player.alive = true
+	player.started = true
+	player.velocity = Vector2.ZERO
+	player.position = Vector2(RR.VIEW_W * 0.5, DeepDiveConfig.FISH_Y)
+	_events.debug_force_state(GameplayEvents.State.DEEP_DIVE)
+	_synced_state = GameplayEvents.State.DEEP_DIVE
+	_enter_dive_play()

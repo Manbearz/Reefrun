@@ -2,13 +2,14 @@ class_name CourseBuilder
 extends RefCounted
 
 
-static func generate(seed: int, pipe_count: int = RR.PIPE_COUNT) -> Dictionary:
+static func generate(seed: int, pipe_count: int = RR.PIPE_COUNT, start_index: int = 0) -> Dictionary:
 	var course_rng := RandomNumberGenerator.new()
 	course_rng.seed = seed
 	var layout: Array[Dictionary] = []
 	var x := RR.PIPE_SPEED * RR.FIRST_PIPE
 	for i in pipe_count:
-		var gap := RR.GAP - minf(float(i / 18), 18.0)
+		var n := start_index + i
+		var gap := RR.GAP - minf(float(n / 18), 18.0)
 		var slot := course_rng.randi_range(0, 4)
 		var half := gap * 0.5
 		var pad := RR.FISH_HIT + 8.0
@@ -22,18 +23,7 @@ static func generate(seed: int, pipe_count: int = RR.PIPE_COUNT) -> Dictionary:
 			"style": RR.PIPE_IDS[course_rng.randi() % RR.PIPE_IDS.size()],
 		})
 		x += RR.PIPE_SPEED * RR.PIPE_INTERVAL
-	var lanes := PackedInt32Array()
-	var prev_lane := 1
-	var volleys := maxi(1, pipe_count / RR.HARPOON_EVERY) + 2
-	for _v in volleys:
-		for shot in RR.HARPOON_SHOTS:
-			var lane: int
-			if shot == 0:
-				lane = course_rng.randi_range(0, 2)
-			else:
-				lane = (prev_lane + 1 + course_rng.randi_range(0, 1)) % 3
-			lanes.append(lane)
-			prev_lane = lane
+	var lanes := _harpoon_lanes(course_rng, maxi(1, pipe_count / RR.HARPOON_EVERY) + 2)
 	return {
 		"layout": layout,
 		"harpoon_lanes": lanes,
@@ -60,6 +50,31 @@ static func validate_determinism(seed: int, pipe_count: int = 100) -> bool:
 	if OS.has_feature("editor") or OS.is_debug_build():
 		print("[course] seed %d: %d pipes + %d harpoon lanes identical" % [seed, la.size(), ha.size()])
 	return true
+
+
+# Each shot leaves one of the four lanes safe. A volley of HARPOON_SHOTS
+# uses distinct safe lanes, and the next shot never repeats the previous one.
+static func _harpoon_lanes(course_rng: RandomNumberGenerator, volleys: int) -> PackedInt32Array:
+	var lanes := PackedInt32Array()
+	var prev := -1
+	var count := RR.HARPOON_LANES
+	for _volley in volleys:
+		var used := PackedInt32Array()
+		for _shot in RR.HARPOON_SHOTS:
+			var lane := course_rng.randi_range(0, count - 1)
+			var spins := 0
+			while (lane == prev or used.has(lane)) and spins < count:
+				lane = (lane + 1 + course_rng.randi_range(0, count - 2)) % count
+				spins += 1
+			if lane == prev or used.has(lane):
+				for candidate in count:
+					if candidate != prev and not used.has(candidate):
+						lane = candidate
+						break
+			used.append(lane)
+			lanes.append(lane)
+			prev = lane
+	return lanes
 
 
 static func specs_equal(a: Dictionary, b: Dictionary) -> bool:

@@ -21,6 +21,7 @@ var _feed_tween: Tween
 var _glyph_probe: SpriteTextScript
 var _suppress_lobby_chrome := false
 var _chrome_fade: Tween
+var dive_text: SpriteTextScript
 
 
 func _ready() -> void:
@@ -186,6 +187,15 @@ func set_countdown(value: String) -> void:
 	if value.is_empty():
 		return
 	hint_text.set_value(value)
+
+
+func set_dive_timer(label: String, show: bool) -> void:
+	if dive_text == null:
+		dive_text = _line("DIVE", 16, Vector2(12, 96), Vector2(230, 24), HORIZONTAL_ALIGNMENT_LEFT, true)
+	var visible_label := show and not label.is_empty()
+	dive_text.visible = visible_label
+	if visible_label:
+		dive_text.set_value(label)
 
 
 func set_coins(value: int) -> void:

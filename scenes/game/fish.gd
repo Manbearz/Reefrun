@@ -30,6 +30,11 @@ var next_flap_index := 0
 var _sprite: Sprite2D
 var _hat: Sprite2D
 var _hit_area: Area2D
+var _hit_shape: CollisionShape2D
+var motion_lock := false
+var dive_face := 0.0
+var dive_pose := 0.0
+var dive_tilt := 0.0
 
 
 func setup(p_skin: String, p_player: bool, origin: Vector2, p_name: String) -> void:
@@ -84,6 +89,7 @@ func _ready() -> void:
 	var shape := CollisionShape2D.new()
 	shape.shape = capsule
 	shape.rotation = PI * 0.5
+	_hit_shape = shape
 	_hit_area.add_child(shape)
 	_hit_area.area_entered.connect(_on_hit)
 	add_child(_hit_area)
@@ -123,7 +129,37 @@ func simulate_vertical(delta: float) -> void:
 	position.y += velocity.y * delta
 
 
+func hold_dive(face: float) -> void:
+	motion_lock = true
+	dive_face = clampf(face, 0.0, 1.0)
+	velocity = Vector2.ZERO
+
+
+func set_dive_facing(pose: float, tilt: float) -> void:
+	dive_pose = clampf(pose, 0.0, 1.0)
+	dive_tilt = clampf(tilt, -0.2, 0.2)
+
+
+func release_dive() -> void:
+	motion_lock = false
+	dive_face = 0.0
+	dive_pose = 0.0
+	dive_tilt = 0.0
+	if alive:
+		velocity = Vector2.ZERO
+	if _sprite:
+		_sprite.rotation = 0.0
+		_sprite.position = Vector2.ZERO
+	if _hit_shape:
+		_hit_shape.rotation = PI * 0.5
+
+
 func tick(delta: float) -> void:
+	if motion_lock and alive:
+		_apply_dive_facing(delta)
+		if is_player and _hit_area and not _hit_area.get_overlapping_areas().is_empty():
+			kill()
+		return
 	if not alive:
 		simulate_vertical(delta)
 		_sprite.rotation = lerp_angle(_sprite.rotation, PI * 0.45, 0.18)
@@ -152,12 +188,23 @@ func tick(delta: float) -> void:
 		kill()
 
 
+func _apply_dive_facing(delta: float) -> void:
+	if _sprite == null:
+		return
+	# The sprite faces right at rotation 0. Half a turn clockwise points it down.
+	var target := PI * 0.5 * dive_pose + dive_tilt
+	var follow := 1.0 - exp(-maxf(delta, 0.0) * 9.0)
+	_sprite.rotation = lerp_angle(_sprite.rotation, target, follow)
+	if _hit_shape:
+		_hit_shape.rotation = lerpf(PI * 0.5, 0.0, dive_pose)
+
+
 func _face_velocity() -> void:
 	_sprite.rotation = clampf(remap(velocity.y, -RR.FLAP, 420.0, -0.45, 1.15), -0.5, 1.2)
 
 
 func flap(play_sound := false) -> void:
-	if not alive:
+	if motion_lock or not alive:
 		return
 	started = true
 	velocity.y = -RR.FLAP
@@ -193,6 +240,11 @@ func _ghost_think() -> void:
 func kill() -> void:
 	if not alive:
 		return
+	motion_lock = false
+	dive_pose = 0.0
+	dive_tilt = 0.0
+	if _hit_shape:
+		_hit_shape.rotation = PI * 0.5
 	alive = false
 	if velocity.y < 80.0:
 		velocity.y = 120.0

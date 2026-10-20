@@ -199,8 +199,8 @@ jobs:
               ios_preset = preset[ios_at:ios_end]
           if 'application/short_version="1.0.0"' not in ios_preset:
               problems.append("iOS marketing version (CFBundleShortVersionString) must stay 1.0.0.")
-          if 'application/version="4"' not in ios_preset:
-              problems.append("iOS build number (CFBundleVersion) must be 4.")
+          if 'application/version="5"' not in ios_preset:
+              problems.append("iOS build number (CFBundleVersion) must be 5.")
           if "NSUserTrackingUsageDescription" not in ios_preset:
               problems.append("iOS export is missing NSUserTrackingUsageDescription.")
           if "privacy/tracking_enabled=true" not in ios_preset:
@@ -798,8 +798,8 @@ jobs:
           builds = [value.strip().strip('"') for value in re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", pbx)]
           marketing = [value.strip().strip('"') for value in re.findall(r"MARKETING_VERSION = ([^;]+);", pbx)]
           problems = []
-          if not builds or any(value != "4" for value in builds):
-              problems.append(f"Xcode CURRENT_PROJECT_VERSION must be 4, found {builds or 'none'}.")
+          if not builds or any(value != "5" for value in builds):
+              problems.append(f"Xcode CURRENT_PROJECT_VERSION must be 5, found {builds or 'none'}.")
           if not marketing or any(value != "1.0.0" for value in marketing):
               problems.append(f"Xcode MARKETING_VERSION must be 1.0.0, found {marketing or 'none'}.")
           plists = list(pathlib.Path("build").rglob("*-Info.plist"))
@@ -810,8 +810,8 @@ jobs:
                   data = plistlib.load(handle)
               bundle = str(data.get("CFBundleVersion", ""))
               short = str(data.get("CFBundleShortVersionString", ""))
-              if bundle not in {"4", "$(CURRENT_PROJECT_VERSION)"}:
-                  problems.append(f"{plist_path.name} CFBundleVersion is {bundle!r}, expected 4.")
+              if bundle not in {"5", "$(CURRENT_PROJECT_VERSION)"}:
+                  problems.append(f"{plist_path.name} CFBundleVersion is {bundle!r}, expected 5.")
               if short not in {"1.0.0", "$(MARKETING_VERSION)"}:
                   problems.append(f"{plist_path.name} CFBundleShortVersionString is {short!r}, expected 1.0.0.")
               app_id = str(data.get("GADApplicationIdentifier", ""))
@@ -837,7 +837,7 @@ jobs:
           if problems:
               print("\n".join(problems))
               sys.exit(1)
-          print(f"Exported iOS build number is 4. Marketing version is 1.0.0. AdMob app id, tracking description, and SDK reference are present. Checked {len(plists)} Info.plist file(s).")
+          print(f"Exported iOS build number is 5. Marketing version is 1.0.0. AdMob app id, tracking description, and SDK reference are present. Checked {len(plists)} Info.plist file(s).")
           PY
 
       - name: Resolve the Google Mobile Ads Swift package
@@ -914,7 +914,7 @@ jobs:
           BUILT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")"
           BUILT_SHORT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")"
           test "$BUILT_ID" = "$BUNDLE_ID"
-          test "$BUILT_VERSION" = "4"
+          test "$BUILT_VERSION" = "5"
           test "$BUILT_SHORT" = "1.0.0"
           echo "Signed IPA bundle id: ${BUILT_ID}"
           echo "Signed IPA version: ${BUILT_SHORT} (${BUILT_VERSION})"
