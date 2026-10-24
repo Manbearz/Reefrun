@@ -18,6 +18,7 @@ func _run() -> void:
 	ok = _check("headless insets", _insets()) and ok
 	ok = _check("android preset", _preset()) and ok
 	ok = _check("keyboard lock", _keyboard()) and ok
+	ok = _check("game content", _features()) and ok
 	ok = _check("scripts parse", _parse()) and ok
 	print("[screen-fit] ok=%s" % ok)
 	quit(0 if ok else 1)
@@ -116,6 +117,10 @@ func _preset() -> bool:
 		return false
 	if not workflow.contains("secrets.ANDROID_KEYSTORE_BASE64"):
 		return false
+	if not workflow.contains("LAST_PUBLISHED_VERSION_CODE"):
+		return false
+	if not workflow.contains("must be greater than the last published Play version code"):
+		return false
 	if not workflow.contains("Google Play publishing is disabled"):
 		return false
 	return ads.contains("const USE_TEST_ADS := true") and ads.contains("ca-app-pub-3940256099942544/5224354917")
@@ -129,6 +134,31 @@ func _keyboard() -> bool:
 		and session.contains("win.size = _stable_win")
 		and session.contains("begin_virtual_keyboard_lock")
 	)
+
+
+func _features() -> bool:
+	var catalog: Array = DailyMissions.catalog()
+	if catalog.size() != 90 or DailyMissions.mission_by_id(90).is_empty():
+		push_error("[screen-fit] mission catalog size %s" % catalog.size())
+		return false
+	var project := FileAccess.get_file_as_string("res://project.godot")
+	if not project.contains("window/handheld/orientation=1"):
+		push_error("[screen-fit] portrait orientation is not set")
+		return false
+	var paths := [
+		"res://scripts/deep_dive/dive_overlay.gd",
+		"res://scripts/backend/supabase_client.gd",
+		"res://scripts/ghost_match.gd",
+		"res://scripts/backend/leaderboard_repository.gd",
+		"res://scripts/ads/android_rewarded_ads.gd",
+		"res://assets/sfx/coin.wav",
+		"res://assets/source/cosmetic1.png",
+	]
+	for path in paths:
+		if path.begins_with("res://tools/") or not FileAccess.file_exists(path):
+			push_error("[screen-fit] missing game content %s" % path)
+			return false
+	return true
 
 
 func _parse() -> bool:

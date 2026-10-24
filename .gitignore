@@ -8,6 +8,19 @@ export.cfg
 export_credentials.cfg
 export/
 
+# Signing material. The release keystore stays outside this repository.
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+*.mobileprovision
+*.certSigningRequest
+AuthKey_*.p8
+certificate_base64.txt
+profile_base64.txt
+
 # Imported translations (automatically generated from CSV files)
 *.translation
 

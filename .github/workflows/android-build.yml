@@ -31,6 +31,10 @@ jobs:
       BUNDLE_ID: com.lunarentertainment.reefrun
       GODOT_LINUX_SHA256: cadd3204e728a35d3f13adb7fd0d7902636b79f6b95c40c265eb73b6c35329e4
       GODOT_TEMPLATES_SHA256: f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011
+      # No AAB has been published. After Play accepts a version code, set this
+      # to that code and raise version/code in the Android preset before the next upload.
+      LAST_PUBLISHED_VERSION_CODE: "0"
+      BUNDLETOOL_SHA256: 675786493983787ffa11550bdb7c0715679a44e1643f3ff980a529e9c822595c
       ANDROID_HOME: /opt/android-sdk
       ANDROID_CMDLINE_TOOLS: commandlinetools-linux-13114758_latest.zip
     steps:
@@ -47,6 +51,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import os
           import pathlib
           import re
           import sys
@@ -67,7 +72,6 @@ jobs:
           required = {
               'package/unique_name="com.lunarentertainment.reefrun"': "Android package is not com.lunarentertainment.reefrun.",
               'version/name="1.0.0"': "Android version name must stay 1.0.0.",
-              "version/code=1": "Android version code must stay 1 until a later build is approved.",
               'exclude_filter="res://tools/*,tools/*"': "Android export must exclude tools/.",
               "gradle_build/use_gradle_build=true": "Android export must use the Gradle build so AdMob can link.",
               "gradle_build/export_format=1": "The stored Android preset must export an AAB. The workflow also builds an APK.",
@@ -81,8 +85,19 @@ jobs:
           for needle, message in required.items():
               if needle not in android:
                   problems.append(message)
+          codes = re.findall(r"(?m)^version/code=(\d+)\s*$", android)
+          last_published = int(os.environ["LAST_PUBLISHED_VERSION_CODE"])
+          version_code = int(codes[0]) if len(codes) == 1 else 0
+          if len(codes) != 1 or version_code <= last_published:
+              problems.append(
+                  f"Android version code {codes or 'missing'} must be greater than the last published Play version code {last_published}."
+              )
+          if "window/handheld/orientation=1" not in project:
+              problems.append("Portrait orientation is not set. window/handheld/orientation must be 1.")
           if 'application/bundle_identifier="com.lunarentertainment.reefrun"' not in preset:
               problems.append("iOS bundle identifier changed while preparing Android.")
+          if 'application/short_version="1.0.0"' not in preset or 'application/version="6"' not in preset:
+              problems.append("iOS marketing version or build number changed while preparing Android.")
           if 'general/android/app_id="ca-app-pub-5190108736982657~2452653885"' not in project:
               problems.append("Android AdMob app id is not set in project.godot.")
           if "const USE_TEST_ADS := true" not in ads:
@@ -98,7 +113,9 @@ jobs:
           if problems:
               print("\n".join(problems))
               sys.exit(1)
-          print("Android release gates passed.")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"ANDROID_VERSION_CODE={version_code}\n")
+          print(f"Android release gates passed. versionName 1.0.0, versionCode {version_code}, last published {last_published}.")
           PY
 
       - name: Install JDK 17 and the Android SDK
@@ -180,7 +197,7 @@ jobs:
       - name: Export the signed APK and AAB
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          GODOT_ANDROID_KEYSTORE_RELEASE_USER: ${{ secrets.ANDROID_KEY_ALIAS }}
+          GODOT_ANDROID_KEYSTORE_RELEASE_USER: ${{ secrets.ANDROID_KEYSTORE_ALIAS }}
           GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           GODOT_ANDROID_KEYSTORE_DEBUG_PATH: ${{ env.ANDROID_DEBUG_KEYSTORE }}
           GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
@@ -188,7 +205,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${ANDROID_KEYSTORE_BASE64}" ] || [ -z "${GODOT_ANDROID_KEYSTORE_RELEASE_USER}" ] || [ -z "${GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD}" ]; then
-            echo "Missing Android signing secrets. Add ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS, and ANDROID_KEYSTORE_PASSWORD."
+            echo "Missing Android signing secrets. Add ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_ALIAS, and ANDROID_KEYSTORE_PASSWORD."
             exit 1
           fi
           release_store="$RUNNER_TEMP/reefrun-release.jks"
@@ -251,6 +268,102 @@ jobs:
           unset GODOT_ANDROID_KEYSTORE_RELEASE_PATH
           unset GODOT_ANDROID_KEYSTORE_RELEASE_USER
           unset GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD
+
+      - name: Verify the Android version and game content
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_VERSION_CODE}"
+          AAPT="$ANDROID_HOME/build-tools/36.1.0/aapt"
+          test -x "$AAPT"
+          badging="$("$AAPT" dump badging build/Reefrun.apk | head -n 1)"
+          echo "$badging"
+          case "$badging" in
+            *"package: name='com.lunarentertainment.reefrun'"*"versionCode='${ANDROID_VERSION_CODE}'"*"versionName='1.0.0'"*) ;;
+            *)
+              echo "The APK identity does not match com.lunarentertainment.reefrun 1.0.0 (${ANDROID_VERSION_CODE})."
+              exit 1
+              ;;
+          esac
+          orientation="$("$AAPT" dump xmltree build/Reefrun.apk AndroidManifest.xml | grep -m 1 screenOrientation || true)"
+          echo "$orientation"
+          case "$orientation" in
+            *")0x1"|*"android:screenOrientation=\"portrait\""|*"android:screenOrientation=\"1\""*) ;;
+            *)
+              echo "The APK activity is not locked to portrait."
+              exit 1
+              ;;
+          esac
+          curl -fsSL -o "$RUNNER_TEMP/bundletool.jar" \
+            "https://github.com/google/bundletool/releases/download/1.18.1/bundletool-all-1.18.1.jar"
+          echo "${BUNDLETOOL_SHA256}  $RUNNER_TEMP/bundletool.jar" | sha256sum -c -
+          manifest="$(java -jar "$RUNNER_TEMP/bundletool.jar" dump manifest --bundle=build/Reefrun.aab)"
+          echo "$manifest" | head -n 20
+          case "$manifest" in
+            *"package=\"com.lunarentertainment.reefrun\""*) ;;
+            *)
+              echo "The AAB package is not com.lunarentertainment.reefrun."
+              exit 1
+              ;;
+          esac
+          case "$manifest" in
+            *"android:versionCode=\"${ANDROID_VERSION_CODE}\""*) ;;
+            *)
+              echo "The AAB version code is not ${ANDROID_VERSION_CODE}."
+              exit 1
+              ;;
+          esac
+          case "$manifest" in
+            *"android:versionName=\"1.0.0\""*) ;;
+            *)
+              echo "The AAB version name is not 1.0.0."
+              exit 1
+              ;;
+          esac
+          case "$manifest" in
+            *"android:screenOrientation=\"1\""*|*"android:screenOrientation=\"portrait\""*) ;;
+            *)
+              echo "The AAB activity is not locked to portrait."
+              exit 1
+              ;;
+          esac
+          if [ "${ANDROID_VERSION_CODE}" -le "${LAST_PUBLISHED_VERSION_CODE}" ]; then
+            echo "Refusing to publish version code ${ANDROID_VERSION_CODE}. Play already has ${LAST_PUBLISHED_VERSION_CODE}."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import pathlib
+          import zipfile
+          import sys
+
+          required = (
+              b"scripts/daily_missions.gd",
+              b"scripts/deep_dive/dive_overlay.gd",
+              b"scripts/backend/supabase_client.gd",
+              b"scripts/ghost_match.gd",
+              b"scripts/backend/leaderboard_repository.gd",
+              b"scripts/ads/ad_config.gd",
+              b"coin.wav",
+              b"cosmetic1.png",
+          )
+          forbidden = (
+              b"tools/test_screen_fit.gd",
+              b"tools/test_long_run_perf.gd",
+              b"tools/test_auth_once.gd",
+          )
+          for name in ("build/Reefrun.apk", "build/Reefrun.aab"):
+              blob = b""
+              with zipfile.ZipFile(name) as package:
+                  for info in package.infolist():
+                      if info.filename.endswith(".so"):
+                          continue
+                      blob += package.read(info)
+              missing = [item.decode() for item in required if item not in blob]
+              leaked = [item.decode() for item in forbidden if item in blob]
+              if missing or leaked:
+                  print(f"{name} missing={missing} leaked={leaked}")
+                  sys.exit(1)
+              print(f"{name} contains the game content and excludes development tools.")
+          PY
 
       - name: Upload the APK
         uses: actions/upload-artifact@v4
