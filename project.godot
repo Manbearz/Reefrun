@@ -31,6 +31,7 @@ Backend="*res://autoload/backend.gd"
 Sprites="*res://autoload/sprites.gd"
 Sfx="*res://autoload/sfx.gd"
 RewardedAds="*res://autoload/rewarded_ads.gd"
+UiFeedback="*res://autoload/ui_feedback.gd"
 
 [display]
 

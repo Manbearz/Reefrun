@@ -3,6 +3,12 @@ extends SceneTree
 const Missions := preload("res://scripts/daily_missions.gd")
 
 
+func _initialize() -> void:
+	# Headless autoload startup must not reach production Supabase.
+	ProjectSettings.set_setting("network/http_proxy/host", "127.0.0.1")
+	ProjectSettings.set_setting("network/http_proxy/port", 9)
+
+
 func _init() -> void:
 	call_deferred("_run")
 
@@ -17,6 +23,8 @@ func _run() -> void:
 	ok = _check(_test_rewards(), "rewards") and ok
 	ok = _check(_test_auto_claim(), "auto claim") and ok
 	ok = _check(_test_runs(), "runs") and ok
+	ok = _check(_test_long_runs(), "long runs") and ok
+	ok = _check(_test_dive_evaluation(), "dive evaluation") and ok
 	ok = _check(_test_countdown(), "countdown") and ok
 	ok = _check(_test_overlay_mapping(), "overlay mapping") and ok
 	ok = _check(_test_separation(), "separation") and ok
@@ -28,6 +36,7 @@ func _run() -> void:
 	ok = _check(_test_board_chrome(), "board chrome") and ok
 	ok = _check(_test_deep_dive_missions(), "deep dive missions") and ok
 	ok = _check(_test_mission_icons(), "mission icons") and ok
+	ok = _check(_test_readable_labels(), "readable labels") and ok
 	print("[missions] ok=%s" % ok)
 	quit(0 if ok else 1)
 
@@ -324,7 +333,9 @@ func _test_runs() -> bool:
 		return false
 	if Missions.gameplay_payload(2, 2) != 2:
 		return false
-	if Missions.accept_run(100, 200, 0):
+	if Missions.accept_run(100, 50, 0):
+		return false
+	if not Missions.accept_run(100, 200, 0):
 		return false
 	if Missions.accept_run(10, 20, 4):
 		return false
@@ -341,6 +352,100 @@ func _test_runs() -> bool:
 	return once.size() == 1 and twice.size() == 1
 
 
+func _test_long_runs() -> bool:
+	# Simulated payloads. These are not recorded from a played swim.
+	var samples := [0, 5, 30, 80, 81, 100, 500, 1000, 5000]
+	for pipes in samples:
+		var payload := _simulated_run(pipes)
+		var dive: Dictionary = payload.dive
+		if not Missions.accept_run(pipes, int(payload.seconds), int(payload.coins), int(dive.dives_entered)):
+			print("[missions] long accept failed pipes=%d" % pipes)
+			return false
+		if not Missions.accept_dive(pipes, dive):
+			print("[missions] long dive failed pipes=%d" % pipes)
+			return false
+		var queued: Array = Missions.enqueue([], payload.id, pipes, int(payload.seconds), int(payload.coins), dive)
+		if queued.size() != 1 or int(queued[0].pipes) != pipes or str(queued[0].id) != payload.id:
+			return false
+		if Missions.enqueue(queued, payload.id, pipes, int(payload.seconds), int(payload.coins), dive).size() != 1:
+			return false
+	if Missions.accept_run(5000, 10, 0) or Missions.accept_run(5000, 20000, 0, 166):
+		return false
+	if Missions.accept_run(5000, 12000, 1001, 166) or Missions.accept_run(20001, 30000, 0):
+		return false
+	if Missions.accept_run(5000, 12000, 1000, 167):
+		return false
+	if Missions.accept_dive(5000, {"dives_entered": 167, "dives_completed": 0, "dive_seconds": 0, "lane_changes": 0, "lanes_left": 0, "lanes_right": 0, "obstacles": 0, "mines": 0}):
+		return false
+	if Missions.accept_run(80, 1801, 0) or not Missions.accept_run(80, 1800, 16):
+		return false
+	if Missions.REWARDS.easy != 5 or Missions.REWARDS.medium != 10 or Missions.REWARDS.hard != 20 or Missions.REWARDS.bonus != 25:
+		return false
+	if Missions.MAX_DAILY_REWARD != 60:
+		return false
+	var checkpoint := _simulated_run(5000)
+	return int(checkpoint.pipes) == 5000 and int(checkpoint.coins) == 1000 and int(checkpoint.dive.dives_entered) == 166
+
+
+func _test_dive_evaluation() -> bool:
+	var fields := {
+		"dives_entered": "dives_entered",
+		"dives_completed": "dives_completed",
+		"dives_best": "best_dives",
+		"dive_seconds": "dive_seconds",
+		"lanes_total": "lane_changes",
+		"lanes_left": "lanes_left",
+		"lanes_right": "lanes_right",
+		"obstacles_total": "obstacles_dodged",
+		"obstacles_best": "best_obstacles",
+		"mines_total": "mines_passed",
+	}
+	var seen := 0
+	for mission in Missions.catalog():
+		var rule := str(mission.get("rule", ""))
+		if not fields.has(rule):
+			continue
+		seen += 1
+		var goal := int(mission.get("goal", 0))
+		var short := {fields[rule]: goal - 1}
+		var met := {fields[rule]: goal}
+		if bool(Missions.evaluate(rule, goal, 0, short).complete):
+			return false
+		if not bool(Missions.evaluate(rule, goal, 0, met).complete):
+			return false
+		if int(Missions.REWARDS.get(str(mission.get("tier", "")), 0)) != int(mission.get("reward", 0)):
+			return false
+	return seen == 45
+
+
+func _simulated_run(pipes: int) -> Dictionary:
+	var dives := Missions.scheduled_dives(pipes)
+	var seconds := 0
+	if pipes > 0:
+		seconds = pipes - 1
+	if pipes > 80:
+		seconds = mini(Missions.survival_limit(pipes, dives) - 1, 86399)
+		seconds = maxi(seconds, pipes - 1)
+	elif pipes == 80:
+		seconds = 1800
+	return {
+		"id": "sim-run-%04d" % pipes,
+		"pipes": pipes,
+		"seconds": seconds,
+		"coins": int(pipes / 5.0),
+		"dive": {
+			"dives_entered": dives,
+			"dives_completed": dives,
+			"dive_seconds": dives * 20,
+			"lane_changes": 0,
+			"lanes_left": 0,
+			"lanes_right": 0,
+			"obstacles": 0,
+			"mines": 0,
+		},
+	}
+
+
 func _test_overlay_mapping() -> bool:
 	if not is_equal_approx(Missions.progress_ratio(25, 50), 0.5):
 		return false
@@ -350,7 +455,11 @@ func _test_overlay_mapping() -> bool:
 		return false
 	if Missions.progress_ratio(0, 50) != 0.0 or Missions.progress_ratio(80, 50) != 1.0 or Missions.progress_ratio(3, 0) != 0.0:
 		return false
-	if Missions.display_text("Pass 50 pipes total.") != "Pass 50 pipes total":
+	if Missions.display_text("Pass 50 pipes total.") != "Pass 50 Pipes":
+		return false
+	if Missions.display_text("Pass 50 pipes total.", 16) != "Pass 50 Pipes":
+		return false
+	if Missions.display_text("Not a catalog mission.") != "Not a catalog mission":
 		return false
 	var kinds := {
 		"pipe": 0,
@@ -398,7 +507,16 @@ func _test_countdown() -> bool:
 	var left := Missions.remaining_seconds(100, 160, 1000, 1010)
 	if left != 50:
 		return false
-	return Missions.format_countdown(3661) == "RESETS IN 01:01:01"
+	if Missions.format_countdown(3661) != "RESETS IN 01:01:01":
+		return false
+	# 03:30 UTC on this October morning is still the previous Eastern date.
+	# The next reset is Eastern midnight, 30 minutes later, not UTC midnight.
+	var DailyChallengeScript := preload("res://scripts/daily_challenge.gd")
+	var now := DailyChallengeScript.unix_utc(2026, 10, 13, 3, 30)
+	var day := DailyChallengeScript.challenge_date_from_unix(now)
+	var reset := DailyChallengeScript.eastern_midnight_unix(2026, 10, 13)
+	var until_reset := Missions.remaining_seconds(now, reset, now, now)
+	return day == "2026-10-12" and until_reset == 30 * 60
 
 
 func _test_separation() -> bool:
@@ -823,10 +941,14 @@ func _assert_chrome(Overlay, screen_board: bool, board: Dictionary, modes: Packe
 		if rewarded and mark_box.intersects(track_box):
 			ok = false
 		if rewarded and screen_board:
-			var coin_rect: Rect2 = Overlay.SCREEN_COIN_ICON[i]
-			var cluster_center := Vector2((coin_rect.position.x + reward_box.end.x) * 0.5, coin_rect.position.y + coin_rect.size.y * 0.5)
+			var coin_box := Rect2(coin_icon.position, coin_icon.size)
+			var left_x := minf(coin_box.position.x, reward_box.position.x)
+			var right_x := maxf(coin_box.end.x, reward_box.end.x)
+			var cluster_center := Vector2((left_x + right_x) * 0.5, coin_box.position.y + coin_box.size.y * 0.5)
 			var mark_center := mark_box.position + mark_box.size * 0.5
 			if mark_center.distance_to(cluster_center) > 4.0:
+				ok = false
+			if coin_box.position.x + 1.0 < reward_box.end.x:
 				ok = false
 		if rewarded and not screen_board:
 			var mark_center := mark_box.position + mark_box.size * 0.5
@@ -1013,6 +1135,257 @@ func _test_mission_icons() -> bool:
 	if not ok:
 		push_error("[missions] mission icons did not land on the cards")
 	return ok
+
+
+func _test_readable_labels() -> bool:
+	var samples := {
+		1: "Pass 10 Pipes",
+		3: "10 Pipes One Run",
+		4: "Play 3 Runs",
+		8: "Collect 50 Coins",
+		11: "3 Runs 5 Pipes",
+		15: "2 Runs 5 Pipes",
+		16: "Pass 50 Pipes",
+		30: "50 Pipes 3 Runs",
+		39: "Checkpoint 20",
+		41: "Survive 180 Seconds",
+		45: "100 Pipes 5 Runs",
+		46: "Enter 1 Dive",
+		55: "Finish 1 Dive",
+		61: "Dodge 15 Obstacles",
+		64: "Switch Lanes 30",
+		65: "Finish 2 Dives",
+		78: "2 Dives One Run",
+		80: "Switch Lanes 75",
+		87: "Move Right 35",
+		89: "18 Dodges One Run",
+	}
+	var Overlay = load("res://scripts/daily_missions_overlay.gd")
+	var tight: Rect2 = Overlay.SCREEN_DESC[0]
+	var inset := Vector2(2, 1)
+	var bubble = Overlay._BubbleText.new()
+	bubble.size = tight.size - inset * 2.0
+	root.add_child(bubble)
+	var old_box := Vector2(366, 40)
+	var smallest := 1000.0
+	var smallest_label := ""
+	for mission in Missions.catalog():
+		var mission_id := int(mission.get("id", 0))
+		var stored := str(mission.get("description", ""))
+		var label := Missions.display_text(stored, mission_id)
+		if Missions.display_text(stored) != label:
+			push_error("[missions] description lookup drifted for %d" % mission_id)
+			return false
+		if samples.has(mission_id) and str(samples[mission_id]) != label:
+			push_error("[missions] mission %d label '%s'" % [mission_id, label])
+			return false
+		var words := label.split(" ", false)
+		if words.size() < 2 or words.size() > 4:
+			push_error("[missions] mission %d is not 2-4 words: %s" % [mission_id, label])
+			return false
+		if label.length() >= stored.length():
+			push_error("[missions] mission %d was not shortened: %s" % [mission_id, label])
+			return false
+		if not label.contains(str(int(mission.get("goal", 0)))):
+			push_error("[missions] mission %d dropped its goal: %s" % [mission_id, label])
+			return false
+		var extra := int(mission.get("goal_b", 0))
+		if extra > 0 and not label.contains(str(extra)):
+			push_error("[missions] mission %d dropped its second goal: %s" % [mission_id, label])
+			return false
+		if stored.to_lower().contains("checkpoint") and not label.begins_with("Checkpoint "):
+			return false
+		bubble.size = old_box
+		bubble.show_text("")
+		bubble.show_text(stored)
+		var old_h := _glyph_height(bubble)
+		bubble.size = tight.size - inset * 2.0
+		bubble.show_text("")
+		bubble.show_text(label)
+		if int(bubble.line_count) != 1:
+			push_error("[missions] '%s' wrapped on the top row" % label)
+			return false
+		var new_h := _glyph_height(bubble)
+		if new_h < 40.0 or old_h <= 0.0 or new_h < old_h * 1.5:
+			push_error("[missions] '%s' grew from %.1f to %.1f" % [label, old_h, new_h])
+			return false
+		if new_h < smallest:
+			smallest = new_h
+			smallest_label = label
+	if Missions.display_text("Pass 10 pipes total.") == Missions.display_text("Pass 10 pipes in one run."):
+		return false
+	if Missions.display_text("Surface: finish a dive.") == Missions.display_text("Untouchable: finish 2 dives in one run."):
+		return false
+	var phones := [
+		{"screen": Vector2(390, 844), "margins": Vector4(0, 47, 0, 34)},
+		{"screen": Vector2(393, 852), "margins": Vector4(0, 59, 0, 34)},
+		{"screen": Vector2(360, 780), "margins": Vector4(0, 44, 0, 30)},
+	]
+	for phone in phones:
+		var board: Rect2 = Overlay.screen_board_rect(phone.screen, phone.margins)
+		var scale: float = board.size.x / Overlay.SCREEN_SIZE.x
+		if smallest * scale < 18.0:
+			push_error("[missions] '%s' is %.1f px on %s" % [smallest_label, smallest * scale, phone.screen])
+			return false
+	for i in Overlay.SCREEN_DESC.size():
+		var name: Rect2 = Overlay.SCREEN_DESC[i]
+		var blocked: Array = [
+			Overlay.SCREEN_ICONS[i],
+			Overlay.SCREEN_TRACK[i],
+			Overlay.SCREEN_COUNT[i],
+			Overlay.SCREEN_COIN_ICON[i],
+			Overlay.SCREEN_CHECK[i],
+			Overlay.SCREEN_REWARD[i],
+			Overlay.SCREEN_RESET,
+		]
+		for other in blocked:
+			if name.intersects(other):
+				push_error("[missions] description %d overlaps %s" % [i, other])
+				return false
+		if name.position.x - Overlay.SCREEN_ICONS[i].end.x < 6.0:
+			return false
+		if Overlay.SCREEN_REWARD[i].position.x - name.end.x < 6.0:
+			return false
+		if Overlay.SCREEN_COIN_ICON[i].position.x < Overlay.SCREEN_REWARD[i].end.x:
+			return false
+		if Overlay.SCREEN_COIN_ICON[i].size.y >= Overlay.SCREEN_REWARD[i].size.y:
+			return false
+		if Overlay.SCREEN_COUNT[i].position.y - name.end.y < 4.0:
+			return false
+	var reset: Rect2 = Overlay.SCREEN_RESET
+	var reset_mid_y := reset.position.y + reset.size.y * 0.5
+	var gap_mid_y: float = (float(Overlay.SCREEN_CARD_BOTTOM) + float(Overlay.SCREEN_BACK_FACE)) * 0.5
+	if absf(reset_mid_y - gap_mid_y) > 1.0:
+		push_error("[missions] timer is not centered in the gap")
+		return false
+	if absf((reset.position.x + reset.size.x * 0.5) - Overlay.SCREEN_SIZE.x * 0.5) > 1.0:
+		push_error("[missions] timer is not centered horizontally")
+		return false
+	if reset.position.y < Overlay.SCREEN_CARD_BOTTOM + 12.0 or reset.end.y > Overlay.SCREEN_BACK_FACE - 12.0:
+		push_error("[missions] timer left the gap above Back %s" % reset)
+		return false
+	if reset.intersects(Overlay.SCREEN_BACK) or reset.end.y > Overlay.SCREEN_BACK.position.y:
+		push_error("[missions] timer overlaps the Back button")
+		return false
+	var shown := {
+		"ok": true,
+		"server_now": 1000,
+		"resets_at": 1000 + 21 * 3600 + 28 * 60 + 48,
+		"fetched_at": int(Time.get_unix_time_from_system()),
+		"slots": [
+			{"slot": "easy", "mission_id": 1, "description": "Pass 10 pipes total.", "goal": 10, "progress": 4, "reward": 5, "complete": false, "claimed": false},
+			{"slot": "medium", "mission_id": 25, "description": "Survive 90 seconds in one run.", "goal": 90, "progress": 90, "reward": 10, "complete": true, "claimed": true},
+			{"slot": "hard", "mission_id": 45, "description": "Pass 100 pipes across no more than 5 runs.", "goal": 100, "progress": 40, "reward": 20, "complete": false, "claimed": false},
+		],
+		"bonus": {"reward": 25, "unlocked": true, "claimed": false},
+	}
+	var overlay = Overlay.new()
+	overlay.use_screen_board()
+	root.add_child(overlay)
+	var session := root.get_node_or_null("GameSession")
+	if session != null:
+		session.mission_board = shown
+	overlay.present("board", true)
+	overlay.show_board(shown, "")
+	var descriptions: Array = overlay.get("_descriptions")
+	var counters: Array = overlay.get("_counters")
+	var rewards: Array = overlay.get("_reward_text")
+	var marks: Array = overlay.get("_marks")
+	var wanted := ["Pass 10 Pipes", "Survive 90 Seconds", "100 Pipes 5 Runs"]
+	var counts := ["4/10", "90/90", "40/100"]
+	var payouts := ["+5", "+10", "+20"]
+	var ok := descriptions.size() == 3 and counters.size() == 3 and rewards.size() == 3
+	var heights: Array[float] = []
+	for i in descriptions.size():
+		var row = descriptions[i]
+		if str(row.get("_value")) != wanted[i] or int(row.line_count) != 1:
+			push_error("[missions] row %d shows '%s' on %d lines" % [i, row.get("_value"), row.line_count])
+			ok = false
+		var glyph_h := _glyph_height(row)
+		heights.append(glyph_h)
+		if glyph_h < 0.0:
+			push_error("[missions] row %d text leaves its box" % i)
+			ok = false
+		elif absf(glyph_h - float(Overlay.SCREEN_DESC_PX)) > 1.0:
+			push_error("[missions] row %d glyph %.1f" % [i, glyph_h])
+			ok = false
+		if str(counters[i].get("_text")) != counts[i]:
+			push_error("[missions] count %d is '%s'" % [i, counters[i].get("_text")])
+			ok = false
+		if str(rewards[i].get("_text")) != payouts[i]:
+			push_error("[missions] reward %d is '%s'" % [i, rewards[i].get("_text")])
+			ok = false
+		elif absf(float(rewards[i].get("_glyph_h")) - Overlay.REWARD_TEXT_H) > 0.1:
+			push_error("[missions] reward %d height %.1f" % [i, float(rewards[i].get("_glyph_h"))])
+			ok = false
+	if heights.size() == 3 and (absf(heights[0] - heights[1]) > 1.0 or absf(heights[1] - heights[2]) > 1.0):
+		push_error("[missions] description sizes differ %s" % heights)
+		ok = false
+	if str(marks[0].get("_mode")) != "" or str(marks[1].get("_mode")) != "done" or str(marks[2].get("_mode")) != "":
+		push_error("[missions] marks %s %s %s" % [marks[0].get("_mode"), marks[1].get("_mode"), marks[2].get("_mode")])
+		ok = false
+	var clock = overlay.get("_countdown")
+	var clock_box := Rect2((clock as Control).position, (clock as Control).size)
+	if not clock_box.position.is_equal_approx(Overlay.SCREEN_RESET.position) or not clock_box.size.is_equal_approx(Overlay.SCREEN_RESET.size):
+		push_error("[missions] countdown landed at %s" % clock_box)
+		ok = false
+	if not str(clock.get("_value")).begins_with("RESETS IN "):
+		push_error("[missions] countdown text '%s'" % clock.get("_value"))
+		ok = false
+	var reset_labels := 0
+	for child in (overlay.get("_host") as Node).get_children():
+		if str(child.get("_value")).begins_with("RESETS IN"):
+			reset_labels += 1
+	if reset_labels != 1:
+		push_error("[missions] countdown count %d" % reset_labels)
+		ok = false
+	if str(overlay.get("_bonus_text").get("_text")) != "+25":
+		push_error("[missions] bonus text '%s'" % overlay.get("_bonus_text").get("_text"))
+		ok = false
+	var reward_coins: Array = overlay.get("_coin_icons")
+	var reward_pairs: Array = [
+		[rewards[0], reward_coins[0]],
+		[rewards[1], reward_coins[1]],
+		[rewards[2], reward_coins[2]],
+		[overlay.get("_bonus_text"), overlay.get("_bonus_coin_icon")],
+	]
+	for pair in reward_pairs:
+		var payout: Control = pair[0]
+		var coin: Control = pair[1]
+		var gap := coin.position.x - (payout.position.x + payout.size.x)
+		if gap < Overlay.REWARD_GAP - 0.6 or coin.position.x < payout.position.x:
+			push_error("[missions] coin is not to the right of %s" % payout.get("_text"))
+			ok = false
+		if coin.size.y + 0.5 >= payout.size.y:
+			push_error("[missions] coin is not smaller than %s" % payout.get("_text"))
+			ok = false
+		var payout_mid := payout.position.y + payout.size.y * 0.5
+		var coin_mid := coin.position.y + coin.size.y * 0.5
+		if absf(payout_mid - coin_mid) > 0.6:
+			push_error("[missions] coin is not centered on %s" % payout.get("_text"))
+			ok = false
+	if str(overlay.get("_bonus_mark").get("_mode")) != "":
+		push_error("[missions] bonus mark '%s'" % overlay.get("_bonus_mark").get("_mode"))
+		ok = false
+	bubble.queue_free()
+	overlay.queue_free()
+	return ok
+
+
+func _glyph_height(bubble) -> float:
+	var tallest := 0.0
+	for child in bubble.get_children():
+		if not (child is Control):
+			continue
+		var glyph := child as Control
+		if glyph.position.x < -1.0 or glyph.position.y < -1.0:
+			return -1.0
+		if glyph.position.x + glyph.size.x > bubble.size.x + 1.5:
+			return -1.0
+		if glyph.position.y + glyph.size.y > bubble.size.y + 1.5:
+			return -1.0
+		tallest = maxf(tallest, glyph.size.y)
+	return tallest
 
 
 func _check(ok: bool, label: String) -> bool:

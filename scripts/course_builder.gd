@@ -1,6 +1,12 @@
 class_name CourseBuilder
 extends RefCounted
 
+# How many unspawned pipes to keep ahead of the player, and how many to append.
+# The seed formula is part of the competitive continuation. Pipes already generated
+# stay put; only the next chunk uses this seed.
+const CHUNK_PIPES := 40
+const LOOKAHEAD := 16
+
 
 static func generate(seed: int, pipe_count: int = RR.PIPE_COUNT, start_index: int = 0) -> Dictionary:
 	var course_rng := RandomNumberGenerator.new()
@@ -75,6 +81,31 @@ static func _harpoon_lanes(course_rng: RandomNumberGenerator, volleys: int) -> P
 			lanes.append(lane)
 			prev = lane
 	return lanes
+
+
+static func extension_seed(course_seed: int, layout_size: int) -> int:
+	return course_seed + layout_size * 13 + 3
+
+
+static func continuation(course_seed: int, layout_size: int) -> Dictionary:
+	return generate(extension_seed(course_seed, layout_size), CHUNK_PIPES, layout_size)
+
+
+# Rebased copies. The caller appends them so a typed layout array is not copied.
+static func placed_specs(layout: Array, extra: Array) -> Array:
+	var placed: Array = []
+	if extra.is_empty():
+		return placed
+	var spacing := RR.PIPE_SPEED * RR.PIPE_INTERVAL
+	var base := spacing
+	if not layout.is_empty():
+		base = float(layout[layout.size() - 1]["x"]) + spacing
+	var origin := float(extra[0]["x"])
+	for spec in extra:
+		var copy: Dictionary = (spec as Dictionary).duplicate()
+		copy["x"] = base + float(copy["x"]) - origin
+		placed.append(copy)
+	return placed
 
 
 static func specs_equal(a: Dictionary, b: Dictionary) -> bool:

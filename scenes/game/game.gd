@@ -8,6 +8,7 @@ const CourseBuilderScript := preload("res://scripts/course_builder.gd")
 const ShareServiceScript := preload("res://scripts/share/share_service.gd")
 const ReferralRulesScript := preload("res://scripts/share/referral_rules.gd")
 const MissionOverlayScript := preload("res://scripts/daily_missions_overlay.gd")
+const ButtonFeedbackScript := preload("res://scripts/button_feedback.gd")
 
 const SHARE_CARD_CROP_H := 798
 const SHARE_PLACE_RECT := Rect2(700, 398, 300, 100)
@@ -67,6 +68,11 @@ var _harpoon_checked := false
 var _harpoon_round := 0
 var _harpoon_lanes := PackedInt32Array()
 var _harpoon_lane_i := 0
+var _harpoon_stall := 0.0
+var _course_extend_warned := false
+# Headless course tests set this before the node enters the tree.
+# Release builds ignore it, and it never starts a run or touches an attempt.
+var debug_skip_ready := false
 var _start_t := RR.COUNTDOWN
 var _go_t := 0.0
 var _in_lobby := true
@@ -85,6 +91,7 @@ var _perf_phys_sum := 0.0
 var _perf_phys_worst := 0.0
 var _ghost_match
 var _coins: Array[Sprite2D] = []
+var _coin_pool: Array[Sprite2D] = []
 var _run_coins := 0
 var _mission_run_id := ""
 var _mission_seconds := 0.0
@@ -103,6 +110,16 @@ var _over_remaining := 0
 var _coin_reward_claimed := false
 var _reward_request_active := false
 var _coin_offer_open := false
+# 0 means this offer is not eligible for a reward. A new show replaces it.
+# Close keeps the id so the same show can still pay. Abandon, failure, a new
+# offer, and a completed grant clear it.
+var _reward_session := 0
+var _watchdog_session := 0
+# The ad is already loaded before Yes. Rewarded videos are usually 15–30s.
+# 45s lets a normal ad finish and dismiss, then returns a show that never
+# calls back. A longer creative can restore the offer while it is still up;
+# its reward stays tied to this session and cannot pay a later Yes.
+var _reward_show_timeout := 45.0
 var _coin_ad_watch: Button
 var _coin_ad_note: SpriteTextScript
 var _eat_emulated_mouse := false
@@ -131,6 +148,10 @@ var _dive_ghosts_hidden := false
 
 
 func _ready() -> void:
+	if debug_skip_ready and _dev_diag():
+		set_process(false)
+		set_physics_process(false)
+		return
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_ON
 	cosmetic_rng.randomize()
@@ -683,6 +704,7 @@ func _physics_process(delta: float) -> void:
 		_cull_pipes()
 		if not _events_on() and _harpoon_beat != 0:
 			_tick_harpoons(delta)
+			_recover_daily_harpoon(delta)
 		if diving:
 			_update_dive_actor(delta)
 		if not diving:
@@ -745,7 +767,7 @@ func _process(delta: float) -> void:
 
 
 func _spawn_pipes() -> void:
-	_extend_unlimited_course()
+	_ensure_course_ahead()
 	var lead := RR.VIEW_W + 80.0
 	while spawn_index < layout.size() and layout[spawn_index]["x"] <= scroll + lead:
 		_take_pipe_from_layout()
@@ -807,38 +829,62 @@ func _spawn_coin_after_pipe(pipe_i: int) -> void:
 		return
 	var a: Dictionary = layout[pipe_i]
 	var b: Dictionary = layout[pipe_i + 1]
-	var spr := Sprite2D.new()
-	spr.texture = Sprites.tex("coin")
-	spr.centered = true
-	spr.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-	spr.z_index = 7
-	spr.scale = Vector2.ONE * 0.58
+	var spr := _take_coin()
 	spr.position = Vector2((float(a["x"]) + float(b["x"])) * 0.5 + RR.PLAYER_X, (float(a["gap_y"]) + float(b["gap_y"])) * 0.5)
-	course_draw.add_child(spr)
 	_coins.append(spr)
 
 
+func _take_coin() -> Sprite2D:
+	var spr: Sprite2D
+	if _coin_pool.is_empty():
+		spr = Sprite2D.new()
+		spr.texture = Sprites.tex("coin")
+		spr.centered = true
+		spr.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+		spr.z_index = 7
+		spr.scale = Vector2.ONE * 0.58
+		course_draw.add_child(spr)
+	else:
+		spr = _coin_pool.pop_back()
+	spr.visible = true
+	return spr
+
+
+func _release_coin(spr: Sprite2D) -> void:
+	spr.visible = false
+	if not _coin_pool.has(spr):
+		_coin_pool.append(spr)
+
+
 func _collect_coins() -> void:
-	if player == null or not player.alive:
-		return
-	for spr in _coins:
-		if spr == null or not spr.visible:
+	# Walk backward so releasing a coin cannot skip the next one.
+	var alive := player != null and player.alive
+	var i := _coins.size() - 1
+	while i >= 0:
+		var spr := _coins[i]
+		if spr == null or not is_instance_valid(spr):
+			_coins.remove_at(i)
+			i -= 1
 			continue
 		var sx := spr.position.x - scroll
 		if sx > RR.PLAYER_X + 24.0:
+			i -= 1
 			continue
-		if sx < RR.PLAYER_X - 48.0:
-			spr.visible = false
+		var passed := sx < RR.PLAYER_X - 48.0
+		var collected := alive and not passed and absf(player.position.y - spr.position.y) <= 58.0
+		if not passed and not collected:
+			i -= 1
 			continue
-		if absf(player.position.y - spr.position.y) > 58.0:
-			continue
-		spr.visible = false
-		_run_coins += 1
-		if not GameSession.practice_daily:
-			GameSession.add_coins(1)
-		Sfx.play("coin", -10.0)
-		if hud:
-			hud.set_coins(_run_coins)
+		_coins.remove_at(i)
+		_release_coin(spr)
+		if collected:
+			_run_coins += 1
+			if not GameSession.practice_daily:
+				GameSession.add_coins(1)
+			Sfx.play("coin", -10.0)
+			if hud:
+				hud.set_coins(_run_coins)
+		i -= 1
 
 
 func _score_pipes() -> void:
@@ -941,6 +987,7 @@ func _clear_overlay() -> void:
 
 func _show_coin_ad() -> void:
 	finished = true
+	_invalidate_reward_session()
 	_coin_offer_open = true
 	_coin_reward_claimed = false
 	_reward_request_active = false
@@ -986,6 +1033,8 @@ func _coin_ad_hotspot(origin: Vector2, scale: float, src: Rect2, pressed: Callab
 	btn.size = src.size * scale
 	btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	btn.pressed.connect(pressed)
+	var plate := Rect2(src.position + Vector2(30, 24), src.size - Vector2(60, 48))
+	ButtonFeedbackScript.use_plate(btn, Sprites.tex("coin_ad_overlay"), src, plate, 0.4)
 	return btn
 
 
@@ -1005,11 +1054,16 @@ func _watch_coin_ad() -> void:
 		_coin_ad_watch.disabled = true
 	_set_coin_ad_note("")
 	if not RewardedAds.is_rewarded_ad_available():
-		_on_rewarded_ad_unavailable()
+		_on_rewarded_ad_unavailable(0)
 		return
+	# Store the id before show so a callback that returns immediately still
+	# belongs to this offer, not to whatever show happens next.
+	var session_id := RewardedAds.begin_show_session()
+	_reward_session = session_id
 	if overlay:
 		overlay.visible = false
-	RewardedAds.show_rewarded_ad()
+	_arm_reward_watchdog(session_id)
+	RewardedAds.show_session(session_id)
 
 
 func _finish_coin_ad() -> void:
@@ -1018,6 +1072,7 @@ func _finish_coin_ad() -> void:
 	_coin_reward_claimed = true
 	_reward_request_active = false
 	_coin_offer_open = false
+	_invalidate_reward_session()
 	var bonus := _run_coins
 	if bonus > 0:
 		GameSession.add_coins(bonus)
@@ -1031,6 +1086,7 @@ func _finish_coin_ad() -> void:
 func _abandon_coin_offer() -> void:
 	_coin_offer_open = false
 	_reward_request_active = false
+	_invalidate_reward_session()
 	_run_coins = 0
 	_show_over(_over_rank, _over_remaining)
 
@@ -1055,31 +1111,69 @@ func _set_coin_ad_note(message: String) -> void:
 		hud.show_feed(message)
 
 
-func _on_rewarded_ad_earned() -> void:
-	if not _coin_offer_open:
+func _invalidate_reward_session() -> void:
+	_reward_session = 0
+	_cancel_reward_watchdog()
+
+
+func _cancel_reward_watchdog() -> void:
+	_watchdog_session = 0
+
+
+func _arm_reward_watchdog(session_id: int) -> void:
+	_watchdog_session = session_id
+	var timer := get_tree().create_timer(_reward_show_timeout, true)
+	timer.timeout.connect(_on_reward_watchdog.bind(session_id), CONNECT_ONE_SHOT)
+
+
+func _on_reward_watchdog(session_id: int) -> void:
+	# Pause and resume do not grant coins or change the session. An old timer
+	# no longer matches after a new offer, a new Yes, or a terminal callback.
+	if session_id <= 0 or session_id != _watchdog_session or session_id != _reward_session:
 		return
-	if _coin_reward_claimed:
+	if _coin_reward_claimed or not _coin_offer_open:
 		return
+	_cancel_reward_watchdog()
+	_restore_coin_ad("Ad timed out")
+
+
+func _reward_session_matches(session_id: int) -> bool:
+	return session_id > 0 and session_id == _reward_session
+
+
+func _on_rewarded_ad_earned(session_id: int) -> void:
+	if not _reward_session_matches(session_id):
+		return
+	if not _coin_offer_open or _coin_reward_claimed:
+		return
+	_cancel_reward_watchdog()
 	_finish_coin_ad()
 
 
-func _on_rewarded_ad_closed() -> void:
-	if _coin_reward_claimed:
+func _on_rewarded_ad_closed(session_id: int) -> void:
+	if not _reward_session_matches(session_id):
 		return
-	if not _coin_offer_open:
+	if _coin_reward_claimed or not _coin_offer_open:
 		return
+	_cancel_reward_watchdog()
 	_restore_coin_ad("")
 
 
-func _on_rewarded_ad_failed(_reason: String) -> void:
+func _on_rewarded_ad_failed(_reason: String, session_id: int) -> void:
+	if session_id != 0 and not _reward_session_matches(session_id):
+		return
 	if _coin_reward_claimed:
 		return
+	_invalidate_reward_session()
 	_restore_coin_ad("No ad available")
 
 
-func _on_rewarded_ad_unavailable() -> void:
+func _on_rewarded_ad_unavailable(session_id: int = 0) -> void:
+	if session_id != 0 and not _reward_session_matches(session_id):
+		return
 	if _coin_reward_claimed:
 		return
+	_invalidate_reward_session()
 	_restore_coin_ad("No ad available")
 
 
@@ -1149,6 +1243,7 @@ func _show_over(rank: int, remaining: int) -> void:
 	_wipe_again.size = Vector2(430, 150) * card_scale
 	_wipe_again.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	_wipe_again.pressed.connect(_retry)
+	ButtonFeedbackScript.use_plate(_wipe_again, tex, Rect2(310, 1175, 430, 150), Rect2(316, 1181, 418, 138), 0.46, "green")
 	overlay.add_child(_wipe_again)
 	_wipe_menu = TextureButton.new()
 	_wipe_menu.texture_normal = menu_tex
@@ -1317,6 +1412,7 @@ func _open_share_overlay() -> void:
 	close_btn.size = SHARE_CLOSE_RECT.size * card_scale
 	close_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	close_btn.pressed.connect(_close_share_overlay.bind(true))
+	ButtonFeedbackScript.use_plate(close_btn, tex, SHARE_CLOSE_RECT, Rect2(198, 806, 384, 149), 0.45, "red")
 	_share_layer.add_child(close_btn)
 	_share_share_btn = Button.new()
 	_share_share_btn.flat = true
@@ -1324,6 +1420,7 @@ func _open_share_overlay() -> void:
 	_share_share_btn.size = SHARE_SHARE_RECT.size * card_scale
 	_share_share_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	_share_share_btn.pressed.connect(_share_card_pressed)
+	ButtonFeedbackScript.use_plate(_share_share_btn, tex, SHARE_SHARE_RECT, Rect2(583, 806, 484, 154), 0.45)
 	_share_layer.add_child(_share_share_btn)
 	_share_progress = SpriteTextScript.new()
 	_share_progress.z_index = 2
@@ -1674,7 +1771,7 @@ func _tick_harpoons(_delta: float) -> void:
 		var left: float = spear.span_left()
 		var right: float = spear.span_right()
 		if left < RR.PLAYER_X + RR.FISH_BODY * 0.5 and right > RR.PLAYER_X - RR.FISH_BODY * 0.5:
-			if player.alive and _lane_of(player.position.y) != _safe_lane:
+			if player != null and player.alive and _lane_of(player.position.y) != _safe_lane:
 				player.kill()
 			if not _harpoon_checked:
 				_strike_harpoon_ghosts()
@@ -1693,18 +1790,31 @@ func _begin_harpoon_warn() -> void:
 			spear.hide_idle()
 		else:
 			spear.arm()
-	if _harpoon_round == 0:
+	if _harpoon_round == 0 and hud:
 		hud.show_feed("Harpoons incoming")
 	if _events_on():
 		_events.notify_harpoon_phase(GameplayEvents.State.HARPOON_WARNING)
 
 
 func _pick_safe_lane() -> int:
+	if _harpoon_lane_i >= _harpoon_lanes.size():
+		_refill_harpoon_lanes()
 	if _harpoon_lane_i < _harpoon_lanes.size():
 		var lane := _harpoon_lanes[_harpoon_lane_i]
 		_harpoon_lane_i += 1
 		return lane
+	push_error("[course] harpoon lanes exhausted seed=%d" % GameSession.course_seed)
 	return 1
+
+
+func _refill_harpoon_lanes() -> void:
+	var built: Dictionary = CourseBuilderScript.continuation(GameSession.course_seed, _harpoon_lanes.size())
+	var lanes: PackedInt32Array = built.get("harpoon_lanes", PackedInt32Array())
+	if lanes.is_empty():
+		push_error("[course] harpoon refill failed seed=%d" % GameSession.course_seed)
+		return
+	for lane in lanes:
+		_harpoon_lanes.append(int(lane))
 
 
 func _begin_harpoon_fire() -> void:
@@ -1894,6 +2004,7 @@ func _events_on() -> bool:
 
 
 func _setup_deep_dive() -> void:
+	# Unlimited only. Daily Challenge keeps RR.HARPOON_EVERY and does not dive.
 	if not GameplayEvents.applies_to(GameSession.match_mode, GameSession.practice_daily):
 		return
 	_events = GameplayEvents.new()
@@ -1906,30 +2017,96 @@ func _setup_deep_dive() -> void:
 	_synced_state = GameplayEvents.State.NORMAL
 
 
-func _extend_unlimited_course() -> void:
-	if not _events_on():
+func _ensure_course_ahead() -> void:
+	if layout.size() - spawn_index > CourseBuilderScript.LOOKAHEAD:
 		return
-	if layout.size() - spawn_index > 16:
+	var before := layout.size()
+	var built: Dictionary = CourseBuilderScript.continuation(GameSession.course_seed, before)
+	var placed: Array = CourseBuilderScript.placed_specs(layout, built.get("layout", []))
+	if placed.is_empty():
+		if not _course_extend_warned:
+			_course_extend_warned = true
+			push_error("[course] pipe extension produced nothing seed=%d size=%d spawn=%d" % [
+				GameSession.course_seed, before, spawn_index,
+			])
 		return
-	var built: Dictionary = CourseBuilderScript.generate(
-		GameSession.course_seed + layout.size() * 13 + 3,
-		40,
-		layout.size()
-	)
-	var extra: Array = built["layout"]
-	if extra.is_empty():
-		return
-	var base := RR.PIPE_SPEED * RR.PIPE_INTERVAL
-	if not layout.is_empty():
-		base = float(layout[layout.size() - 1]["x"]) + RR.PIPE_SPEED * RR.PIPE_INTERVAL
-	var origin := float(extra[0]["x"])
-	for spec in extra:
-		var copy: Dictionary = (spec as Dictionary).duplicate()
-		copy["x"] = base + float(copy["x"]) - origin
-		layout.append(copy)
-	var lanes: PackedInt32Array = built["harpoon_lanes"]
+	for spec in placed:
+		layout.append(spec)
+	_course_extend_warned = false
+	var lanes: PackedInt32Array = built.get("harpoon_lanes", PackedInt32Array())
 	for lane in lanes:
 		_harpoon_lanes.append(int(lane))
+	if spawn_index >= before:
+		_recover_pipe_lead(before)
+
+
+func _recover_pipe_lead(first_new: int) -> void:
+	if first_new < 0 or first_new >= layout.size():
+		return
+	var lead := scroll + RR.VIEW_W + 80.0
+	var have := float(layout[first_new]["x"])
+	if have >= lead:
+		return
+	var shift := lead - have
+	push_error("[course] pipes were behind the camera; shifting %d by %.1f" % [layout.size() - first_new, shift])
+	for i in range(first_new, layout.size()):
+		layout[i]["x"] = float(layout[i]["x"]) + shift
+
+
+func _recover_daily_harpoon(delta: float) -> void:
+	if _events_on() or _harpoon_beat == 0:
+		_harpoon_stall = 0.0
+		return
+	var flying := false
+	for spear in _harpoons:
+		if spear.flying:
+			flying = true
+			break
+	var stalled := false
+	if _harpoon_beat == 1 and not _pipes_ahead():
+		stalled = true
+	elif _harpoon_beat == 2 and _warn_t <= 0.0:
+		stalled = true
+	elif _harpoon_beat == 3 and not flying:
+		stalled = true
+	if not stalled:
+		_harpoon_stall = 0.0
+		return
+	_harpoon_stall += delta
+	if _harpoon_stall < 0.75:
+		return
+	push_error("[course] harpoon beat %d stalled; restoring pipe spawning" % _harpoon_beat)
+	for spear in _harpoons:
+		spear.hide_idle()
+	_harpoon_round = 0
+	_harpoon_beat = 0
+	_warn_t = 0.0
+	_harpoon_stall = 0.0
+	_pipes_until_harpoon = RR.HARPOON_EVERY
+
+
+func _stage_was_abandoned(prev: int) -> bool:
+	return (
+		prev == GameplayEvents.State.HARPOON_PENDING
+		or prev == GameplayEvents.State.HARPOON_WARNING
+		or prev == GameplayEvents.State.HARPOON_ACTIVE
+		or prev == GameplayEvents.State.DIVE_PENDING
+		or prev == GameplayEvents.State.DIVE_TRANSITION_IN
+		or prev == GameplayEvents.State.DEEP_DIVE
+		or prev == GameplayEvents.State.DIVE_TRANSITION_OUT
+	)
+
+
+func _abandon_stage() -> void:
+	for spear in _harpoons:
+		spear.hide_idle()
+	_harpoon_beat = 0
+	_harpoon_round = 0
+	_warn_t = 0.0
+	_harpoon_stall = 0.0
+	_halt_dive()
+	_restore_swim_physics()
+	_shift_upcoming_pipes(RR.VIEW_W + 200.0)
 
 
 func _can_spawn_pipes() -> bool:
@@ -1990,7 +2167,12 @@ func _sync_events() -> void:
 		_harpoon_round = 0
 		_begin_harpoon_warn()
 	elif now == GameplayEvents.State.DIVE_TRANSITION_IN:
-		_enter_dive_transition()
+		if _dive_field == null:
+			_events.recover_swim("deep dive field missing")
+			_synced_state = _events.state
+			_abandon_stage()
+		else:
+			_enter_dive_transition()
 	elif now == GameplayEvents.State.DEEP_DIVE:
 		_enter_dive_play()
 	elif now == GameplayEvents.State.DIVE_TRANSITION_OUT:
@@ -1998,7 +2180,9 @@ func _sync_events() -> void:
 	elif now == GameplayEvents.State.RESUME_SWIMMING:
 		_enter_swim_resume()
 	elif now == GameplayEvents.State.NORMAL:
-		if player and player.motion_lock:
+		if _stage_was_abandoned(prev):
+			_abandon_stage()
+		elif player and player.motion_lock:
 			_restore_swim_physics()
 	elif now == GameplayEvents.State.GAME_OVER:
 		_halt_dive()
@@ -2119,9 +2303,11 @@ func _update_dive_actor(delta: float) -> void:
 		GameplayEvents.State.DEEP_DIVE:
 			player.position = home
 			if _dive_field:
-				var cleared := _dive_field.tick(delta, DeepDiveConfig.FISH_Y)
+				var cleared := _dive_field.tick(delta, DeepDiveConfig.FISH_Y, _motion.x)
 				_events.note_obstacles_dodged(cleared.x)
 				_note_mission_dodges(cleared.x, cleared.y)
+				if player.alive and _dive_field.take_hit():
+					player.kill()
 		GameplayEvents.State.DIVE_TRANSITION_OUT:
 			var u := _smoothstep(1.0 - turn)
 			player.position = _dive_leave_from.lerp(_swim_home, u)

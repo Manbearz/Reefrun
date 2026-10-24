@@ -63,6 +63,56 @@ static func lanes_reachable(seconds: float) -> int:
 	return maxi(1, int(floor(usable / LANE_SLIDE)))
 
 
+# Editor-only lane overlay. A release export never draws it, even if this
+# is flipped on, because collision_debug() also requires a debug build.
+const DEBUG_LANES := false
+# A blocked lane counts when the solid body covers this much of it. A sliver
+# from padding or a shape that only touches the boundary does not.
+const LANE_BODY := 0.35
+
+
+static func collision_debug() -> bool:
+	return DEBUG_LANES and OS.is_debug_build()
+
+
+# Vertical radius of the fish capsule. The dive holds that capsule sideways,
+# so this is how far the body reaches above and below FISH_Y.
+static func fish_half_y() -> float:
+	return RR.FISH_HIT * 1.12
+
+
+# Lane the fish sprite is in. DiveMotion.lane is the swipe destination and
+# updates on the tap; this follows the drawn x and changes at the midpoint
+# between lane centers. At the exact midpoint the higher lane wins.
+static func lane_at(x: float) -> int:
+	var raw := (x - lane_center(1)) / LANE_GAP
+	return clampi(int(round(raw)) + 1, 1, LANE_COUNT)
+
+
+# Lanes a solid interval actually sits in. The lane under the interval's
+# center is included. Another lane is included only when the body covers
+# LANE_BODY of it. Lanes inside the designed opening are never returned.
+static func lanes_under(x0: float, x1: float, safe_lane: int, safe_span: int) -> PackedInt32Array:
+	var found := PackedInt32Array()
+	var left_edge := minf(x0, x1)
+	var right_edge := maxf(x0, x1)
+	if right_edge - left_edge < 1.0:
+		return found
+	var safe_first := clampi(safe_lane, 1, LANE_COUNT)
+	var safe_last := clampi(safe_first + maxi(safe_span, 1) - 1, 1, LANE_COUNT)
+	var need := LANE_GAP * LANE_BODY
+	var home := lane_at((left_edge + right_edge) * 0.5)
+	for lane in range(1, LANE_COUNT + 1):
+		if lane >= safe_first and lane <= safe_last:
+			continue
+		var center := lane_center(lane)
+		var overlap := minf(right_edge, center + LANE_GAP * 0.5) - maxf(left_edge, center - LANE_GAP * 0.5)
+		var covered := lane == home or overlap + 0.001 >= need
+		if covered and overlap > 1.0:
+			found.append(lane)
+	return found
+
+
 static func profile(dive_number: int) -> Dictionary:
 	var n := maxi(1, dive_number)
 	var kinds := PackedStringArray(["net", "pillar"])

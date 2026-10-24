@@ -22,6 +22,7 @@ var _glyph_probe: SpriteTextScript
 var _suppress_lobby_chrome := false
 var _chrome_fade: Tween
 var dive_text: SpriteTextScript
+var _top_chrome: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -47,6 +48,12 @@ func _ready() -> void:
 	_coin_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_coin_icon)
 	_coin_text = _line("0", 22, Vector2(RR.VIEW_W - 74, 16), Vector2(62, 30), HORIZONTAL_ALIGNMENT_LEFT, true)
+	_track_top(alive_text)
+	_track_top(swimming_text)
+	_track_top(score_text)
+	_track_top(crown)
+	_track_top(_coin_icon)
+	_track_top(_coin_text)
 	hint_text = _line("3", 78, Vector2(0, RR.VIEW_H * 0.34), Vector2(RR.VIEW_W, 110), HORIZONTAL_ALIGNMENT_CENTER, true)
 	hint_text.visible = false
 	lobby_text = _line("LOBBY", 22, Vector2(0, RR.VIEW_H * 0.30), Vector2(RR.VIEW_W, 32), HORIZONTAL_ALIGNMENT_CENTER)
@@ -58,8 +65,35 @@ func _ready() -> void:
 
 
 func apply_screen_layout() -> void:
+	var inset := _top_safe_inset()
+	for entry in _top_chrome:
+		var node := entry["node"] as CanvasItem
+		if node == null:
+			continue
+		var base: Vector2 = entry["base"]
+		node.position = base + Vector2(0.0, inset)
 	if feed_text:
 		feed_text.position.y = RR.screen_bottom() - 92.0
+
+
+func _track_top(node: CanvasItem) -> void:
+	_top_chrome.append({"node": node, "base": node.position})
+
+
+func _top_safe_inset() -> float:
+	# DisplayServer reports the status bar and Dynamic Island in window pixels.
+	# Scale that into the 540-wide content viewport. A desktop safe area starts
+	# at y 0, so the designed HUD stays where it is. Pipes, the fish, and
+	# PLAY_TOP are not moved.
+	var window := DisplayServer.window_get_size()
+	if window.y <= 0:
+		return 0.0
+	var screen_h := RR.screen_size().y
+	if screen_h <= 0.0:
+		return 0.0
+	var safe := DisplayServer.get_display_safe_area()
+	var inset := float(safe.position.y) * screen_h / float(window.y)
+	return clampf(inset, 0.0, screen_h * 0.2)
 
 
 func _prewarm_glyphs() -> void:
@@ -192,6 +226,8 @@ func set_countdown(value: String) -> void:
 func set_dive_timer(label: String, show: bool) -> void:
 	if dive_text == null:
 		dive_text = _line("DIVE", 16, Vector2(12, 96), Vector2(230, 24), HORIZONTAL_ALIGNMENT_LEFT, true)
+		_track_top(dive_text)
+		apply_screen_layout()
 	var visible_label := show and not label.is_empty()
 	dive_text.visible = visible_label
 	if visible_label:

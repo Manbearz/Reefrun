@@ -10,9 +10,12 @@ var _fullscreen: FullScreenContentCallback
 var _reward_listener: OnUserEarnedRewardListener
 var _loading := false
 var _showing := false
-var _earned_this_show := false
 var _sdk_started := false
 var _load_failures := 0
+# RewardedItem has no ad id. Each show stamps its own session, and a repeat
+# of that same session is ignored. Entries are not cleared when a new show
+# starts, so a late callback cannot be counted as the new show's reward.
+var _rewarded_sessions := {}
 
 
 func _ready() -> void:
@@ -26,16 +29,21 @@ func is_available() -> bool:
 	return _native_mobile() and _ad != null and not _showing and not AdCfg.rewarded_unit_id().is_empty()
 
 
-func show() -> void:
+func show_session(session_id: int) -> void:
 	if not _native_mobile() or _ad == null or _showing or AdCfg.rewarded_unit_id().is_empty():
 		_log("show skipped. loaded=%s showing=%s" % [_ad != null, _showing])
-		ad_unavailable.emit()
+		_emit_unavailable(session_id)
 		return
 	_showing = true
-	_earned_this_show = false
 	_reward_listener = OnUserEarnedRewardListener.new()
-	_reward_listener.on_user_earned_reward = _on_user_earned_reward
-	_log("showing rewarded ad")
+	# The native listener receives only RewardedItem. RewardedAd.gd drops the
+	# plugin uid before this runs, and the reward dictionary has no response id.
+	# bind() keeps this show's session even if a later show replaces _ad.
+	_reward_listener.on_user_earned_reward = _on_user_earned_reward.bind(session_id)
+	if _fullscreen != null:
+		_fullscreen.on_ad_dismissed_full_screen_content = _on_ad_dismissed.bind(session_id)
+		_fullscreen.on_ad_failed_to_show_full_screen_content = _on_ad_failed_to_show.bind(session_id)
+	_log("showing rewarded ad session=%d" % session_id)
 	_ad.show(_reward_listener)
 
 
@@ -144,8 +152,13 @@ func _on_ad_loaded(ad: RewardedAd) -> void:
 	_fullscreen.on_ad_showed_full_screen_content = func() -> void: _log("rewarded ad showed")
 	_fullscreen.on_ad_impression = func() -> void: _log("rewarded impression")
 	_fullscreen.on_ad_clicked = func() -> void: _log("rewarded ad clicked")
-	_fullscreen.on_ad_dismissed_full_screen_content = _on_ad_dismissed
-	_fullscreen.on_ad_failed_to_show_full_screen_content = _on_ad_failed_to_show
+	# Show replaces these with session-bound callables. A dismiss before show
+	# has no reward session and must not grant anything.
+	_fullscreen.on_ad_dismissed_full_screen_content = func() -> void:
+		_log("rewarded ad dismissed before show")
+	_fullscreen.on_ad_failed_to_show_full_screen_content = func(error: AdError) -> void:
+		var message := error.message if error != null else "show_failed"
+		_log("rewarded ad failed before show: %s" % message)
 	_ad.full_screen_content_callback = _fullscreen
 	_log("rewarded ad loaded")
 
@@ -161,29 +174,29 @@ func _on_ad_failed_to_load(error: LoadAdError) -> void:
 	get_tree().create_timer(8.0).timeout.connect(_load_rewarded)
 
 
-func _on_user_earned_reward(item: RewardedItem) -> void:
-	if _earned_this_show:
+func _on_user_earned_reward(item: RewardedItem, session_id: int) -> void:
+	if session_id <= 0 or _rewarded_sessions.has(session_id):
 		_log("duplicate reward callback ignored")
 		return
-	_earned_this_show = true
+	_rewarded_sessions[session_id] = true
 	var amount := item.amount if item != null else 0
 	var kind := item.type if item != null else ""
-	_log("reward earned. amount=%s type=%s" % [amount, kind])
-	reward_earned.emit()
+	_log("reward earned. session=%d amount=%s type=%s" % [session_id, amount, kind])
+	_emit_reward(session_id)
 
 
-func _on_ad_dismissed() -> void:
-	_log("rewarded ad dismissed. earned=%s" % _earned_this_show)
+func _on_ad_dismissed(session_id: int) -> void:
+	_log("rewarded ad dismissed. session=%d earned=%s" % [session_id, _rewarded_sessions.has(session_id)])
 	_release_ad()
-	ad_closed.emit()
+	_emit_closed(session_id)
 	_load_rewarded()
 
 
-func _on_ad_failed_to_show(error: AdError) -> void:
+func _on_ad_failed_to_show(error: AdError, session_id: int) -> void:
 	var message := error.message if error != null else "show_failed"
 	_log("rewarded ad failed to show: %s" % message)
 	_release_ad()
-	ad_failed.emit(message)
+	_emit_failed(message, session_id)
 	_load_rewarded()
 
 

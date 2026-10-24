@@ -258,6 +258,7 @@ static func submit_unlimited(book: Dictionary, player_id: String, display_name: 
 
 
 static func visible_board(book: Dictionary, period: String, server_unix: int) -> Array:
+	# Daily rows use the America/New_York date. Weekly and monthly stay UTC.
 	var today := challenge_date_from_unix(server_unix) if period == "daily" else utc_date_from_unix(server_unix)
 	var key := str(period_keys_for_date(today).get(period, ""))
 	var rows: Array = []

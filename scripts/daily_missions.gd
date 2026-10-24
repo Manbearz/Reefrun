@@ -1,12 +1,14 @@
 class_name DailyMissions
 extends RefCounted
 
-# Live mission selection happens only in tools/supabase/daily_missions.sql.
-# preview_rotation() mirrors that algorithm for tests. The game never uses it
+# Live mission selection happens in Supabase. The mission day is midnight
+# America/New_York, the same boundary as the Daily Challenge and Daily board.
+# preview_rotation() mirrors the picker for tests. The game never uses it
 # to decide which missions a player receives.
 
 const MAX_DAILY_REWARD := 60
-const MAX_PIPES_PER_RUN := 80
+const MAX_PIPES_PER_RUN := 20000
+const MAX_SECONDS_PER_RUN := 86400
 const MAX_STORED_RUNS := 60
 const MAX_PENDING_RUNS := 40
 const REWARDS := {
@@ -41,24 +43,35 @@ static func gameplay_payload(picked_up: int, _ad_bonus: int) -> int:
 	return maxi(0, picked_up)
 
 
+static func scheduled_dives(pipes: int) -> int:
+	if pipes < 30:
+		return 0
+	return 1 + int((pipes - 30) / 30.0)
+
+
+static func survival_limit(pipes: int, dives_entered: int) -> int:
+	# floor(1.8 + pipes * 1.5 + 12 + 12 * (pipes / 20))
+	# plus 28 seconds for each Deep Dive the run actually entered.
+	var harpoon_slack: int = 12 * int(pipes / 20.0)
+	return int(floorf(1.8 + float(pipes) * 1.5 + 12.0 + float(harpoon_slack))) + 28 * dives_entered
+
+
 static func accept_run(pipes: int, seconds: int, coins: int, dives_entered: int = 0) -> bool:
 	if pipes < 0 or pipes > MAX_PIPES_PER_RUN:
 		return false
-	if seconds < 0 or seconds > 1800:
+	if seconds < 0 or seconds > MAX_SECONDS_PER_RUN:
 		return false
 	if coins < 0 or coins > int(pipes / 5.0):
 		return false
 	if pipes > 0 and seconds < pipes - 1:
 		return false
-	# Matches record_unlimited_mission_run:
-	# floor(1.8 + pipes * 1.5 + 12 + 12 * (pipes / 20))
-	# plus 28 seconds for each Deep Dive the run actually entered.
-	if dives_entered < 0 or dives_entered > 2:
+	if dives_entered < 0 or dives_entered > scheduled_dives(pipes):
 		return false
-	var harpoon_slack: int = 12 * int(pipes / 20)
-	var survival_limit: int = int(floorf(1.8 + float(pipes) * 1.5 + 12.0 + float(harpoon_slack)))
-	survival_limit += 28 * dives_entered
-	if pipes < MAX_PIPES_PER_RUN and seconds > survival_limit:
+	if pipes < 80 and seconds > survival_limit(pipes, dives_entered):
+		return false
+	if pipes <= 80 and seconds > 1800:
+		return false
+	if pipes > 80 and seconds > survival_limit(pipes, dives_entered):
 		return false
 	return true
 
@@ -86,7 +99,7 @@ static func accept_dive(pipes: int, dive: Dictionary) -> bool:
 	var right := int(dive.get("lanes_right", 0))
 	var obstacles := int(dive.get("obstacles", 0))
 	var mines := int(dive.get("mines", 0))
-	if entered < 0 or entered > 2 or completed < 0 or completed > entered:
+	if entered < 0 or entered > scheduled_dives(pipes) or completed < 0 or completed > entered:
 		return false
 	if pipes < 30 and entered > 0:
 		return false
@@ -94,9 +107,11 @@ static func accept_dive(pipes: int, dive: Dictionary) -> bool:
 		return false
 	if dive_seconds < 0 or dive_seconds > entered * 20:
 		return false
-	if lanes < 0 or lanes > 400 or left < 0 or right < 0 or left + right != lanes:
+	var lane_cap := maxi(400, entered * 160)
+	var obstacle_cap := maxi(80, entered * 30)
+	if lanes < 0 or lanes > lane_cap or left < 0 or right < 0 or left + right != lanes:
 		return false
-	if obstacles < 0 or obstacles > 80 or mines < 0 or mines > obstacles:
+	if obstacles < 0 or obstacles > obstacle_cap or mines < 0 or mines > obstacles:
 		return false
 	if entered == 0 and (completed > 0 or dive_seconds > 0 or lanes > 0 or obstacles > 0):
 		return false
@@ -281,11 +296,90 @@ static func progress_ratio(current: int, goal: int) -> float:
 	return clampf(float(current) / float(goal), 0.0, 1.0)
 
 
-static func display_text(description: String) -> String:
-	var text := description.strip_edges()
-	if text.ends_with("."):
-		text = text.substr(0, text.length() - 1)
-	return text
+# Short labels are display-only. Catalog and database descriptions stay unchanged.
+static func display_text(description: String, mission_id: int = -1) -> String:
+	var mission := {}
+	if mission_id > 0:
+		mission = mission_by_id(mission_id)
+	if mission.is_empty():
+		mission = _mission_by_description(description)
+	if mission.is_empty():
+		return _strip_period(description)
+	return short_label(mission)
+
+
+static func short_label(mission: Dictionary) -> String:
+	var goal := int(mission.get("goal", 0))
+	var extra := int(mission.get("goal_b", 0))
+	var stored := str(mission.get("description", ""))
+	if stored.to_lower().contains("checkpoint"):
+		return "Checkpoint %d" % goal
+	match str(mission.get("rule", "")):
+		"pipes_total":
+			return "Pass %d %s" % [goal, _plural("Pipe", goal)]
+		"pipes_best":
+			return "%d %s One Run" % [goal, _plural("Pipe", goal)]
+		"runs":
+			return "Play %d %s" % [goal, _plural("Run", goal)]
+		"survive_best":
+			return "Survive %d %s" % [goal, _plural("Second", goal)]
+		"coins_total":
+			return "Collect %d %s" % [goal, _plural("Coin", goal)]
+		"coin_runs":
+			return "Coins In %d %s" % [goal, _plural("Run", goal)]
+		"runs_at_least":
+			return "%d %s %d %s" % [extra, _plural("Run", extra), goal, _plural("Pipe", goal)]
+		"window_sum":
+			return "%d %s %d %s" % [goal, _plural("Pipe", goal), extra, _plural("Run", extra)]
+		"dives_entered":
+			return "Enter %d %s" % [goal, _plural("Dive", goal)]
+		"dives_completed":
+			return "Finish %d %s" % [goal, _plural("Dive", goal)]
+		"dives_best":
+			return "%d %s One Run" % [goal, _plural("Dive", goal)]
+		"dive_seconds":
+			return "Dive %d %s" % [goal, _plural("Second", goal)]
+		"lanes_total":
+			return "Switch Lanes %d" % goal
+		"lanes_left":
+			return "Move Left %d" % goal
+		"lanes_right":
+			return "Move Right %d" % goal
+		"obstacles_total":
+			return "Dodge %d %s" % [goal, _plural("Obstacle", goal)]
+		"obstacles_best":
+			return "%d %s One Run" % [goal, _plural("Dodge", goal)]
+		"mines_total":
+			return "Pass %d %s" % [goal, _plural("Mine", goal)]
+		_:
+			return _strip_period(stored)
+
+
+static func _plural(word: String, count: int) -> String:
+	if count == 1:
+		return word
+	return word + "s"
+
+
+static func _mission_by_description(description: String) -> Dictionary:
+	var key := _normalize_desc(description)
+	if key.is_empty():
+		return {}
+	for mission in catalog():
+		if _normalize_desc(str(mission.get("description", ""))) == key:
+			return mission
+	return {}
+
+
+static func _normalize_desc(text: String) -> String:
+	return _strip_period(text).to_lower()
+
+
+static func _strip_period(text: String) -> String:
+	var value := text.strip_edges()
+	while value.ends_with("."):
+		value = value.substr(0, value.length() - 1).strip_edges()
+	return value
 
 
 static func icon_kind(mission_id: int, description: String = "") -> String:
@@ -520,7 +614,7 @@ static func _build_catalog() -> Array:
 		_m(82, "hard", "dive_dodge", "Wide Berth: dodge 45 obstacles.", 20, "obstacles_total", 45, 0, true),
 		_m(83, "hard", "dive_lanes", "Swift Fins: switch lanes 50 times.", 20, "lanes_total", 50, 0, true),
 		_m(84, "hard", "dive_mines", "Mine Course: pass 10 mines.", 20, "mines_total", 10, 0, true),
-		_m(85, "hard", "dive_time", "Stay Down: spend 50 seconds diving.", 20, "dive_seconds", 50, 0, true),
+		_m(85, "hard", "dive_time", "Stay Down: spend 80 seconds diving.", 20, "dive_seconds", 80, 0, true),
 		_m(86, "hard", "dive_left", "Port Master: move left 35 times.", 20, "lanes_left", 35, 0, true),
 		_m(87, "hard", "dive_right", "Starboard Master: move right 35 times.", 20, "lanes_right", 35, 0, true),
 		_m(88, "hard", "dive_enter", "Frequent Diver: enter 6 dives.", 20, "dives_entered", 6, 0, true),

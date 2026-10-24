@@ -5,6 +5,11 @@ const LinksScript := preload("res://scripts/share/referral_links.gd")
 const RepoScript := preload("res://scripts/backend/share_reward_repository.gd")
 
 
+func _initialize() -> void:
+	ProjectSettings.set_setting("network/http_proxy/host", "127.0.0.1")
+	ProjectSettings.set_setting("network/http_proxy/port", 9)
+
+
 func _init() -> void:
 	call_deferred("_run")
 

@@ -1,9 +1,9 @@
 extends Node
 
-signal reward_earned
-signal ad_closed
-signal ad_failed(reason: String)
-signal ad_unavailable
+signal reward_earned(session_id: int)
+signal ad_closed(session_id: int)
+signal ad_failed(reason: String, session_id: int)
+signal ad_unavailable(session_id: int)
 
 const AdCfg := preload("res://scripts/ads/ad_config.gd")
 const MockScript := preload("res://scripts/ads/mock_rewarded_ads.gd")
@@ -18,24 +18,36 @@ func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_provider = _make_provider()
 	add_child(_provider)
-	_provider.reward_earned.connect(func(): reward_earned.emit())
-	_provider.ad_closed.connect(func(): ad_closed.emit())
-	_provider.ad_failed.connect(func(reason: String): ad_failed.emit(reason))
-	_provider.ad_unavailable.connect(func(): ad_unavailable.emit())
+	_provider.reward_earned.connect(func(session_id: int): reward_earned.emit(session_id))
+	_provider.ad_closed.connect(func(session_id: int): ad_closed.emit(session_id))
+	_provider.ad_failed.connect(func(reason: String, session_id: int): ad_failed.emit(reason, session_id))
+	_provider.ad_unavailable.connect(func(session_id: int): ad_unavailable.emit(session_id))
 
 
 func is_rewarded_ad_available() -> bool:
 	return _provider != null and _provider.is_available()
 
 
-func show_rewarded_ad() -> void:
+func begin_show_session() -> int:
 	if _provider == null:
-		ad_unavailable.emit()
+		return 0
+	return _provider.begin_show_session()
+
+
+func show_session(session_id: int) -> void:
+	if _provider == null or session_id <= 0:
+		ad_unavailable.emit(session_id)
 		return
 	if not _provider.is_available():
-		ad_unavailable.emit()
+		ad_unavailable.emit(session_id)
 		return
-	_provider.show()
+	_provider.show_session(session_id)
+
+
+func show_rewarded_ad() -> int:
+	var session_id := begin_show_session()
+	show_session(session_id)
+	return session_id
 
 
 func mock_show_count() -> int:

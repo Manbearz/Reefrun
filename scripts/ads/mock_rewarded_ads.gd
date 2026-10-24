@@ -6,6 +6,8 @@ enum Outcome {
 	CLOSED_NO_REWARD,
 	FAILED,
 	UNAVAILABLE,
+	# Scripted tests hold the show open until the test emits callbacks itself.
+	STALL,
 }
 
 const AdCfg := preload("res://scripts/ads/ad_config.gd")
@@ -17,6 +19,7 @@ var show_calls := 0
 var _scripted := false
 var _settled := false
 var _panel: CanvasLayer
+var _live_session := 0
 
 
 func is_available() -> bool:
@@ -48,49 +51,57 @@ func simulator_button(action: String) -> BaseButton:
 	return _panel.find_child("sim_%s" % action, true, false) as BaseButton
 
 
-func show() -> void:
+func show_session(session_id: int) -> void:
 	show_calls += 1
 	# An exported binary must not reach this provider. If it does, grant nothing.
 	if not AdCfg.use_mock_provider():
-		ad_unavailable.emit()
+		_emit_unavailable(session_id)
 		return
 	if _scripted:
-		_show_scripted()
+		_show_scripted(session_id)
 		return
 	if not AdCfg.development_reward_simulator():
-		ad_unavailable.emit()
+		_emit_unavailable(session_id)
 		return
 	if _panel != null and is_instance_valid(_panel):
 		return
+	_live_session = session_id
 	_present_simulator()
 
 
-func _show_scripted() -> void:
+func _show_scripted(session_id: int) -> void:
 	if outcome == Outcome.UNAVAILABLE:
-		ad_unavailable.emit()
+		_emit_unavailable(session_id)
 		return
+	if outcome == Outcome.STALL:
+		return
+	# Bind the id now. A later show must not retarget this callback.
 	if resolve_delay <= 0.0:
-		call_deferred("_resolve")
+		_queue_resolve(session_id)
 		return
-	get_tree().create_timer(resolve_delay).timeout.connect(_resolve, CONNECT_ONE_SHOT)
+	get_tree().create_timer(resolve_delay).timeout.connect(_queue_resolve.bind(session_id), CONNECT_ONE_SHOT)
 
 
-func _resolve() -> void:
+func _queue_resolve(session_id: int) -> void:
+	call_deferred("_resolve_session", session_id)
+
+
+func _resolve_session(session_id: int) -> void:
 	if not _scripted or _settled:
 		return
 	_settled = true
 	match outcome:
 		Outcome.SUCCESS:
-			reward_earned.emit()
+			_emit_reward(session_id)
 			if duplicate_reward_signal:
-				reward_earned.emit()
-			ad_closed.emit()
+				_emit_reward(session_id)
+			_emit_closed(session_id)
 		Outcome.CLOSED_NO_REWARD:
-			ad_closed.emit()
+			_emit_closed(session_id)
 		Outcome.FAILED:
-			ad_failed.emit("mock_failed")
+			_emit_failed("mock_failed", session_id)
 		_:
-			ad_unavailable.emit()
+			_emit_unavailable(session_id)
 
 
 func _present_simulator() -> void:
@@ -158,22 +169,22 @@ func _press_complete() -> void:
 	if not _grant_once():
 		return
 	# Same order as AdMob: the reward callback, then the ad closing.
-	reward_earned.emit()
-	ad_closed.emit()
+	_emit_reward(_live_session)
+	_emit_closed(_live_session)
 	_close_panel()
 
 
 func _press_cancel() -> void:
 	if not _grant_once():
 		return
-	ad_closed.emit()
+	_emit_closed(_live_session)
 	_close_panel()
 
 
 func _press_unavailable() -> void:
 	if not _grant_once():
 		return
-	ad_unavailable.emit()
+	_emit_unavailable(_live_session)
 	_close_panel()
 
 

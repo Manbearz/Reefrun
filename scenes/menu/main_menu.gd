@@ -1,6 +1,7 @@
 extends Control
 
 const SpriteTextScript := preload("res://scripts/sprite_text.gd")
+const ButtonFeedbackScript := preload("res://scripts/button_feedback.gd")
 const DailyAttemptScript := preload("res://scripts/daily_attempt.gd")
 const DailyTestModeScript := preload("res://scripts/daily_test_mode.gd")
 const OVERLAY_W := 1145.0
@@ -322,8 +323,12 @@ func _build_home(card_size: Vector2) -> void:
 	_name_edit.text_changed.connect(_on_name_changed)
 	_name_edit.text_submitted.connect(func(_t: String): _play())
 	_home.add_child(_name_edit)
-	_home.add_child(_hotspot(PLAY_BOX, _play, _card_pos, _card_scale))
-	_home.add_child(_hotspot(SCORE_BOX, _show_scores, _card_pos, _card_scale))
+	var play := _hotspot(PLAY_BOX, _play, _card_pos, _card_scale)
+	_mark_plate(play, "main_menu_overlay", PLAY_BOX, Rect2(256, 906, 628, 173), 0.46, "wood")
+	_home.add_child(play)
+	var scores_btn := _hotspot(SCORE_BOX, _show_scores, _card_pos, _card_scale)
+	_mark_plate(scores_btn, "main_menu_overlay", SCORE_BOX, Rect2(218, 1132, 714, 152), 0.46, "blue")
+	_home.add_child(scores_btn)
 	_build_fish_picker()
 	_build_hat_picker()
 
@@ -341,6 +346,7 @@ func _build_scores() -> void:
 	_scores.add_child(_score_rows)
 	_build_score_labels()
 	_score_back = _hotspot(BACK_BOX, _show_home, Vector2.ZERO, 1.0)
+	_mark_plate(_score_back, "daily_overlay", BACK_BOX, Rect2(297, 1487, 370, 126), 0.46, "wood")
 	_scores.add_child(_score_back)
 	_build_score_arrows()
 	_layout_scores()
@@ -1052,6 +1058,10 @@ func _hotspot(src: Rect2, pressed: Callable, origin: Vector2, scale: float) -> B
 	return btn
 
 
+func _mark_plate(btn: Button, art_id: String, hit: Rect2, plate: Rect2, radius: float, kind := "auto") -> void:
+	ButtonFeedbackScript.use_plate(btn, Sprites.tex(art_id), hit, plate, radius, kind)
+
+
 func _style_name(edit: LineEdit) -> void:
 	var well := StyleBoxFlat.new()
 	well.bg_color = Color(0.97, 0.99, 1.0, 1)
@@ -1250,6 +1260,8 @@ func _build_score_arrows() -> void:
 	_score_arrow_right_icon = _score_arrow_icon("btn_score_right", right)
 	_score_arrow_left_btn = _screen_hotspot(_score_arrow_left_rect, _cycle_score_page.bind(-1))
 	_score_arrow_right_btn = _screen_hotspot(_score_arrow_right_rect, _cycle_score_page.bind(1))
+	ButtonFeedbackScript.use_visual(_score_arrow_left_btn, _score_arrow_left_icon)
+	ButtonFeedbackScript.use_visual(_score_arrow_right_btn, _score_arrow_right_icon)
 	_scores.add_child(_score_arrow_left_btn)
 	_scores.add_child(_score_arrow_right_btn)
 
@@ -1350,19 +1362,23 @@ func _sync_score_status(period: String, row_count: int) -> void:
 	if _score_status == null:
 		return
 	var note := ""
-	if row_count <= 0:
-		var backend := get_node_or_null("/root/Backend")
-		var meta: Dictionary = {}
-		if backend and backend.get("leaderboard_meta") is Dictionary:
-			var all: Dictionary = backend.leaderboard_meta
-			var got: Variant = all.get(period, {})
-			if typeof(got) == TYPE_DICTIONARY:
-				meta = got
-		var busy: bool = backend != null and backend.has_method("leaderboard_busy") and backend.leaderboard_busy()
-		if meta.is_empty() or busy:
-			note = "LOADING"
-		elif not bool(meta.get("ok", false)):
-			note = "COULD NOT LOAD"
+	var backend := get_node_or_null("/root/Backend")
+	var meta: Dictionary = {}
+	if backend and backend.get("leaderboard_meta") is Dictionary:
+		var all: Dictionary = backend.leaderboard_meta
+		var got: Variant = all.get(period, {})
+		if typeof(got) == TYPE_DICTIONARY:
+			meta = got
+	var busy: bool = backend != null and backend.has_method("leaderboard_busy") and backend.leaderboard_busy()
+	var submit_error := ""
+	if period == "daily" and backend != null:
+		submit_error = str(backend.get("daily_submit_error"))
+	if not meta.is_empty() and not bool(meta.get("ok", false)) and not busy:
+		note = "COULD NOT LOAD SCORES"
+	elif submit_error != "":
+		note = "SCORE NOT SAVED"
+	elif row_count <= 0 and (meta.is_empty() or busy):
+		note = "LOADING"
 	_score_status.set_value(note)
 	_score_status.visible = note != ""
 
@@ -1405,6 +1421,10 @@ func _build_mode_overlay() -> void:
 	var daily := _hotspot(MODE_DAILY, _choose_daily, Vector2.ZERO, 1.0)
 	_mode_back = _hotspot(MODE_BACK, _close_modes, Vector2.ZERO, 1.0)
 	_mission_button = _hotspot(MODE_MISSIONS, _open_missions, Vector2.ZERO, 1.0)
+	_mark_plate(_mode_unlimited, "mode_unlocked", MODE_UNLIMITED, MODE_UNLIMITED.grow(-8.0), 0.14)
+	_mark_plate(daily, "mode_unlocked", MODE_DAILY, MODE_DAILY.grow(-8.0), 0.14)
+	_mark_plate(_mission_button, "mode_unlocked", MODE_MISSIONS, MODE_MISSIONS.grow(-10.0), 0.32)
+	_mark_plate(_mode_back, "mode_unlocked", MODE_BACK, Rect2(200, 1634, 380, 96), 0.46, "blue")
 	for btn in [_mode_unlimited, daily, _mode_back, _mission_button]:
 		btn.focus_mode = Control.FOCUS_NONE
 		_modes.add_child(btn)

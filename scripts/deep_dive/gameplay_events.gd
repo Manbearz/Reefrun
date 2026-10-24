@@ -4,6 +4,10 @@ extends RefCounted
 signal state_changed(previous: int, current: int)
 
 # One special event at a time. Unlimited mode only.
+# A stage that never gets its start signal must not hold the pipes forever.
+const CORRIDOR_LIMIT := 12.0
+const HARPOON_LIMIT := 20.0
+
 enum State {
 	NORMAL,
 	HARPOON_PENDING,
@@ -95,6 +99,7 @@ func notify_harpoon_phase(phase: int) -> void:
 		and state != State.HARPOON_ACTIVE
 	):
 		return
+	phase_time = 0.0
 	_enter_state(phase)
 
 
@@ -220,6 +225,21 @@ func debug_queue_dive() -> void:
 	fired_log.append("dive:debug")
 
 
+func recover_swim(reason: String) -> void:
+	if state == State.GAME_OVER or state == State.NORMAL:
+		return
+	push_error("[events] %s" % reason)
+	if (
+		state == State.DIVE_PENDING
+		or state == State.DIVE_TRANSITION_IN
+		or state == State.DEEP_DIVE
+	):
+		dive_number = maxi(0, dive_number - 1)
+	phase_time = 0.0
+	active_dive_time = 0.0
+	_enter_state(State.NORMAL)
+
+
 func debug_force_state(next: int) -> void:
 	phase_time = 0.0
 	if next == State.DEEP_DIVE:
@@ -244,6 +264,7 @@ func _try_start_queued() -> void:
 	var kind := _queue[0]
 	_queue.remove_at(0)
 	if kind == "harpoon":
+		phase_time = 0.0
 		_enter_state(State.HARPOON_PENDING)
 	elif kind == "dive":
 		dive_number += 1
@@ -257,9 +278,16 @@ func _advance(delta: float) -> void:
 			_try_start_queued()
 		State.HARPOON_PENDING:
 			if _corridor:
+				phase_time = 0.0
 				_enter_state(State.HARPOON_WARNING)
+			else:
+				phase_time += delta
+				if phase_time >= CORRIDOR_LIMIT:
+					recover_swim("harpoon waited too long for a clear corridor")
 		State.HARPOON_WARNING, State.HARPOON_ACTIVE:
-			pass
+			phase_time += delta
+			if phase_time >= HARPOON_LIMIT:
+				recover_swim("harpoon did not finish")
 		State.HARPOON_CLEANUP:
 			phase_time += delta
 			if phase_time >= DeepDiveConfig.HARPOON_CLEANUP:
@@ -270,6 +298,10 @@ func _advance(delta: float) -> void:
 				phase_time = 0.0
 				active_dive_time = 0.0
 				_enter_state(State.DIVE_TRANSITION_IN)
+			else:
+				phase_time += delta
+				if phase_time >= CORRIDOR_LIMIT:
+					recover_swim("deep dive waited too long for a clear corridor")
 		State.DIVE_TRANSITION_IN:
 			phase_time += delta
 			if phase_time >= DeepDiveConfig.intro_total():

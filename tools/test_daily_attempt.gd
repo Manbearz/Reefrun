@@ -9,6 +9,12 @@ func _init() -> void:
 	call_deferred("_run")
 
 
+func _initialize() -> void:
+	# Headless runs must not sign in or refresh a live Supabase session.
+	ProjectSettings.set_setting("network/http_proxy/host", "127.0.0.1")
+	ProjectSettings.set_setting("network/http_proxy/port", 9)
+
+
 func _run() -> void:
 	var ok := true
 	ok = _check("claim_succeeds", _test_claim_succeeds()) and ok
@@ -25,6 +31,7 @@ func _run() -> void:
 	ok = _check("week_keeps_higher_score", _test_week_keeps_higher_score()) and ok
 	ok = _check("score_submit", _test_score_submit()) and ok
 	ok = _check("daily_board", _test_board("daily")) and ok
+	ok = _check("utc_evening_board", _test_utc_evening_board()) and ok
 	ok = _check("weekly_board", _test_board("weekly")) and ok
 	ok = _check("monthly_board", _test_board("monthly")) and ok
 	ok = _check("unlimited_open", _test_unlimited()) and ok
@@ -254,6 +261,44 @@ func _test_score_submit() -> bool:
 	var played := _played()
 	var done: Dictionary = played["done"]
 	return bool(done.get("accepted", false)) and int(done.get("score", 0)) == 27
+
+
+func _test_utc_evening_board() -> bool:
+	# 00:12 UTC is 20:12 Eastern during daylight saving time. The daily board
+	# is still that Eastern date and rolls at the next Eastern midnight.
+	var when := DailyChallengeScript.unix_utc(2026, 10, 21, 0, 12)
+	var eastern := DailyChallengeScript.challenge_date_from_unix(when)
+	var challenge := DailyChallengeScript.make(eastern, true, when)
+	var store := DailyAttemptScript.empty_store()
+	var book := DailyChallengeScript.empty_book()
+	var claimed: Dictionary = DailyAttemptScript.claim(store, "player-a", "key-a", challenge)
+	var attempt_id := str(claimed.get("attempt_id", ""))
+	DailyAttemptScript.start(store, "player-a", attempt_id)
+	var done: Dictionary = DailyAttemptScript.finalize(store, book, "player-a", attempt_id, 18, "REEF", when)
+	var again: Dictionary = DailyAttemptScript.finalize(store, book, "player-a", attempt_id, 40, "REEF", when)
+	var daily: Array = DailyChallengeScript.visible_board(book, "daily", when)
+	var weekly: Array = DailyChallengeScript.visible_board(book, "weekly", when)
+	var monthly: Array = DailyChallengeScript.visible_board(book, "monthly", when)
+	var rolled: Array = DailyChallengeScript.visible_board(book, "daily", DailyChallengeScript.unix_utc(2026, 10, 21, 4, 0))
+	var empty_body: Dictionary = DailyAttemptScript.parse_finalize({"ok": true, "status": 200, "data": []})
+	var second: Dictionary = DailyAttemptScript.claim(store, "player-a", "key-b", challenge)
+	return (
+		eastern == "2026-10-20"
+		and bool(done.get("stored", false))
+		and bool(done.get("accepted", false))
+		and bool(again.get("duplicate", false))
+		and not bool(again.get("accepted", true))
+		and int(again.get("score", 0)) == 18
+		and daily.size() == 1
+		and int(daily[0].get("score", 0)) == 18
+		and str(daily[0].get("display_name", "")) == "REEF"
+		and weekly.is_empty()
+		and monthly.is_empty()
+		and rolled.is_empty()
+		and not bool(empty_body.get("stored", true))
+		and bool(second.get("already_used", false))
+		and not bool(second.get("claimed", true))
+	)
 
 
 func _test_board(period: String) -> bool:

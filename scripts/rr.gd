@@ -36,6 +36,7 @@ const PIPE_HIT_WIDTH := 0.86
 const PIPE_LIP_INSET := 0.0
 const GHOST_COUNT := 99
 const GHOST_DRAW := 24
+# Opening seeded chunk. Both modes append further chunks, so a run is not capped here.
 const PIPE_COUNT := 80
 const PHYSICS_VERSION := 1
 const COURSE_VERSION := 1

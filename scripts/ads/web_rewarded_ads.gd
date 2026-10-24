@@ -15,11 +15,5 @@ func is_available() -> bool:
 	return false
 
 
-func show() -> void:
-	if not OS.has_feature("web"):
-		ad_unavailable.emit()
-		return
-	if AdCfg.web_placement_id().is_empty():
-		ad_unavailable.emit()
-		return
-	ad_unavailable.emit()
+func show_session(session_id: int) -> void:
+	_emit_unavailable(session_id)

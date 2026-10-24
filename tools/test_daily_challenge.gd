@@ -13,6 +13,12 @@ func _init() -> void:
 	call_deferred("_run")
 
 
+func _initialize() -> void:
+	# Headless runs must not sign in or refresh a live Supabase session.
+	ProjectSettings.set_setting("network/http_proxy/host", "127.0.0.1")
+	ProjectSettings.set_setting("network/http_proxy/port", 9)
+
+
 func _run() -> void:
 	var ok := true
 	ok = _test_shared_seed() and ok

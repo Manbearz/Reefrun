@@ -1,7 +1,58 @@
 extends SceneTree
 
 func _initialize() -> void:
+	ProjectSettings.set_setting("network/http_proxy/host", "127.0.0.1")
+	ProjectSettings.set_setting("network/http_proxy/port", 9)
+	_write_offline_session()
+	call_deferred("_seal_network")
 	root.add_child(Runner.new())
+
+
+func _write_offline_session() -> void:
+	var session := ConfigFile.new()
+	session.set_value("session", "access_token", "offline-test-token")
+	session.set_value("session", "refresh_token", "")
+	session.set_value("session", "user_id", "11111111-1111-4111-8111-111111111111")
+	session.set_value("session", "expires_at", int(Time.get_unix_time_from_system()) + 86400)
+	session.save("user://supabase_session.cfg")
+
+
+func _seal_network() -> void:
+	var backend := root.get_node_or_null("Backend")
+	if backend == null:
+		return
+	backend._client = DeadNet.new()
+	var pending: Array = []
+	for child in backend.get_children():
+		if child is HTTPRequest:
+			pending.append(child)
+	for child in pending:
+		var http := child as HTTPRequest
+		http.cancel_request()
+		http.queue_free()
+
+
+class DeadNet:
+	func cancel() -> void:
+		pass
+
+	func is_ready() -> bool:
+		return true
+
+	func auth_headers(_access_token: String = "") -> PackedStringArray:
+		return PackedStringArray()
+
+	func request_json(_method: String, _url: String, _headers: PackedStringArray, _body: String = "") -> Dictionary:
+		return {
+			"ok": false,
+			"status": 0,
+			"data": null,
+			"error": "blocked",
+			"godot_http_result": HTTPRequest.RESULT_CANT_CONNECT,
+		}
+
+	func request_json_independent(method: String, url: String, headers: PackedStringArray, body: String = "") -> Dictionary:
+		return request_json(method, url, headers, body)
 
 
 class Offer:
@@ -73,26 +124,26 @@ class Offer:
 		watch_disabled = false
 		note = message
 
-	func on_earned() -> void:
+	func on_earned(_session_id: int = 0) -> void:
 		if not offer_open:
 			return
 		if claimed:
 			return
 		finish()
 
-	func on_closed() -> void:
+	func on_closed(_session_id: int = 0) -> void:
 		if claimed:
 			return
 		if not offer_open:
 			return
 		restore("")
 
-	func on_failed(_reason: String) -> void:
+	func on_failed(_reason: String, _session_id: int = 0) -> void:
 		if claimed:
 			return
 		restore("No ad available")
 
-	func on_unavailable() -> void:
+	func on_unavailable(_session_id: int = 0) -> void:
 		if claimed:
 			return
 		restore("No ad available")
@@ -106,6 +157,9 @@ class Runner extends Node:
 	var failed := 0
 
 	func _ready() -> void:
+		var tree := get_tree()
+		if tree != null and tree.has_method("_seal_network"):
+			tree._seal_network()
 		ads = get_node("/root/RewardedAds")
 		session = get_node("/root/GameSession")
 		offer.ads = ads

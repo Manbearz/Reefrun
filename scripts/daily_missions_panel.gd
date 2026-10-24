@@ -45,7 +45,7 @@ func _build() -> void:
 	add_child(dim)
 	_title = UIKit.make_label("DAILY MISSIONS", 28, Palette.FOAM)
 	add_child(_title)
-	_countdown = UIKit.make_label("RESETS AT 00:00 UTC", 16, Palette.SAND)
+	_countdown = UIKit.make_label("RESETS AT MIDNIGHT", 16, Palette.SAND)
 	add_child(_countdown)
 	_status = UIKit.make_label("", 18, Palette.TEXT_DIM)
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -142,7 +142,7 @@ func _render() -> void:
 		if backend and str(backend.get("mission_note")) == "error":
 			note = "COULD NOT LOAD"
 		_status.text = note
-		_countdown.text = "RESETS AT 00:00 UTC"
+		_countdown.text = "RESETS AT MIDNIGHT"
 		return
 	_fill_slot("easy", _slot(board, "easy"))
 	_fill_slot("medium", _slot(board, "medium"))
@@ -185,7 +185,7 @@ func _refresh_countdown() -> void:
 	var resets_at := int(board.get("resets_at", 0))
 	var fetched_at := int(board.get("fetched_at", 0))
 	if server_now <= 0 or resets_at <= 0 or fetched_at <= 0:
-		_countdown.text = "RESETS AT 00:00 UTC"
+		_countdown.text = "RESETS AT MIDNIGHT"
 		return
 	var left := Missions.remaining_seconds(server_now, resets_at, fetched_at, int(Time.get_unix_time_from_system()))
 	_countdown.text = Missions.format_countdown(left)

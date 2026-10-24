@@ -61,7 +61,9 @@ var _lb_checked_date := ""
 var _daily_roll_checked := ""
 var _lb_needs_refresh := false
 var leaderboard_meta: Dictionary = {}
+var daily_submit_error := ""
 var _followup_busy := false
+var _finalize_running := false
 
 
 func _ready() -> void:
@@ -1002,10 +1004,18 @@ func on_menu_ready() -> void:
 
 
 func finalize_daily_attempt(attempt_id: String, score: int, display_name: String) -> void:
+	if _finalize_running:
+		while _finalize_running:
+			await get_tree().process_frame
+		if not _has_pending_finalize():
+			return
+	_finalize_running = true
 	var clean_id := attempt_id.strip_edges()
 	if clean_id == "" or not is_configured() or not has_session():
 		var reason := "no_attempt" if clean_id == "" else "no_session"
 		_log_rpc("finalize_daily_attempt", {"ok": false, "status": 0, "error": reason})
+		_set_daily_submit_error(reason)
+		_finalize_running = false
 		return
 	var result: Dictionary = await _authed_request(
 		"POST",
@@ -1020,17 +1030,34 @@ func finalize_daily_attempt(attempt_id: String, score: int, display_name: String
 	)
 	_log_rpc("finalize_daily_attempt", result)
 	var parsed: Dictionary = DailyAttemptScript.parse_finalize(result)
-	if not parsed.get("stored", false):
-		return
-	print("[rpc] finalize_daily_attempt stored_score=%d accepted=%d duplicate=%d" % [
-		int(parsed.get("score", 0)),
+	print("[rpc] finalize_daily_attempt status=%d stored=%d accepted=%d duplicate=%d score=%d error=%s" % [
+		int(result.get("status", 0)),
+		1 if parsed.get("stored", false) else 0,
 		1 if parsed.get("accepted", false) else 0,
 		1 if parsed.get("duplicate", false) else 0,
+		int(parsed.get("score", 0)),
+		_safe_auth_error(result) if not parsed.get("stored", false) else "",
 	])
+	if not parsed.get("stored", false):
+		_set_daily_submit_error(str(parsed.get("error", result.get("error", "not_stored"))))
+		_finalize_running = false
+		return
+	daily_submit_error = ""
 	if GameSession.has_method("clear_pending_finalize"):
 		GameSession.clear_pending_finalize()
 	_lb_needs_refresh = true
+	_finalize_running = false
 	fetch_leaderboards()
+
+
+func _set_daily_submit_error(reason: String) -> void:
+	var clean := reason.strip_edges()
+	if clean == "" or clean == "0":
+		clean = "not_stored"
+	if clean.length() > 80:
+		clean = clean.substr(0, 80)
+	daily_submit_error = clean
+	push_warning("[rpc] finalize_daily_attempt not stored: %s" % clean)
 
 
 func submit_unlimited_score(score: int, display_name: String) -> void:
@@ -1087,6 +1114,9 @@ func _fetch_leaderboards() -> void:
 		false,
 		false
 	)
+	day = _leaderboard_payload(day)
+	week = _leaderboard_payload(week)
+	month = _leaderboard_payload(month)
 	var day_rows: Array = _leaderboards.parse_rows(day.data) if day.ok else []
 	var week_rows: Array = _leaderboards.parse_rows(week.data) if week.ok else []
 	var month_rows: Array = _leaderboards.parse_rows(month.data) if month.ok else []
@@ -1107,6 +1137,18 @@ func _fetch_leaderboards() -> void:
 	leaderboards_ready.emit()
 	if _lb_needs_refresh:
 		fetch_leaderboards()
+
+
+func _leaderboard_payload(result: Dictionary) -> Dictionary:
+	if not bool(result.get("ok", false)):
+		return result
+	var data: Variant = result.get("data", null)
+	if data is Array or (typeof(data) == TYPE_DICTIONARY and not data.is_empty()):
+		return result
+	var failed := result.duplicate(true)
+	failed["ok"] = false
+	failed["error"] = "empty_payload"
+	return failed
 
 
 func _log_leaderboard(period: String, result: Dictionary, rows: Array) -> void:
@@ -1300,6 +1342,13 @@ func _mission_schema_mismatch(result: Dictionary) -> bool:
 	return text.contains("pgrst202") or text.contains("could not find the function")
 
 
+func _mission_run_has_dive_facts(run: Dictionary) -> bool:
+	for key in ["dives_entered", "dives_completed", "dive_seconds", "lane_changes", "lanes_left", "lanes_right", "obstacles", "mines"]:
+		if int(run.get(key, 0)) > 0:
+			return true
+	return false
+
+
 func flush_daily_missions() -> void:
 	if _mission_busy:
 		_mission_flush_again = true
@@ -1328,10 +1377,17 @@ func flush_daily_missions() -> void:
 		var pipes := int(run.get("pipes", 0))
 		var seconds := int(run.get("seconds", 0))
 		var coins := int(run.get("coins", 0))
-		var body: String = _missions.legacy_record_body(run_id, pipes, seconds, coins) if _mission_legacy_record else _missions.record_body(run_id, pipes, seconds, coins, run)
+		var body: String = _missions.record_body(run_id, pipes, seconds, coins, run)
 		var result: Dictionary = await _authed_request("POST", _missions.record_url(), body, true, false)
-		if not _mission_legacy_record and _mission_schema_mismatch(result):
-			_mission_legacy_record = true
+		var used_legacy := false
+		if _mission_schema_mismatch(result):
+			if _mission_run_has_dive_facts(run):
+				push_warning("[missions] record_unlimited_mission_run has no 12-argument form; run %s stayed pending so its Deep Dive fields were not dropped" % run_id)
+				mission_note = "error"
+				stopped = true
+				break
+			push_warning("[missions] 12-argument recorder missing; retrying pipe-only run %s with the same run id" % run_id)
+			used_legacy = true
 			result = await _authed_request(
 				"POST",
 				_missions.record_url(),
@@ -1345,6 +1401,11 @@ func flush_daily_missions() -> void:
 		if typeof(data) == TYPE_DICTIONARY:
 			reason = str(data.get("reason", ""))
 			accepted = bool(data.get("ok", false))
+		if used_legacy and reason == "rejected" and pipes > 80:
+			push_warning("[missions] server still rejects runs above 80 pipes; run %s stayed pending" % run_id)
+			mission_note = "error"
+			stopped = true
+			break
 		if reason == "rejected" or reason == "duplicate" or accepted:
 			GameSession.drop_mission_run(str(run.get("id", "")))
 			if accepted:

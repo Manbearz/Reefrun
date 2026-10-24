@@ -10,6 +10,13 @@ var gap_w := 0.0
 var travel := 0.0
 var passed := false
 var active := false
+# Lanes this obstacle can kill, and the vertical window of the solid body.
+# The opening from the course is never included. Physics shapes stay off so
+# a wide sprite cannot reach a neighboring lane.
+var occupied := PackedInt32Array()
+var band_center := 0.0
+var band_half := 0.0
+var lethal := false
 
 var _sprites: Array[Sprite2D] = []
 var _hits: Array[Area2D] = []
@@ -24,6 +31,9 @@ var _built := false
 var _y := 0.0
 var _hit_token: Array[int] = []
 var _slot_armed: Array[bool] = []
+var _safe_lane := DeepDiveConfig.CENTER_LANE
+var _safe_span := 1
+var _has_band := false
 
 
 func _ready() -> void:
@@ -51,6 +61,13 @@ func present(spec: Dictionary) -> void:
 	passed = false
 	active = true
 	visible = true
+	lethal = true
+	occupied = PackedInt32Array()
+	band_center = 0.0
+	band_half = 0.0
+	_has_band = false
+	_safe_lane = clampi(int(spec.get("lane", DeepDiveConfig.CENTER_LANE)), 1, DeepDiveConfig.LANE_COUNT)
+	_safe_span = clampi(int(spec.get("span", 1)), 1, DeepDiveConfig.LANE_COUNT)
 	_drift_t = 0.0
 	_drift_amp = float(spec.get("drift", 0.0))
 	_bob = float(int(spec.get("variant", 0))) * 0.65
@@ -70,12 +87,27 @@ func present(spec: Dictionary) -> void:
 
 func deactivate() -> void:
 	active = false
+	lethal = false
 	visible = false
 	passed = true
+	occupied = PackedInt32Array()
+	_has_band = false
 	_hide_all()
 
 
+func hits_player(player_lane: int, fish_y: float) -> bool:
+	if not active or not lethal or not _has_band:
+		return false
+	if player_lane < 1 or player_lane > DeepDiveConfig.LANE_COUNT:
+		return false
+	if not occupied.has(player_lane):
+		return false
+	var reach := band_half + DeepDiveConfig.fish_half_y()
+	return absf(position.y + band_center - fish_y) <= reach
+
+
 func set_lethal(on: bool) -> void:
+	lethal = on and active
 	if on:
 		return
 	for i in _hits.size():
@@ -206,6 +238,26 @@ func _commit_slot(slot: int, token: int, armed: bool) -> void:
 	_shapes[slot].disabled = not armed
 
 
+# The solid body, not the texture rectangle. Safe opening lanes are dropped
+# inside lanes_under, so a shape that leans across the gap cannot kill there.
+func _cover(x0: float, x1: float, y_center: float, half_h: float) -> void:
+	var lanes := DeepDiveConfig.lanes_under(x0, x1, _safe_lane, _safe_span)
+	for lane in lanes:
+		var blocked := int(lane)
+		if not occupied.has(blocked):
+			occupied.append(blocked)
+	var half := maxf(half_h, 1.0)
+	if not _has_band:
+		band_center = y_center
+		band_half = half
+		_has_band = true
+		return
+	var top := minf(band_center - band_half, y_center - half)
+	var bot := maxf(band_center + band_half, y_center + half)
+	band_center = (top + bot) * 0.5
+	band_half = (bot - top) * 0.5
+
+
 func _keep_out_of_gap(x: float, rest_x: float) -> float:
 	var guard := 18.0
 	if rest_x <= gap_x + gap_w * 0.5:
@@ -221,13 +273,6 @@ func _layout_net(spec: Dictionary) -> void:
 	var src_h := float(tex.get_height())
 	_fit_span(0, tex, 0.0, gap_x, src_w, src_h, false)
 	_fit_span(1, tex, gap_x + gap_w, RR.VIEW_W, src_w, src_h, true)
-	var hit_h := src_h * 0.42
-	if gap_x > 24.0:
-		_rect(0, Vector2((gap_x - 12.0) * 0.5, 6.0), Vector2(maxf(gap_x - 18.0, 10.0), hit_h))
-	var right := RR.VIEW_W - (gap_x + gap_w)
-	if right > 24.0:
-		var rx := gap_x + gap_w + 8.0
-		_rect(1, Vector2(rx + (RR.VIEW_W - rx) * 0.5, 6.0), Vector2(maxf(RR.VIEW_W - rx - 6.0, 10.0), hit_h))
 
 
 func _fit_span(slot: int, tex: Texture2D, left: float, right: float, src_w: float, src_h: float, flip: bool) -> void:
@@ -236,7 +281,11 @@ func _fit_span(slot: int, tex: Texture2D, left: float, right: float, src_w: floa
 		return
 	var scale_x := clampf(span / src_w, 0.55, 1.3)
 	var scale := Vector2(scale_x, clampf(scale_x, 0.7, 1.05))
-	_show(slot, tex, Vector2((left + right) * 0.5, 0.0), scale, flip)
+	var center_x := (left + right) * 0.5
+	_show(slot, tex, Vector2(center_x, 0.0), scale, flip)
+	var drawn_w := src_w * scale_x
+	var drawn_h := src_h * scale.y
+	_cover(center_x - drawn_w * 0.5, center_x + drawn_w * 0.5, 6.0, drawn_h * 0.21)
 
 
 func _layout_pillar(spec: Dictionary) -> void:
@@ -268,8 +317,9 @@ func _layout_arch() -> bool:
 	var side_w := maxf((display_w - gap_w) * 0.42, 18.0)
 	var left_x := center - gap_w * 0.5 - side_w * 0.5 - 8.0
 	var right_x := center + gap_w * 0.5 + side_w * 0.5 + 8.0
-	_rect(0, Vector2(left_x, -display_h * 0.16), Vector2(side_w, stone_h))
-	_rect(1, Vector2(right_x, -display_h * 0.16), Vector2(side_w, stone_h))
+	var band_y := -display_h * 0.16
+	_cover(left_x - side_w * 0.5, left_x + side_w * 0.5, band_y, stone_h * 0.5)
+	_cover(right_x - side_w * 0.5, right_x + side_w * 0.5, band_y, stone_h * 0.5)
 	return true
 
 
@@ -281,7 +331,7 @@ func _place_rock(slot: int, tex: Texture2D, left: bool) -> int:
 	var hit_center := (gap_x - 14.0 - hit_w * 0.5) if left else (gap_x + gap_w + 14.0 + hit_w * 0.5)
 	hit_center = clampf(hit_center, hit_w * 0.5 + 4.0, RR.VIEW_W - hit_w * 0.5 - 4.0)
 	_show(slot, tex, Vector2(hit_center, 10.0), Vector2.ONE, not left)
-	_rect(slot, Vector2(hit_center, 10.0), Vector2(hit_w, height * 0.7))
+	_cover(hit_center - hit_w * 0.5, hit_center + hit_w * 0.5, 10.0, height * 0.35)
 	return slot + 1
 
 
@@ -308,7 +358,7 @@ func _layout_mine(spec: Dictionary) -> void:
 		var zone_r := gap_x - 18.0 if left else RR.VIEW_W - 18.0
 		var x := (zone_l + zone_r) * 0.5
 		_show(i, tex, Vector2(x, focus), Vector2.ONE * scale)
-		_circle(i, Vector2(x, focus), radius)
+		_cover(x - radius, x + radius, focus, radius)
 
 
 func _layout_jelly(spec: Dictionary) -> void:
@@ -324,7 +374,8 @@ func _layout_jelly(spec: Dictionary) -> void:
 		zone_r = gap_x - 16.0 if left else RR.VIEW_W - 16.0
 	var x := (zone_l + zone_r) * 0.5
 	_show(0, tex, Vector2(x, 0.0), Vector2.ONE)
-	_circle(0, Vector2(x, float(tex.get_height()) * 0.08), float(tex.get_width()) * 0.3)
+	var bell := float(tex.get_width()) * 0.3
+	_cover(x - bell, x + bell, float(tex.get_height()) * 0.08, bell)
 
 
 func _layout_wreck(spec: Dictionary) -> void:
@@ -351,4 +402,4 @@ func _layout_wreck(spec: Dictionary) -> void:
 	x = clampf(x, hit_w * 0.5 + 4.0, RR.VIEW_W - hit_w * 0.5 - 4.0)
 	_sprites[0].position = Vector2(x, 0.0)
 	_rest[0] = _sprites[0].position
-	_rect(0, Vector2(x, 0.0), Vector2(hit_w, hit_h))
+	_cover(x - hit_w * 0.5, x + hit_w * 0.5, 0.0, hit_h * 0.5)

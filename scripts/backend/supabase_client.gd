@@ -57,6 +57,11 @@ func _request_json(method: String, url: String, headers: PackedStringArray, body
 		cancel()
 	var http := HTTPRequest.new()
 	http.timeout = 8.0
+	http.process_mode = Node.PROCESS_MODE_ALWAYS
+	# Browsers decompress gzip before Godot reads the body, then still report
+	# Content-Encoding: gzip. Inflating that JSON again drops the response.
+	if OS.has_feature("web"):
+		http.accept_gzip = false
 	_host.add_child(http)
 	if use_shared:
 		_http = http
@@ -79,13 +84,21 @@ func _request_json(method: String, url: String, headers: PackedStringArray, body
 	result.status = status
 	var text := raw.get_string_from_utf8()
 	var parsed: Variant = null
+	var parsed_ok := true
 	if not text.is_empty():
 		var json := JSON.new()
 		if json.parse(text) == OK:
 			parsed = json.data
+		else:
+			parsed_ok = false
 	result.data = parsed
-	result.ok = status >= 200 and status < 300
-	result.error = "" if result.ok else "http_%d" % status
+	result.ok = status >= 200 and status < 300 and parsed_ok
+	if result.ok:
+		result.error = ""
+	elif not parsed_ok:
+		result.error = "invalid_json"
+	else:
+		result.error = "http_%d" % status
 	if not result.ok:
 		result.body_text = _public_body(text)
 		result.content_type = _content_type_label(headers)

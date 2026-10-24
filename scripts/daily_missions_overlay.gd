@@ -2,6 +2,7 @@ class_name DailyMissionsOverlay
 extends CanvasLayer
 
 const GlyphScript := preload("res://scripts/mission_glyph.gd")
+const ButtonFeedbackScript := preload("res://scripts/button_feedback.gd")
 const SpriteTextScript := preload("res://scripts/sprite_text.gd")
 
 const ART_PATH := "res://assets/sprites/daily_missions_card_board.png"
@@ -14,9 +15,9 @@ const SHADE := Color(0.0, 0.07, 0.16, 0.5)
 const SLOTS: PackedStringArray = ["easy", "medium", "hard"]
 
 const DESC := [
-	Rect2(348, 486, 280, 30),
-	Rect2(348, 630, 280, 30),
-	Rect2(348, 776, 280, 30),
+	Rect2(348, 482, 430, 50),
+	Rect2(348, 626, 430, 50),
+	Rect2(348, 772, 430, 50),
 ]
 # Interior of the painted bar, inside the frame. The fill is clipped to this groove.
 const TRACK := [
@@ -81,10 +82,11 @@ const SCREEN_FOCUS := Rect2(108, 140, 780, 1476)
 const SCREEN_CARD_RIGHT := 865.0
 const SCREEN_WATER := Color8(2, 16, 40)
 const COIN_ICON := "res://assets/ui/mission_icons/collect_coins.png"
+# Name band between the icon and the coin. Taller than the old caption so one short line reads large.
 const SCREEN_DESC := [
-	Rect2(248, 704, 390, 52),
-	Rect2(248, 848, 390, 68),
-	Rect2(248, 1004, 390, 68),
+	Rect2(220, 684, 458, 76),
+	Rect2(220, 812, 458, 106),
+	Rect2(222, 968, 456, 108),
 ]
 # Interior of the painted capsule, after the baked green fill was removed.
 const SCREEN_TRACK := [
@@ -97,30 +99,40 @@ const SCREEN_COUNT := [
 	Rect2(528, 924, 108, 32),
 	Rect2(528, 1082, 108, 32),
 ]
-# One shared cluster: 46px coin, 8px gap, 76px number, centered in each reward well.
+# Number, then the coin. One size for +5, +10, +20, and the +25 bonus.
+const REWARD_TEXT_H := 42.0
+const REWARD_COIN_H := 34.0
+const REWARD_GAP := 8.0
+const REWARD_CENTER_X := 755.0
+const SCREEN_REWARD_CENTER := [
+	Vector2(REWARD_CENTER_X, 753.0),
+	Vector2(REWARD_CENTER_X, 915.0),
+	Vector2(REWARD_CENTER_X, 1073.0),
+]
+const SCREEN_BONUS_CENTER := Vector2(REWARD_CENTER_X, 1235.0)
 const SCREEN_REWARD := [
-	Rect2(741, 733, 76, 40),
-	Rect2(739, 895, 76, 40),
-	Rect2(741, 1053, 76, 40),
+	Rect2(706.6, 732.0, 57.5, REWARD_TEXT_H),
+	Rect2(689.8, 894.0, 91.1, REWARD_TEXT_H),
+	Rect2(685.9, 1052.0, 98.8, REWARD_TEXT_H),
 ]
 const SCREEN_COIN_ICON := [
-	Rect2(687, 730, 46, 46),
-	Rect2(685, 892, 46, 46),
-	Rect2(687, 1050, 46, 46),
+	Rect2(772.1, 736.0, 31.4, REWARD_COIN_H),
+	Rect2(788.9, 898.0, 31.4, REWARD_COIN_H),
+	Rect2(792.7, 1056.0, 31.4, REWARD_COIN_H),
 ]
 const SCREEN_CHECK := [
-	Rect2(698, 699, 108, 108),
-	Rect2(696, 861, 108, 108),
-	Rect2(698, 1019, 108, 108),
+	Rect2(701, 699, 108, 108),
+	Rect2(701, 861, 108, 108),
+	Rect2(701, 1019, 108, 108),
 ]
 const SCREEN_COIN := [
 	Rect2(0, 0, 0, 0),
 	Rect2(0, 0, 0, 0),
 	Rect2(0, 0, 0, 0),
 ]
-const SCREEN_BONUS_REWARD := Rect2(743, 1215, 76, 40)
-const SCREEN_BONUS_COIN_ICON := Rect2(689, 1212, 46, 46)
-const SCREEN_BONUS_CHECK := Rect2(700, 1181, 108, 108)
+const SCREEN_BONUS_REWARD := Rect2(687.9, 1214.0, 94.9, REWARD_TEXT_H)
+const SCREEN_BONUS_COIN_ICON := Rect2(790.8, 1218.0, 31.4, REWARD_COIN_H)
+const SCREEN_BONUS_CHECK := Rect2(701, 1181, 108, 108)
 # Left, middle, and right circles under "COMPLETE ALL 3 MISSIONS".
 const SCREEN_STATUS := [
 	Rect2(274, 1227, 50, 50),
@@ -134,6 +146,18 @@ const SCREEN_ICONS := [
 	Rect2(133, 1026, 80, 80),
 ]
 const SCREEN_BACK := Rect2(200, 1418, 540, 168)
+# Bottom of the blue mission card, and the painted top of the Back button.
+const SCREEN_CARD_BOTTOM := 1328.0
+const SCREEN_BACK_FACE := 1432.0
+# One shared mission-name size, about a fifth smaller than the previous large captions.
+const SCREEN_DESC_PX := 35.0
+const SCREEN_RESET := Rect2(
+	(SCREEN_SIZE.x - 580.0) * 0.5,
+	(SCREEN_CARD_BOTTOM + SCREEN_BACK_FACE - 40.0) * 0.5,
+	580.0,
+	40.0
+)
+const LOBBY_RESET := Rect2(280, 430, 580, 36)
 signal dismissed
 
 const FOLD_SECS := 0.30
@@ -170,6 +194,9 @@ var _edge_bottom_tex: ImageTexture
 var _board_pixels: Image
 var _fill_ratio: Array[float] = [0.0, 0.0, 0.0]
 var _applied := false
+var _countdown: _BubbleText
+var _countdown_wait := 0.0
+var _countdown_refresh := false
 var _widget: Panel
 var _widget_icon: Control
 var _widget_count: SpriteText
@@ -263,6 +290,8 @@ func _ready() -> void:
 	var bonus_coin := SCREEN_BONUS_COIN_ICON if _screen else LOBBY_BONUS_COIN
 	var bonus_tex := COIN_ICON if _screen else LOBBY_BONUS_COIN_TEX
 	_bonus_coin_icon = _add_coin_icon(bonus_coin, bonus_tex)
+	if _screen:
+		_place_screen_reward(_bonus_text, _bonus_coin_icon, "+25", SCREEN_BONUS_CENTER)
 	_bonus_mark = _add_mark(_bonus_check)
 	if _screen:
 		_build_screen_back()
@@ -277,6 +306,10 @@ func _ready() -> void:
 		_status.append(_add_mark(_status_rect[i]))
 	_build_widget()
 	_build_toast()
+	_countdown = _BubbleText.new()
+	_countdown.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_host.add_child(_countdown)
+	_place_countdown(SCREEN_RESET if _screen else LOBBY_RESET)
 	if not get_viewport().size_changed.is_connected(layout_to_screen):
 		get_viewport().size_changed.connect(layout_to_screen)
 	layout_to_screen()
@@ -528,6 +561,19 @@ func _on_shade_input(event: InputEvent) -> void:
 	dismissed.emit()
 
 
+func _place_countdown(box: Rect2) -> void:
+	# Anchors keep the same spot on the scaled board at every phone size.
+	var bounds := _host.size
+	_countdown.anchor_left = box.position.x / bounds.x
+	_countdown.anchor_top = box.position.y / bounds.y
+	_countdown.anchor_right = box.end.x / bounds.x
+	_countdown.anchor_bottom = box.end.y / bounds.y
+	_countdown.offset_left = 0.0
+	_countdown.offset_top = 0.0
+	_countdown.offset_right = 0.0
+	_countdown.offset_bottom = 0.0
+
+
 func _build_screen_back() -> void:
 	var btn := Button.new()
 	btn.flat = true
@@ -541,6 +587,14 @@ func _build_screen_back() -> void:
 	btn.add_theme_stylebox_override("pressed", empty)
 	btn.add_theme_stylebox_override("focus", empty)
 	btn.pressed.connect(_dismiss_from_back)
+	ButtonFeedbackScript.use_plate(
+		btn,
+		load(SCREEN_PATH) as Texture2D,
+		SCREEN_BACK,
+		Rect2(247, 1432, 435, 132),
+		0.46,
+		"blue"
+	)
 	_host.add_child(btn)
 
 
@@ -618,6 +672,41 @@ static func widget_clears_play(rect: Rect2, screen: Vector2) -> bool:
 	return true
 
 
+func _process(delta: float) -> void:
+	if _countdown == null or _mode == "hidden":
+		return
+	_countdown_wait += delta
+	if _countdown_wait < 1.0:
+		return
+	_countdown_wait = 0.0
+	_refresh_countdown()
+
+
+func _refresh_countdown() -> void:
+	if _countdown == null:
+		return
+	var board: Dictionary = {}
+	if GameSession and GameSession.get("mission_board") is Dictionary:
+		board = GameSession.mission_board
+	var server_now := int(board.get("server_now", 0))
+	var resets_at := int(board.get("resets_at", 0))
+	var fetched_at := int(board.get("fetched_at", 0))
+	if server_now <= 0 or resets_at <= 0 or fetched_at <= 0:
+		_countdown.show_text("")
+		return
+	var left := DailyMissions.remaining_seconds(server_now, resets_at, fetched_at, int(Time.get_unix_time_from_system()))
+	_countdown.show_text(DailyMissions.format_countdown(left))
+	if left > 0:
+		_countdown_refresh = false
+		return
+	if _countdown_refresh:
+		return
+	_countdown_refresh = true
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("refresh_daily_missions"):
+		backend.refresh_daily_missions()
+
+
 func refresh_from_session() -> void:
 	var note := ""
 	var backend := get_node_or_null("/root/Backend")
@@ -638,12 +727,13 @@ func show_board(board: Dictionary, note: String) -> void:
 		var progress := int(row.get("progress", 0))
 		var complete := bool(row.get("complete", false))
 		var claimed := bool(row.get("claimed", false))
-		var description := DailyMissions.display_text(str(row.get("description", "")))
+		var mission_id := int(row.get("mission_id", 0))
+		var description := DailyMissions.display_text(str(row.get("description", "")), mission_id)
 		if description.is_empty():
 			if failed:
-				description = "Could not load missions" if i == 0 else ""
+				description = "Missions Unavailable" if i == 0 else ""
 			elif loading:
-				description = "Loading daily missions" if i == 0 else ""
+				description = "Loading Missions" if i == 0 else ""
 		_set_description(i, description)
 		_set_icon(i, 0 if row.is_empty() else int(row.get("mission_id", 0)))
 		var ratio := 0.0 if goal <= 0 else DailyMissions.progress_ratio(progress, goal)
@@ -661,15 +751,18 @@ func show_board(board: Dictionary, note: String) -> void:
 	var bonus_pending := bool(bonus.get("unlocked", false)) and not bonus_claimed
 	_show_bonus_reward(bonus_reward, bonus_pending, bonus_claimed)
 	_sync_widget(slots)
+	_refresh_countdown()
 	_applied = true
 
 
 func _build_row(index: int) -> void:
 	var description := _BubbleText.new()
 	description.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var inset := Vector2(12, 6) if _screen else Vector2(4, 1)
+	var inset := Vector2(2, 1)
 	description.position = _desc[index].position + inset
 	description.size = _desc[index].size - inset * 2.0
+	if _screen:
+		description.max_px = SCREEN_DESC_PX
 	_host.add_child(description)
 	_descriptions.append(description)
 	var track := Panel.new()
@@ -700,11 +793,16 @@ func _build_row(index: int) -> void:
 	counter.position = _count[index].position
 	_host.add_child(counter)
 	_counters.append(counter)
-	_reward_text.append(_reward_label(_reward[index], "+%d" % int(DailyMissions.REWARDS.get(SLOTS[index], 0))))
+	var amount := int(DailyMissions.REWARDS.get(SLOTS[index], 0))
+	var reward_label := _reward_label(_reward[index], "+%d" % amount)
+	_reward_text.append(reward_label)
 	_coin_covers.append(_add_coin_cover(_coin[index]))
 	var icon_rect: Rect2 = SCREEN_COIN_ICON[index] if _screen else LOBBY_COIN[index]
 	var icon_tex := COIN_ICON if _screen else LOBBY_COIN_TEX[index]
-	_coin_icons.append(_add_coin_icon(icon_rect, icon_tex))
+	var reward_coin := _add_coin_icon(icon_rect, icon_tex)
+	_coin_icons.append(reward_coin)
+	if _screen:
+		_place_screen_reward(reward_label, reward_coin, "+%d" % amount, SCREEN_REWARD_CENTER[index])
 	_marks.append(_add_mark(_check[index]))
 	var holder := Control.new()
 	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -838,7 +936,10 @@ func _set_reward(index: int, reward: int, _complete: bool, claimed: bool, known:
 	if index < _coin_icons.size():
 		_coin_icons[index].visible = show_coins and _coin_icons[index].size.x > 1.0
 	if show_coins:
-		_set_reward_text(_reward_text[index], "+%d" % reward, _reward[index].size)
+		if _screen and index < _coin_icons.size():
+			_place_screen_reward(_reward_text[index], _coin_icons[index], "+%d" % reward, SCREEN_REWARD_CENTER[index])
+		else:
+			_set_reward_text(_reward_text[index], "+%d" % reward, _reward[index].size)
 	_marks[index].set_mode("done" if rewarded else "")
 
 
@@ -854,7 +955,10 @@ func _show_bonus_reward(reward: int, pending: bool, claimed: bool) -> void:
 	if _bonus_coin_icon:
 		_bonus_coin_icon.visible = show_coins and _bonus_coin_icon.size.x > 1.0
 	if show_coins:
-		_set_reward_text(_bonus_text, "+%d" % reward, _bonus_reward.size)
+		if _screen:
+			_place_screen_reward(_bonus_text, _bonus_coin_icon, "+%d" % reward, SCREEN_BONUS_CENTER)
+		else:
+			_set_reward_text(_bonus_text, "+%d" % reward, _bonus_reward.size)
 	_bonus_mark.set_mode("done" if rewarded else "")
 
 
@@ -874,6 +978,32 @@ func _slots_by_name(board: Dictionary) -> Dictionary:
 
 func _set_reward_text(label: SpriteText, value: String, _box: Vector2) -> void:
 	label.set_value(value)
+
+
+# "+10" then the coin, centered in the blue well. Every amount uses the same size.
+func _place_screen_reward(label: SpriteText, coin: TextureRect, value: String, center: Vector2) -> void:
+	var text_w := label.layout_width(value, REWARD_TEXT_H, true)
+	var coin_w := REWARD_COIN_H * (166.0 / 180.0)
+	var left := center.x - (text_w + REWARD_GAP + coin_w) * 0.5
+	var text_box := Vector2(text_w, REWARD_TEXT_H)
+	label.position = Vector2(left, center.y - REWARD_TEXT_H * 0.5)
+	label.configure(value, REWARD_TEXT_H, text_box, HORIZONTAL_ALIGNMENT_LEFT, true, false)
+	label.resize_box(REWARD_TEXT_H, text_box)
+	label.z_index = 2
+	_tint_reward_plus(label)
+	if coin == null:
+		return
+	coin.position = Vector2(left + text_w + REWARD_GAP, center.y - REWARD_COIN_H * 0.5)
+	coin.size = Vector2(coin_w, REWARD_COIN_H)
+
+
+func _tint_reward_plus(label: SpriteText) -> void:
+	for child in label.get_children():
+		var glyph := child as TextureRect
+		if glyph == null or glyph.texture == null:
+			continue
+		if str(glyph.texture.resource_path).ends_with("alpha_plus.png"):
+			glyph.modulate = Color(1.0, 0.86, 0.22)
 
 
 func _viewport_size() -> Vector2:
@@ -1319,6 +1449,7 @@ func _rounded(color: Color, radius: int) -> StyleBoxFlat:
 class _BubbleText extends Control:
 	var _value := ""
 	var line_count := 1
+	var max_px := 0.0
 
 	func show_text(value: String) -> void:
 		var next := value.strip_edges()
@@ -1338,18 +1469,32 @@ class _BubbleText extends Control:
 		var max_h := _sample_height(words)
 		var best_lines: Array = []
 		var best_scale := 18.0 / max_h
-		for px in range(int(size.y), 17, -1):
+		var wrapped: Array = []
+		var wrapped_scale := best_scale
+		var limit := int(size.y)
+		if max_px > 0.0:
+			limit = mini(limit, int(max_px))
+		for px in range(limit, 17, -1):
 			var scale := float(px) / max_h
 			var packed := _pack(words, scale, max_h)
 			if packed.is_empty():
 				continue
 			var lines := packed.size()
 			var block := float(px) * float(lines) + 4.0 * float(lines - 1)
-			if block <= size.y + 0.5:
+			if block > size.y + 0.5:
+				continue
+			if lines == 1:
 				best_lines = packed
 				best_scale = scale
-				line_count = lines
+				line_count = 1
 				break
+			if wrapped.is_empty():
+				wrapped = packed
+				wrapped_scale = scale
+		if best_lines.is_empty() and not wrapped.is_empty():
+			best_lines = wrapped
+			best_scale = wrapped_scale
+			line_count = best_lines.size()
 		if best_lines.is_empty():
 			best_lines = _force_lines(words)
 			line_count = best_lines.size()

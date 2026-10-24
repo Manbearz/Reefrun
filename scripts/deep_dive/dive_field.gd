@@ -17,6 +17,9 @@ var _decor_y: PackedFloat32Array = PackedFloat32Array()
 var _decor_speed: PackedFloat32Array = PackedFloat32Array()
 var _wash: Polygon2D
 var _prepared := false
+var _hit := false
+var _debug_fish := Vector2.ZERO
+var _debug_lane := 0
 
 
 func _ready() -> void:
@@ -92,6 +95,7 @@ func stop_and_clear() -> void:
 func halt() -> void:
 	_running = false
 	_clearing = false
+	_hit = false
 	_release_all()
 	visible = false
 	if _wash:
@@ -109,7 +113,16 @@ func fall_speed() -> float:
 	return _speed * (3.4 if _clearing else 1.0)
 
 
-func tick(delta: float, fish_y: float) -> Vector2i:
+func take_hit() -> bool:
+	if not _hit:
+		return false
+	_hit = false
+	return true
+
+
+# fish_x < 0 skips the lane test. Callers that only scroll, including the
+# intro and the outro, pass the two-argument form.
+func tick(delta: float, fish_y: float, fish_x: float = -1.0) -> Vector2i:
 	var dodged := 0
 	var mines := 0
 	var step := _speed * maxf(delta, 0.0)
@@ -117,10 +130,18 @@ func tick(delta: float, fish_y: float) -> Vector2i:
 		step *= 3.4
 	if _running or _clearing:
 		_scroll += step
+	var player_lane := -1
+	if fish_x >= 0.0:
+		player_lane = DeepDiveConfig.lane_at(fish_x)
+		_debug_fish = Vector2(fish_x, fish_y)
+		_debug_lane = player_lane
+	_hit = false
 	for i in range(_live.size() - 1, -1, -1):
 		var obs := _live[i]
 		obs.advance(step)
 		obs.tick_local(delta)
+		if player_lane > 0 and _running and obs.hits_player(player_lane, fish_y):
+			_hit = true
 		if _running and not obs.passed and obs.position.y < fish_y - 24.0:
 			obs.passed = true
 			dodged += 1
@@ -133,7 +154,44 @@ func tick(delta: float, fish_y: float) -> Vector2i:
 	if _clearing and _live.is_empty():
 		_clearing = false
 	_tick_decor(step)
+	if DeepDiveConfig.collision_debug():
+		queue_redraw()
 	return Vector2i(dodged, mines)
+
+
+func _draw() -> void:
+	if not DeepDiveConfig.collision_debug():
+		return
+	var font := ThemeDB.fallback_font
+	var bounds := Color(0.45, 0.9, 1.0, 0.5)
+	var top := -80.0
+	var bottom := RR.screen_bottom()
+	for lane in range(1, DeepDiveConfig.LANE_COUNT + 1):
+		var left := DeepDiveConfig.lane_center(lane) - DeepDiveConfig.LANE_GAP * 0.5
+		draw_line(Vector2(left, top), Vector2(left, bottom), bounds, 1.0)
+		if font != null:
+			draw_string(font, Vector2(left + 6.0, 28.0), str(lane), HORIZONTAL_ALIGNMENT_LEFT, -1, 14, bounds)
+	var right_edge := DeepDiveConfig.lane_center(DeepDiveConfig.LANE_COUNT) + DeepDiveConfig.LANE_GAP * 0.5
+	draw_line(Vector2(right_edge, top), Vector2(right_edge, bottom), bounds, 1.0)
+	for obs in _live:
+		if not obs.active or obs.occupied.is_empty():
+			continue
+		var eligible := _debug_lane > 0 and obs.hits_player(_debug_lane, _debug_fish.y)
+		var fill := Color(1.0, 0.25, 0.18, 0.85) if eligible else Color(1.0, 0.72, 0.2, 0.7)
+		var band_y := obs.position.y + obs.band_center - obs.band_half
+		var band_h := maxf(obs.band_half * 2.0, 4.0)
+		for blocked in obs.occupied:
+			var lane_left := DeepDiveConfig.lane_center(int(blocked)) - DeepDiveConfig.LANE_GAP * 0.5
+			draw_rect(Rect2(lane_left, band_y, DeepDiveConfig.LANE_GAP, band_h), fill, false, 2.0)
+		if font != null:
+			var mark := "hit" if eligible else "clear"
+			draw_string(font, Vector2(8.0, band_y - 4.0), "%s %s" % [obs.kind, mark], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, fill)
+	if _debug_lane > 0:
+		var fish_left := DeepDiveConfig.lane_center(_debug_lane) - DeepDiveConfig.LANE_GAP * 0.5
+		var fish_h := DeepDiveConfig.fish_half_y() * 2.0
+		draw_rect(Rect2(fish_left, _debug_fish.y - DeepDiveConfig.fish_half_y(), DeepDiveConfig.LANE_GAP, fish_h), Color(0.3, 1.0, 0.6, 0.95), false, 2.0)
+		if font != null:
+			draw_string(font, Vector2(_debug_fish.x + 12.0, _debug_fish.y - 10.0), "lane %d" % _debug_lane, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.3, 1.0, 0.6, 0.95))
 
 
 func live_count() -> int:

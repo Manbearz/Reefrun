@@ -35,4 +35,5 @@ static func make_icon_button(texture: Texture2D, pressed: Callable, scale := 0.7
 	button.custom_minimum_size = size
 	button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	button.pressed.connect(pressed)
+	preload("res://scripts/button_feedback.gd").attach(button)
 	return button
