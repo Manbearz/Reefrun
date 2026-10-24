@@ -199,8 +199,8 @@ jobs:
               ios_preset = preset[ios_at:ios_end]
           if 'application/short_version="1.0.0"' not in ios_preset:
               problems.append("iOS marketing version (CFBundleShortVersionString) must stay 1.0.0.")
-          if 'application/version="5"' not in ios_preset:
-              problems.append("iOS build number (CFBundleVersion) must be 5.")
+          if 'application/version="6"' not in ios_preset:
+              problems.append("iOS build number (CFBundleVersion) must be 6.")
           if "NSUserTrackingUsageDescription" not in ios_preset:
               problems.append("iOS export is missing NSUserTrackingUsageDescription.")
           if "privacy/tracking_enabled=true" not in ios_preset:
@@ -788,6 +788,18 @@ jobs:
       - name: Check the exported iOS build number
         run: |
           set -euo pipefail
+          PBX="build/Reefrun.xcodeproj/project.pbxproj"
+          perl -i -pe 's/CURRENT_PROJECT_VERSION = [^;]+;/CURRENT_PROJECT_VERSION = 6;/g; s/MARKETING_VERSION = [^;]+;/MARKETING_VERSION = 1.0.0;/g' "$PBX"
+          found_plist=0
+          while IFS= read -r plist; do
+            found_plist=$((found_plist + 1))
+            /usr/libexec/PlistBuddy -c 'Set :CFBundleVersion 6' "$plist"
+            /usr/libexec/PlistBuddy -c 'Set :CFBundleShortVersionString 1.0.0' "$plist"
+          done < <(find build -name '*-Info.plist' -type f)
+          if [ "$found_plist" -lt 1 ]; then
+            echo "Godot did not export an Info.plist."
+            exit 1
+          fi
           python3 - <<'PY'
           import pathlib
           import plistlib
@@ -798,8 +810,8 @@ jobs:
           builds = [value.strip().strip('"') for value in re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", pbx)]
           marketing = [value.strip().strip('"') for value in re.findall(r"MARKETING_VERSION = ([^;]+);", pbx)]
           problems = []
-          if not builds or any(value != "5" for value in builds):
-              problems.append(f"Xcode CURRENT_PROJECT_VERSION must be 5, found {builds or 'none'}.")
+          if not builds or any(value != "6" for value in builds):
+              problems.append(f"Xcode CURRENT_PROJECT_VERSION must be 6, found {builds or 'none'}.")
           if not marketing or any(value != "1.0.0" for value in marketing):
               problems.append(f"Xcode MARKETING_VERSION must be 1.0.0, found {marketing or 'none'}.")
           plists = list(pathlib.Path("build").rglob("*-Info.plist"))
@@ -810,8 +822,8 @@ jobs:
                   data = plistlib.load(handle)
               bundle = str(data.get("CFBundleVersion", ""))
               short = str(data.get("CFBundleShortVersionString", ""))
-              if bundle not in {"5", "$(CURRENT_PROJECT_VERSION)"}:
-                  problems.append(f"{plist_path.name} CFBundleVersion is {bundle!r}, expected 5.")
+              if bundle not in {"6", "$(CURRENT_PROJECT_VERSION)"}:
+                  problems.append(f"{plist_path.name} CFBundleVersion is {bundle!r}, expected 6.")
               if short not in {"1.0.0", "$(MARKETING_VERSION)"}:
                   problems.append(f"{plist_path.name} CFBundleShortVersionString is {short!r}, expected 1.0.0.")
               app_id = str(data.get("GADApplicationIdentifier", ""))
@@ -837,7 +849,7 @@ jobs:
           if problems:
               print("\n".join(problems))
               sys.exit(1)
-          print(f"Exported iOS build number is 5. Marketing version is 1.0.0. AdMob app id, tracking description, and SDK reference are present. Checked {len(plists)} Info.plist file(s).")
+          print(f"Exported iOS build number is 6. Marketing version is 1.0.0. AdMob app id, tracking description, and SDK reference are present. Checked {len(plists)} Info.plist file(s).")
           PY
 
       - name: Resolve the Google Mobile Ads Swift package
@@ -870,7 +882,7 @@ jobs:
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             CODE_SIGN_IDENTITY="Apple Distribution" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
-            CURRENT_PROJECT_VERSION=5 \
+            CURRENT_PROJECT_VERSION=6 \
             MARKETING_VERSION=1.0.0 \
             archive
 
@@ -916,8 +928,33 @@ jobs:
           echo "Signed IPA bundle id: ${BUILT_ID}"
           echo "Signed IPA version: ${BUILT_SHORT} (${BUILT_VERSION})"
           test "$BUILT_ID" = "$BUNDLE_ID"
-          test "$BUILT_VERSION" = "5"
+          test "$BUILT_VERSION" = "6"
           test "$BUILT_SHORT" = "1.0.0"
+
+      - name: Verify the finished IPA before upload
+        run: |
+          set -euo pipefail
+          IPA="${IPA_PATH:-build/Reefrun.ipa}"
+          if [ ! -f "$IPA" ]; then
+            echo "Finished IPA is missing: ${IPA}"
+            exit 1
+          fi
+          rm -rf "$RUNNER_TEMP/ipa-version"
+          mkdir -p "$RUNNER_TEMP/ipa-version"
+          unzip -q "$IPA" -d "$RUNNER_TEMP/ipa-version"
+          APP="$(find "$RUNNER_TEMP/ipa-version/Payload" -name '*.app' -maxdepth 1 | head -n 1)"
+          test -n "$APP"
+          BUILT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+          BUILT_SHORT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")"
+          BUILT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")"
+          echo "Finished IPA: ${IPA}"
+          echo "CFBundleIdentifier=${BUILT_ID}"
+          echo "CFBundleShortVersionString=${BUILT_SHORT}"
+          echo "CFBundleVersion=${BUILT_VERSION}"
+          if [ "$BUILT_ID" != "com.lunarentertainment.reefrun" ] || [ "$BUILT_SHORT" != "1.0.0" ] || [ "$BUILT_VERSION" != "6" ]; then
+            echo "Refusing to upload. Expected com.lunarentertainment.reefrun, marketing version 1.0.0, and CFBundleVersion 6."
+            exit 1
+          fi
 
       - name: Upload the IPA artifact
         uses: actions/upload-artifact@v4
@@ -952,8 +989,8 @@ jobs:
             echo "The App Store Connect API private key did not decode to a file."
             exit 1
           fi
-          IPA="$(find build "${RUNNER_TEMP}/ipa" -name '*.ipa' -type f 2>/dev/null | head -n 1 || true)"
-          if [ -z "$IPA" ] || [ ! -f "$IPA" ]; then
+          IPA="${IPA_PATH:-build/Reefrun.ipa}"
+          if [ ! -f "$IPA" ]; then
             echo "No exported IPA was found to upload."
             exit 1
           fi

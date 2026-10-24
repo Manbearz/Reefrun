@@ -68,13 +68,14 @@ func _picture(id: String, width_ratio: float) -> TextureRect:
 
 
 func _layout() -> void:
-	_place(_banner, 0.72, 168.0)
-	_place(_seconds, 0.46, 252.0)
+	var insets := RR.display_insets(RR.screen_size())
+	_place(_banner, 0.72, 168.0 + insets.y)
+	_place(_seconds, 0.46, 252.0 + insets.y)
 	if _hint:
-		_hint.position = Vector2(12, RR.screen_bottom() - 78.0)
+		_hint.position = Vector2(12, RR.screen_bottom() - 78.0 - insets.w)
 		_hint.size = Vector2(RR.VIEW_W - 24, 28)
 	if _survived:
-		_survived.position = Vector2(0, 168.0)
+		_survived.position = Vector2(0, 168.0 + insets.y)
 		_survived.size = Vector2(RR.VIEW_W, 56)
 
 

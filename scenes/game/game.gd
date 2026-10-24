@@ -1207,17 +1207,21 @@ func _show_over(rank: int, remaining: int) -> void:
 	if share_tex:
 		share_src = Vector2(share_tex.get_width(), share_tex.get_height())
 	var gap := 6.0
-	var card_scale := RR.VIEW_W / src_w
-	var menu_w := RR.VIEW_W * 0.92
+	var screen := RR.screen_size()
+	var insets := RR.display_insets(screen)
+	var avail_w := maxf(64.0, screen.x - insets.x - insets.z)
+	var avail_h := maxf(64.0, screen.y - insets.y - insets.w)
+	var card_scale := minf(avail_w, RR.VIEW_W) / src_w
+	var menu_w := minf(avail_w, RR.VIEW_W) * 0.92
 	var menu_h := menu_w * (menu_src.y / menu_src.x)
 	var card_h := src_h * card_scale
-	if card_h + gap + menu_h > RR.VIEW_H - 8.0:
-		card_scale *= (RR.VIEW_H - 8.0 - gap - menu_h) / card_h
+	if card_h + gap + menu_h > avail_h - 8.0:
+		card_scale *= (avail_h - 8.0 - gap - menu_h) / card_h
 		card_h = src_h * card_scale
 	var card_size := Vector2(src_w, src_h) * card_scale
 	var stack_h := card_h + gap + menu_h
-	var stack_y := (RR.VIEW_H - stack_h) * 0.5
-	var card_pos := Vector2((RR.VIEW_W - card_size.x) * 0.5, stack_y)
+	var stack_y := insets.y + (avail_h - stack_h) * 0.5
+	var card_pos := Vector2(insets.x + (avail_w - card_size.x) * 0.5, stack_y)
 	var card := TextureRect.new()
 	card.texture = tex
 	card.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
@@ -1249,7 +1253,7 @@ func _show_over(rank: int, remaining: int) -> void:
 	_wipe_menu.texture_normal = menu_tex
 	_wipe_menu.ignore_texture_size = true
 	_wipe_menu.stretch_mode = TextureButton.STRETCH_KEEP_ASPECT_CENTERED
-	_wipe_menu.position = Vector2((RR.VIEW_W - menu_w) * 0.5, stack_y + card_h + gap)
+	_wipe_menu.position = Vector2(insets.x + (avail_w - menu_w) * 0.5, stack_y + card_h + gap)
 	_wipe_menu.size = Vector2(menu_w, menu_h)
 	_wipe_menu.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	_wipe_menu.pressed.connect(_menu)

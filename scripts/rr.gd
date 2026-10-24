@@ -171,6 +171,43 @@ static func screen_size() -> Vector2:
 	return Vector2(VIEW_W, screen_bottom())
 
 
+# Portrait phones keep this width. 16:9 is exactly VIEW_H. A taller ratio
+# adds visible water below the original layout instead of stretching it.
+static func portrait_content_height(long_over_short: float) -> float:
+	return VIEW_W * long_over_short
+
+
+# Safe area in content-viewport pixels. Desktop and headless windows report
+# no inset, so existing positions stay put. A bad reading cannot eat more
+# than a fifth of the screen.
+static func display_insets(screen: Vector2) -> Vector4:
+	var window := DisplayServer.window_get_size()
+	if window.x <= 0 or window.y <= 0 or screen.x <= 0.0 or screen.y <= 0.0:
+		return Vector4.ZERO
+	var safe := DisplayServer.get_display_safe_area()
+	var sx := screen.x / float(window.x)
+	var sy := screen.y / float(window.y)
+	var right := float(window.x - safe.position.x - safe.size.x)
+	var bottom := float(window.y - safe.position.y - safe.size.y)
+	return Vector4(
+		clampf(safe.position.x * sx, 0.0, screen.x * 0.2),
+		clampf(safe.position.y * sy, 0.0, screen.y * 0.2),
+		clampf(right * sx, 0.0, screen.x * 0.2),
+		clampf(bottom * sy, 0.0, screen.y * 0.2)
+	)
+
+
+# One scale for both axes, centered in the space left after the safe area.
+# The returned rect has the art's proportions and stays inside the screen.
+static func uniform_fit(art: Vector2, screen: Vector2, margins: Vector4) -> Rect2:
+	var avail_w := maxf(1.0, screen.x - margins.x - margins.z)
+	var avail_h := maxf(1.0, screen.y - margins.y - margins.w)
+	var scale := minf(avail_w / maxf(art.x, 1.0), avail_h / maxf(art.y, 1.0))
+	var size := art * scale
+	var origin := Vector2(margins.x, margins.y) + Vector2(avail_w - size.x, avail_h - size.y) * 0.5
+	return Rect2(origin, size)
+
+
 static func lobby_length(show_missions: bool) -> float:
 	if show_missions:
 		return UNLIMITED_LOBBY_SECS

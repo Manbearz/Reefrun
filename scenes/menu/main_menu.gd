@@ -92,6 +92,8 @@ var _wallet_flash := 0.0
 var _bob_t := 0.0
 var _card_pos := Vector2.ZERO
 var _card_scale := 1.0
+var _card_base_y := 0.0
+var _card_followers: Array[CanvasItem] = []
 var _score_pos := Vector2.ZERO
 var _score_scale := Vector2.ONE
 var _score_back: Button
@@ -131,7 +133,8 @@ func _ready() -> void:
 	_card_scale = RR.VIEW_W / OVERLAY_W
 	var card_size := Vector2(OVERLAY_W, OVERLAY_H) * _card_scale
 	var fish_strip := 210.0
-	_card_pos = Vector2((RR.VIEW_W - card_size.x) * 0.5, clampf((RR.VIEW_H - card_size.y - fish_strip) * 0.42, 10.0, 90.0))
+	_card_base_y = clampf((RR.VIEW_H - card_size.y - fish_strip) * 0.42, 10.0, 90.0)
+	_card_pos = Vector2((RR.VIEW_W - card_size.x) * 0.5, _card_base_y)
 	_home = _layer()
 	_scores = _layer()
 	_scores.visible = false
@@ -161,6 +164,7 @@ func _ready() -> void:
 		backend.daily_missions_changed.connect(_on_menu_missions)
 	if not get_viewport().size_changed.is_connected(_sync_menu_anchor):
 		get_viewport().size_changed.connect(_sync_menu_anchor)
+	_sync_menu_anchor()
 
 
 func _process(delta: float) -> void:
@@ -306,7 +310,9 @@ func _layer() -> Control:
 
 
 func _build_home(card_size: Vector2) -> void:
-	_home.add_child(_overlay_card(Sprites.tex("main_menu_overlay"), card_size, _card_pos, true))
+	var card := _overlay_card(Sprites.tex("main_menu_overlay"), card_size, _card_pos, true)
+	_home.add_child(card)
+	_follow_card(card)
 	_name_edit = LineEdit.new()
 	_name_edit.text = GameSession.clamp_player_name(GameSession.player_name)
 	_name_edit.placeholder_text = "YOUR NAME..."
@@ -323,12 +329,15 @@ func _build_home(card_size: Vector2) -> void:
 	_name_edit.text_changed.connect(_on_name_changed)
 	_name_edit.text_submitted.connect(func(_t: String): _play())
 	_home.add_child(_name_edit)
+	_follow_card(_name_edit)
 	var play := _hotspot(PLAY_BOX, _play, _card_pos, _card_scale)
 	_mark_plate(play, "main_menu_overlay", PLAY_BOX, Rect2(256, 906, 628, 173), 0.46, "wood")
 	_home.add_child(play)
+	_follow_card(play)
 	var scores_btn := _hotspot(SCORE_BOX, _show_scores, _card_pos, _card_scale)
 	_mark_plate(scores_btn, "main_menu_overlay", SCORE_BOX, Rect2(218, 1132, 714, 152), 0.46, "blue")
 	_home.add_child(scores_btn)
+	_follow_card(scores_btn)
 	_build_fish_picker()
 	_build_hat_picker()
 
@@ -401,7 +410,22 @@ func _hat_row_under_fish(hat_clip_h: float) -> float:
 	return minf(hat_y, bottom - hat_clip_h - 6.0)
 
 
+func _follow_card(node: CanvasItem) -> void:
+	node.set_meta("card_dy", node.position.y - _card_pos.y)
+	_card_followers.append(node)
+
+
+func _apply_home_safe_top() -> void:
+	var top := RR.display_insets(RR.screen_size()).y
+	_card_pos.y = maxf(_card_base_y, top)
+	for node in _card_followers:
+		if node == null:
+			continue
+		node.position.y = _card_pos.y + float(node.get_meta("card_dy", 0.0))
+
+
 func _sync_menu_anchor() -> void:
+	_apply_home_safe_top()
 	var bottom := RR.screen_bottom()
 	if _ground:
 		_ground.position = Vector2(0, bottom - RR.GROUND_H)
@@ -1210,17 +1234,19 @@ func _score_back_hit(pos: Vector2) -> bool:
 
 
 func _score_art_rect(src: Rect2) -> Rect2:
-	return Rect2(src.position * _score_scale, src.size * _score_scale)
+	return Rect2(_score_pos + src.position * _score_scale, src.size * _score_scale)
 
 
 func _layout_scores() -> void:
 	if _score_card == null:
 		return
 	var screen := RR.screen_size()
-	_score_scale = Vector2(screen.x / SCORE_W, screen.y / SCORE_H)
-	_score_pos = Vector2.ZERO
-	_score_card.position = Vector2.ZERO
-	_score_card.size = screen
+	var fitted := RR.uniform_fit(Vector2(SCORE_W, SCORE_H), screen, RR.display_insets(screen))
+	_score_scale = Vector2(fitted.size.x / SCORE_W, fitted.size.y / SCORE_H)
+	_score_pos = fitted.position
+	_score_card.stretch_mode = TextureRect.STRETCH_SCALE
+	_score_card.position = fitted.position
+	_score_card.size = fitted.size
 	if _score_back:
 		var back := _score_art_rect(BACK_BOX)
 		_score_back.position = back.position
@@ -1239,7 +1265,7 @@ func _place_score_line(line: SpriteTextScript, src: Rect2, glyph_h: float) -> vo
 	if line == null:
 		return
 	var box := Vector2(src.size.x * _score_scale.x, src.size.y * _score_scale.y)
-	line.position = src.position * _score_scale
+	line.position = _score_pos + src.position * _score_scale
 	var height := glyph_h if glyph_h > 0.0 else box.y * 0.92
 	line.resize_box(height, box)
 
@@ -1248,12 +1274,25 @@ func _score_arrow_hit(pos: Vector2) -> bool:
 	return _score_arrow_left_rect.has_point(pos) or _score_arrow_right_rect.has_point(pos)
 
 
+func _score_arrow_boxes(y: float, size: Vector2) -> Array[Rect2]:
+	var screen := RR.screen_size()
+	var margins := RR.display_insets(screen)
+	var card := Rect2(_score_card.position, _score_card.size) if _score_card else Rect2(Vector2.ZERO, screen)
+	var left := Rect2(maxf(card.position.x + 4.0, margins.x + 4.0), y, size.x, size.y)
+	var right_x := minf(card.end.x - 4.0 - size.x, screen.x - margins.z - 4.0 - size.x)
+	var boxes: Array[Rect2] = []
+	boxes.append(left)
+	boxes.append(Rect2(right_x, y, size.x, size.y))
+	return boxes
+
+
 func _build_score_arrows() -> void:
 	var size := Vector2(ARROW_BOX, ARROW_BOX)
 	var back := _score_art_rect(BACK_BOX)
 	var y := back.position.y + (back.size.y - size.y) * 0.5
-	var left := Rect2(4.0, y, size.x, size.y)
-	var right := Rect2(RR.screen_size().x - 4.0 - size.x, y, size.x, size.y)
+	var boxes := _score_arrow_boxes(y, size)
+	var left := boxes[0]
+	var right := boxes[1]
 	_score_arrow_left_rect = left.grow(6.0)
 	_score_arrow_right_rect = right.grow(6.0)
 	_score_arrow_left_icon = _score_arrow_icon("btn_score_left", left)
@@ -1272,8 +1311,9 @@ func _layout_score_arrows() -> void:
 	var size := Vector2(ARROW_BOX, ARROW_BOX)
 	var back := _score_art_rect(BACK_BOX)
 	var y := back.position.y + (back.size.y - size.y) * 0.5
-	var left := Rect2(4.0, y, size.x, size.y)
-	var right := Rect2(RR.screen_size().x - 4.0 - size.x, y, size.x, size.y)
+	var boxes := _score_arrow_boxes(y, size)
+	var left := boxes[0]
+	var right := boxes[1]
 	_score_arrow_left_rect = left.grow(6.0)
 	_score_arrow_right_rect = right.grow(6.0)
 	_place_score_arrow(_score_arrow_left_icon, _score_arrow_left_btn, left, _score_arrow_left_rect)
@@ -1472,10 +1512,12 @@ func _layout_mode_overlay() -> void:
 	if _mode_card == null or _modes == null:
 		return
 	var screen := RR.screen_size()
-	_mode_scale = Vector2(screen.x / MODE_W, screen.y / MODE_H)
-	_mode_origin = Vector2.ZERO
-	_mode_card.position = Vector2.ZERO
-	_mode_card.size = screen
+	var fitted := RR.uniform_fit(Vector2(MODE_W, MODE_H), screen, RR.display_insets(screen))
+	_mode_scale = Vector2(fitted.size.x / MODE_W, fitted.size.y / MODE_H)
+	_mode_origin = fitted.position
+	_mode_card.stretch_mode = TextureRect.STRETCH_SCALE
+	_mode_card.position = fitted.position
+	_mode_card.size = fitted.size
 	_place_hotspot(_mode_unlimited, MODE_UNLIMITED)
 	_place_hotspot(_daily_button, MODE_DAILY)
 	_place_hotspot(_mission_button, MODE_MISSIONS)

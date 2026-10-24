@@ -1,0 +1,267 @@
+# Builds a signed ReefRun Android APK and AAB on a GitHub-hosted Ubuntu machine.
+# This workflow does not run on push. Start it by hand from the Actions tab.
+# Google Play publishing is not implemented. The checkbox cannot upload to Play.
+
+name: Android build
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_play:
+        description: Publish to Google Play (not available)
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-build
+  cancel-in-progress: false
+
+jobs:
+  android:
+    name: Export APK and AAB
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GODOT_VERSION: 4.7.2-stable
+      GODOT_TEMPLATE_DIR: 4.7.2.stable
+      BUNDLE_ID: com.lunarentertainment.reefrun
+      GODOT_LINUX_SHA256: cadd3204e728a35d3f13adb7fd0d7902636b79f6b95c40c265eb73b6c35329e4
+      GODOT_TEMPLATES_SHA256: f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011
+      ANDROID_HOME: /opt/android-sdk
+      ANDROID_CMDLINE_TOOLS: commandlinetools-linux-13114758_latest.zip
+    steps:
+      - name: Check out the project
+        uses: actions/checkout@v4
+
+      - name: Refuse Google Play publishing
+        if: ${{ inputs.publish_play }}
+        run: |
+          echo "Google Play publishing is disabled. Run this workflow with the checkbox off to build the APK and AAB."
+          exit 1
+
+      - name: Check the Android release settings
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          root = pathlib.Path(".")
+          preset = (root / "export_presets.cfg").read_text(encoding="utf-8")
+          project = (root / "project.godot").read_text(encoding="utf-8")
+          ads = (root / "scripts/ads/ad_config.gd").read_text(encoding="utf-8")
+          problems = []
+          start = preset.find('name="Android"')
+          if start < 0:
+              problems.append("Android export preset was not found.")
+              android = ""
+          else:
+              nxt = re.search(r"\n\[preset\.\d+\]\n", preset[start + 1:])
+              end = start + 1 + nxt.start() if nxt else len(preset)
+              android = preset[start:end]
+          required = {
+              'package/unique_name="com.lunarentertainment.reefrun"': "Android package is not com.lunarentertainment.reefrun.",
+              'version/name="1.0.0"': "Android version name must stay 1.0.0.",
+              "version/code=1": "Android version code must stay 1 until a later build is approved.",
+              'exclude_filter="res://tools/*,tools/*"': "Android export must exclude tools/.",
+              "gradle_build/use_gradle_build=true": "Android export must use the Gradle build so AdMob can link.",
+              "gradle_build/export_format=1": "The stored Android preset must export an AAB. The workflow also builds an APK.",
+              "architectures/arm64-v8a=true": "Android export must include arm64-v8a.",
+              "screen/edge_to_edge=true": "Android export must use edge-to-edge so safe areas are reported.",
+              "package/signed=true": "Android export must be signed.",
+              'keystore/release=""': "The release keystore path must stay empty in git.",
+              'keystore/release_user=""': "The release key alias must stay empty in git.",
+              'keystore/release_password=""': "The release keystore password must stay empty in git.",
+          }
+          for needle, message in required.items():
+              if needle not in android:
+                  problems.append(message)
+          if 'application/bundle_identifier="com.lunarentertainment.reefrun"' not in preset:
+              problems.append("iOS bundle identifier changed while preparing Android.")
+          if 'general/android/app_id="ca-app-pub-5190108736982657~2452653885"' not in project:
+              problems.append("Android AdMob app id is not set in project.godot.")
+          if "const USE_TEST_ADS := true" not in ads:
+              problems.append("Android testing must keep USE_TEST_ADS true.")
+          if "ca-app-pub-3940256099942544/5224354917" not in ads:
+              problems.append("Android Google test rewarded unit is missing.")
+          plugin = root / "addons/admob/plugin.cfg"
+          if not plugin.is_file() or 'version="5.1.0"' not in plugin.read_text(encoding="utf-8"):
+              problems.append("Poing AdMob plugin 5.1.0 is not installed.")
+          native = root / "addons/admob/android/bin/ads/libs/poing-godot-admob-ads-release.aar"
+          if not native.is_file() or native.stat().st_size < 32:
+              problems.append("The Poing AdMob Android release library is missing.")
+          if problems:
+              print("\n".join(problems))
+              sys.exit(1)
+          print("Android release gates passed.")
+          PY
+
+      - name: Install JDK 17 and the Android SDK
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless unzip wget
+          JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+          echo "JAVA_HOME=${JAVA_HOME}" >> "$GITHUB_ENV"
+          sudo mkdir -p "$ANDROID_HOME/cmdline-tools"
+          sudo chown -R "$USER:$USER" "$ANDROID_HOME"
+          wget -q -O "$RUNNER_TEMP/cmdline-tools.zip" "https://dl.google.com/android/repository/${ANDROID_CMDLINE_TOOLS}"
+          unzip -q "$RUNNER_TEMP/cmdline-tools.zip" -d "$ANDROID_HOME/cmdline-tools"
+          mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+          export PATH="$JAVA_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          set +o pipefail
+          yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
+          set -o pipefail
+          sdkmanager --sdk_root="$ANDROID_HOME" \
+            "platforms;android-36" \
+            "build-tools;36.1.0" \
+            "ndk;29.0.14206865" \
+            "platform-tools"
+          test -d "$ANDROID_HOME/platforms/android-36"
+          echo "Android SDK is ready. Java: $(javac -version 2>&1)"
+
+      - name: Install Godot 4.7.2 and Android export templates
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/godot"
+          curl -fsSL -o "$RUNNER_TEMP/godot/linux.zip" \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          curl -fsSL -o "$RUNNER_TEMP/godot/templates.tpz" \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_export_templates.tpz"
+          echo "${GODOT_LINUX_SHA256}  $RUNNER_TEMP/godot/linux.zip" | sha256sum -c -
+          echo "${GODOT_TEMPLATES_SHA256}  $RUNNER_TEMP/godot/templates.tpz" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/godot/linux.zip" -d "$RUNNER_TEMP/godot"
+          chmod +x "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}_linux.x86_64"
+          template_root="$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_DIR}"
+          mkdir -p "$template_root"
+          unzip -q "$RUNNER_TEMP/godot/templates.tpz" -d "$RUNNER_TEMP/godot/templates-unpack"
+          cp -R "$RUNNER_TEMP/godot/templates-unpack/templates/." "$template_root/"
+          test -f "$template_root/android_source.zip"
+          test -f "$template_root/version.txt"
+          godot_bin="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}_linux.x86_64"
+          echo "GODOT_BIN=${godot_bin}" >> "$GITHUB_ENV"
+          version="$("$godot_bin" --version)"
+          echo "Godot editor: ${version}"
+          case "$version" in
+            4.7.2.stable*) ;;
+            *)
+              echo "The Godot editor is ${version}, not 4.7.2-stable."
+              exit 1
+              ;;
+          esac
+
+      - name: Point Godot at the Android SDK
+        run: |
+          set -euo pipefail
+          debug_store="$RUNNER_TEMP/debug.keystore"
+          keytool -genkeypair -keystore "$debug_store" -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          chmod 600 "$debug_store"
+          echo "ANDROID_DEBUG_KEYSTORE=${debug_store}" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.config/godot"
+          settings="$HOME/.config/godot/editor_settings-4.7.tres"
+          {
+            echo '[gd_resource type="EditorSettings" format=3]'
+            echo
+            echo '[resource]'
+            echo "export/android/android_sdk_path = \"${ANDROID_HOME}\""
+            echo "export/android/java_sdk_path = \"${JAVA_HOME}\""
+            echo "export/android/debug_keystore = \"${debug_store}\""
+            echo 'export/android/debug_keystore_user = "androiddebugkey"'
+            echo 'export/android/debug_keystore_pass = "android"'
+          } > "$settings"
+
+      - name: Export the signed APK and AAB
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          GODOT_ANDROID_KEYSTORE_RELEASE_USER: ${{ secrets.ANDROID_KEY_ALIAS }}
+          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: ${{ env.ANDROID_DEBUG_KEYSTORE }}
+          GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
+          GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_KEYSTORE_BASE64}" ] || [ -z "${GODOT_ANDROID_KEYSTORE_RELEASE_USER}" ] || [ -z "${GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD}" ]; then
+            echo "Missing Android signing secrets. Add ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS, and ANDROID_KEYSTORE_PASSWORD."
+            exit 1
+          fi
+          release_store="$RUNNER_TEMP/reefrun-release.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d ' \n\r\t' | base64 --decode > "$release_store"
+          unset ANDROID_KEYSTORE_BASE64
+          chmod 600 "$release_store"
+          export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$release_store"
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+          path = pathlib.Path("export_presets.cfg")
+          text = path.read_text(encoding="utf-8")
+          updated, count = re.subn(r"(?m)^gradle_build/export_format=1$", "gradle_build/export_format=0", text, count=1)
+          if count != 1:
+              print("Could not switch the Android preset to APK for this runner.")
+              sys.exit(1)
+          path.write_text(updated, encoding="utf-8")
+          PY
+          mkdir -p build
+          "$GODOT_BIN" --headless --path . --export-release "Android" "build/Reefrun.apk"
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+          path = pathlib.Path("export_presets.cfg")
+          text = path.read_text(encoding="utf-8")
+          updated, count = re.subn(r"(?m)^gradle_build/export_format=0$", "gradle_build/export_format=1", text, count=1)
+          if count != 1:
+              print("Could not switch the Android preset back to AAB.")
+              sys.exit(1)
+          path.write_text(updated, encoding="utf-8")
+          PY
+          "$GODOT_BIN" --headless --path . --export-release "Android" "build/Reefrun.aab"
+          test -s build/Reefrun.apk
+          test -s build/Reefrun.aab
+          python3 - <<'PY'
+          import pathlib
+          import zipfile
+          for name in ("build/Reefrun.apk", "build/Reefrun.aab"):
+              path = pathlib.Path(name)
+              if not zipfile.is_zipfile(path):
+                  raise SystemExit(f"{name} is not a zip package.")
+              if path.stat().st_size < 1000000:
+                  raise SystemExit(f"{name} is unexpectedly small.")
+          print("APK and AAB packages are present.")
+          PY
+          if [ -x "$ANDROID_HOME/build-tools/36.1.0/aapt" ]; then
+            badging="$("$ANDROID_HOME/build-tools/36.1.0/aapt" dump badging build/Reefrun.apk | head -n 1)"
+            echo "$badging"
+            case "$badging" in
+              *"package: name='com.lunarentertainment.reefrun'"*) ;;
+              *)
+                echo "The APK package name is not com.lunarentertainment.reefrun."
+                exit 1
+                ;;
+            esac
+          fi
+          rm -f "$release_store"
+          unset GODOT_ANDROID_KEYSTORE_RELEASE_PATH
+          unset GODOT_ANDROID_KEYSTORE_RELEASE_USER
+          unset GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefrun-android-apk
+          path: build/Reefrun.apk
+          if-no-files-found: error
+
+      - name: Upload the AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefrun-android-aab
+          path: build/Reefrun.aab
+          if-no-files-found: error

@@ -73,7 +73,7 @@ func apply_screen_layout() -> void:
 		var base: Vector2 = entry["base"]
 		node.position = base + Vector2(0.0, inset)
 	if feed_text:
-		feed_text.position.y = RR.screen_bottom() - 92.0
+		feed_text.position.y = RR.screen_bottom() - 92.0 - RR.display_insets(RR.screen_size()).w
 
 
 func _track_top(node: CanvasItem) -> void:
@@ -81,19 +81,9 @@ func _track_top(node: CanvasItem) -> void:
 
 
 func _top_safe_inset() -> float:
-	# DisplayServer reports the status bar and Dynamic Island in window pixels.
-	# Scale that into the 540-wide content viewport. A desktop safe area starts
-	# at y 0, so the designed HUD stays where it is. Pipes, the fish, and
+	# Status bar, camera hole, and Dynamic Island. Pipes, the fish, and
 	# PLAY_TOP are not moved.
-	var window := DisplayServer.window_get_size()
-	if window.y <= 0:
-		return 0.0
-	var screen_h := RR.screen_size().y
-	if screen_h <= 0.0:
-		return 0.0
-	var safe := DisplayServer.get_display_safe_area()
-	var inset := float(safe.position.y) * screen_h / float(window.y)
-	return clampf(inset, 0.0, screen_h * 0.2)
+	return RR.display_insets(RR.screen_size()).y
 
 
 func _prewarm_glyphs() -> void:
