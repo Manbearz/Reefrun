@@ -8,6 +8,9 @@ export.cfg
 export_credentials.cfg
 export/
 
+# Generated on the runner from the Godot 4.7.2 Android source template.
+/android/
+
 # Signing material. The release keystore stays outside this repository.
 *.jks
 *.keystore

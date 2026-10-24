@@ -172,6 +172,28 @@ jobs:
               ;;
           esac
 
+      - name: Install the Android Gradle build template
+        run: |
+          set -euo pipefail
+          source_zip="$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_DIR}/android_source.zip"
+          test -f "$source_zip"
+          rm -rf android
+          mkdir -p android/build
+          unzip -q "$source_zip" -d android/build
+          if [ ! -f android/build/build.gradle ]; then
+            wrapper="$(find android/build -mindepth 2 -maxdepth 2 -name build.gradle -print -quit)"
+            test -n "$wrapper"
+            inner="$(dirname "$wrapper")"
+            shopt -s dotglob
+            mv "$inner"/* android/build/
+            rmdir "$inner"
+          fi
+          test -f android/build/build.gradle
+          test -f android/build/src/release/AndroidManifest.xml
+          printf '%s\n' "${GODOT_TEMPLATE_DIR}" > android/.build_version
+          : > android/build/.gdignore
+          echo "Installed the Godot ${GODOT_TEMPLATE_DIR} Gradle build template for the Poing AdMob export."
+
       - name: Point Godot at the Android SDK
         run: |
           set -euo pipefail
