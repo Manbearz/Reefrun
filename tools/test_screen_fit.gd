@@ -152,7 +152,8 @@ func _features() -> bool:
 		"res://scripts/backend/leaderboard_repository.gd",
 		"res://scripts/ads/android_rewarded_ads.gd",
 		"res://assets/sfx/coin.wav",
-		"res://assets/source/cosmetic1.png",
+		"res://assets/sprites/hat_00.png",
+		"res://assets/sprites/hat_87.png",
 	]
 	for path in paths:
 		if path.begins_with("res://tools/") or not FileAccess.file_exists(path):

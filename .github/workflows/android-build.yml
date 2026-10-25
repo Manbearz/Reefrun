@@ -433,7 +433,13 @@ jobs:
               b"scripts/backend/leaderboard_repository.gd",
               b"scripts/ads/ad_config.gd",
               b"coin.wav",
-              b"cosmetic1.png",
+          )
+          # The shop loads res://assets/sprites/hat_XX.png. Godot packs each
+          # imported texture as .godot/imported/hat_XX.png-<hash>.ctex, not as
+          # the unused source file assets/source/cosmetic1.png.
+          cosmetics = (
+              (b"assets/sprites/hat_00.png", b".godot/imported/hat_00.png-"),
+              (b"assets/sprites/hat_87.png", b".godot/imported/hat_87.png-"),
           )
           forbidden = (
               b"tools/test_screen_fit.gd",
@@ -448,11 +454,14 @@ jobs:
                           continue
                       blob += package.read(info)
               missing = [item.decode() for item in required if item not in blob]
+              for source_path, imported_path in cosmetics:
+                  if source_path not in blob and imported_path not in blob:
+                      missing.append(source_path.decode())
               leaked = [item.decode() for item in forbidden if item in blob]
               if missing or leaked:
                   print(f"{name} missing={missing} leaked={leaked}")
                   sys.exit(1)
-              print(f"{name} contains the game content and excludes development tools.")
+              print(f"{name} contains the game content, packaged hat textures, and excludes development tools.")
           PY
 
       - name: Upload the APK
