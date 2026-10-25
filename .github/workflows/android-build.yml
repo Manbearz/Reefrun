@@ -176,23 +176,58 @@ jobs:
         run: |
           set -euo pipefail
           source_zip="$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_DIR}/android_source.zip"
-          test -f "$source_zip"
+          if [ ! -f "$source_zip" ]; then
+            echo "Missing Android source template: ${source_zip}"
+            exit 1
+          fi
           rm -rf android
           mkdir -p android/build
+          set +e
           unzip -q "$source_zip" -d android/build
+          unzip_status=$?
+          set -e
+          if [ "$unzip_status" -ge 2 ]; then
+            echo "unzip failed with status ${unzip_status} while extracting ${source_zip}"
+            exit "$unzip_status"
+          fi
+          if [ "$unzip_status" -eq 1 ]; then
+            echo "unzip reported a warning while extracting ${source_zip}. Continuing."
+          fi
           if [ ! -f android/build/build.gradle ]; then
-            wrapper="$(find android/build -mindepth 2 -maxdepth 2 -name build.gradle -print -quit)"
-            test -n "$wrapper"
+            echo "build.gradle was not at the archive root. Looking one directory down."
+            wrapper="$(find android/build -mindepth 2 -maxdepth 2 -name build.gradle -print -quit || true)"
+            if [ -z "$wrapper" ]; then
+              echo "android_source.zip does not contain build.gradle. First extracted paths:"
+              find android/build -maxdepth 2 -print | head -n 40
+              exit 1
+            fi
             inner="$(dirname "$wrapper")"
+            echo "Moving the Gradle project from ${inner} to android/build."
             shopt -s dotglob
             mv "$inner"/* android/build/
             rmdir "$inner"
           fi
-          test -f android/build/build.gradle
-          test -f android/build/src/release/AndroidManifest.xml
+          missing=0
+          for required in android/build/build.gradle android/build/src/main/AndroidManifest.xml; do
+            if [ ! -f "$required" ]; then
+              echo "Missing required template file: ${required}"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Template directory after extraction:"
+            find android/build -maxdepth 3 -print | head -n 60
+            exit 1
+          fi
           printf '%s\n' "${GODOT_TEMPLATE_DIR}" > android/.build_version
           : > android/build/.gdignore
-          echo "Installed the Godot ${GODOT_TEMPLATE_DIR} Gradle build template for the Poing AdMob export."
+          installed_version="$(tr -d '\r' < android/.build_version)"
+          if [ "$installed_version" != "${GODOT_TEMPLATE_DIR}" ]; then
+            echo "android/.build_version is '${installed_version}', expected ${GODOT_TEMPLATE_DIR}."
+            exit 1
+          fi
+          echo "Installed the Godot ${GODOT_TEMPLATE_DIR} Android Gradle template."
+          echo "Confirmed android/build/build.gradle, android/build/src/main/AndroidManifest.xml, and android/.build_version."
 
       - name: Point Godot at the Android SDK
         run: |
