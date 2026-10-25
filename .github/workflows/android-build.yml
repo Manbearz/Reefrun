@@ -36,6 +36,9 @@ jobs:
       LAST_PUBLISHED_VERSION_CODE: "0"
       BUNDLETOOL_SHA256: 675786493983787ffa11550bdb7c0715679a44e1643f3ff980a529e9c822595c
       ANDROID_HOME: /opt/android-sdk
+      # The Ubuntu runner image sets ANDROID_SDK_ROOT to its preinstalled SDK.
+      # Gradle rejects the build when that differs from ANDROID_HOME.
+      ANDROID_SDK_ROOT: /opt/android-sdk
       ANDROID_CMDLINE_TOOLS: commandlinetools-linux-13114758_latest.zip
     steps:
       - name: Check out the project
@@ -228,6 +231,36 @@ jobs:
           fi
           echo "Installed the Godot ${GODOT_TEMPLATE_DIR} Android Gradle template."
           echo "Confirmed android/build/build.gradle, android/build/src/main/AndroidManifest.xml, and android/.build_version."
+
+      - name: Confirm the Android SDK path
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+          if [ -z "${ANDROID_HOME}" ] || [ "${ANDROID_HOME}" != "${ANDROID_SDK_ROOT}" ]; then
+            echo "ANDROID_HOME and ANDROID_SDK_ROOT must both be ${ANDROID_HOME:-unset}."
+            exit 1
+          fi
+          for required in \
+            platforms/android-36 \
+            build-tools/36.1.0 \
+            ndk/29.0.14206865 \
+            platform-tools
+          do
+            if [ ! -d "${ANDROID_HOME}/${required}" ]; then
+              echo "Missing SDK package: ${ANDROID_HOME}/${required}"
+              exit 1
+            fi
+            echo "Found ${ANDROID_HOME}/${required}"
+          done
+          properties="android/build/local.properties"
+          printf 'sdk.dir=%s\n' "${ANDROID_HOME}" > "$properties"
+          sdk_dir="$(sed -n 's/^sdk.dir=//p' "$properties")"
+          echo "android/build/local.properties sdk.dir=${sdk_dir}"
+          if [ "$sdk_dir" != "${ANDROID_HOME}" ]; then
+            echo "local.properties does not point at the installed SDK."
+            exit 1
+          fi
 
       - name: Point Godot at the Android SDK
         run: |
