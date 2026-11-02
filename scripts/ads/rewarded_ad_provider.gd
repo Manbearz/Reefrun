@@ -15,6 +15,18 @@ func is_available() -> bool:
 	return false
 
 
+func is_show_active() -> bool:
+	return false
+
+
+func privacy_options_required() -> bool:
+	return false
+
+
+func show_privacy_options() -> void:
+	pass
+
+
 func begin_show_session() -> int:
 	_session_serial += 1
 	return _session_serial

@@ -16,6 +16,7 @@ var outcome: Outcome = Outcome.SUCCESS
 var duplicate_reward_signal := false
 var resolve_delay := 0.05
 var show_calls := 0
+var show_active := false
 var _scripted := false
 var _settled := false
 var _panel: CanvasLayer
@@ -24,6 +25,10 @@ var _live_session := 0
 
 func is_available() -> bool:
 	return outcome != Outcome.UNAVAILABLE
+
+
+func is_show_active() -> bool:
+	return show_active
 
 
 func prepare_interactive() -> void:

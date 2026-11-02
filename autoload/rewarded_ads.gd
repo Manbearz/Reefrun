@@ -4,6 +4,7 @@ signal reward_earned(session_id: int)
 signal ad_closed(session_id: int)
 signal ad_failed(reason: String, session_id: int)
 signal ad_unavailable(session_id: int)
+signal privacy_options_changed(required: bool)
 
 const AdCfg := preload("res://scripts/ads/ad_config.gd")
 const MockScript := preload("res://scripts/ads/mock_rewarded_ads.gd")
@@ -22,10 +23,25 @@ func _ready() -> void:
 	_provider.ad_closed.connect(func(session_id: int): ad_closed.emit(session_id))
 	_provider.ad_failed.connect(func(reason: String, session_id: int): ad_failed.emit(reason, session_id))
 	_provider.ad_unavailable.connect(func(session_id: int): ad_unavailable.emit(session_id))
+	if _provider.has_signal("privacy_options_changed"):
+		_provider.privacy_options_changed.connect(func(required: bool): privacy_options_changed.emit(required))
 
 
 func is_rewarded_ad_available() -> bool:
 	return _provider != null and _provider.is_available()
+
+
+func is_show_active() -> bool:
+	return _provider != null and _provider.is_show_active()
+
+
+func privacy_options_required() -> bool:
+	return _provider != null and _provider.privacy_options_required()
+
+
+func show_privacy_options() -> void:
+	if _provider != null:
+		_provider.show_privacy_options()
 
 
 func begin_show_session() -> int:

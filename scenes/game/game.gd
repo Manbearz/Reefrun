@@ -38,6 +38,7 @@ var _pause_dim: ColorRect
 var _pause_title: SpriteText
 var _pause_resume: TextureButton
 var _pause_leave: TextureButton
+var _privacy_button: Button
 var swimming := 100
 var _feed_wait := 0.0
 var school: Node2D
@@ -105,6 +106,9 @@ var _mission_lanes_right := 0
 var _mission_obstacles := 0
 var _mission_mines := 0
 var _mission_folded := false
+var _mission_display_armed := false
+var _mission_display_ready := false
+var _mission_wait := 0.0
 var _over_rank := 0
 var _over_remaining := 0
 var _coin_reward_claimed := false
@@ -115,11 +119,14 @@ var _coin_offer_open := false
 # offer, and a completed grant clear it.
 var _reward_session := 0
 var _watchdog_session := 0
+var _watchdog_token := 0
+var _reward_watch_msec := 0
 # The ad is already loaded before Yes. Rewarded videos are usually 15–30s.
-# 45s lets a normal ad finish and dismiss, then returns a show that never
-# calls back. A longer creative can restore the offer while it is still up;
-# its reward stays tied to this session and cannot pay a later Yes.
+# 45s returns a show that never calls back. While the native ad is still
+# active, Yes stays disabled and this session can still be paid. 180s is the
+# point where the player can leave a show that never calls back.
 var _reward_show_timeout := 45.0
+var _reward_hard_cap := 180.0
 var _coin_ad_watch: Button
 var _coin_ad_note: SpriteTextScript
 var _eat_emulated_mouse := false
@@ -550,6 +557,9 @@ func _begin_lobby() -> void:
 	_in_lobby = true
 	_lobby_t = 0.0
 	_mission_folded = false
+	_mission_display_armed = false
+	_mission_display_ready = false
+	_mission_wait = 0.0
 	_lobby_len = RR.lobby_length(_mission_allowed())
 	_shown_ghosts = 0
 	swimming = 1
@@ -578,7 +588,7 @@ func _set_mission_presentation(mode: String, immediate := false) -> void:
 		var reveal := 0.0
 		var was_board: bool = _mission_layer != null and is_instance_valid(_mission_layer) and _mission_layer.mode() == "board"
 		if not show_board and not started and was_board and mode == "widget" and not immediate:
-			reveal = MissionOverlayScript.FOLD_SECS
+			reveal = MissionOverlayScript.LOBBY_FADE_SECS
 		hud.set_mission_card(show_board, reveal)
 	if mode == "hidden":
 		if _mission_layer and is_instance_valid(_mission_layer) and _mission_layer.has_method("present"):
@@ -604,6 +614,8 @@ func _ensure_mission_layer() -> void:
 		return
 	_mission_layer = MissionOverlayScript.new()
 	_mission_layer.process_mode = Node.PROCESS_MODE_ALWAYS
+	if _mission_layer.has_method("set_fold_duration"):
+		_mission_layer.set_fold_duration(MissionOverlayScript.LOBBY_FADE_SECS)
 	add_child(_mission_layer)
 	var backend := get_node_or_null("/root/Backend")
 	if backend == null:
@@ -628,9 +640,34 @@ func _on_mission_reward_granted(slot: String, coins: int, mission_date: String) 
 		_mission_layer.announce_reward(slot, coins, mission_date)
 
 
+func _mission_objectives_visible() -> bool:
+	return (
+		_mission_layer != null
+		and is_instance_valid(_mission_layer)
+		and _mission_layer.has_method("objectives_visible")
+		and bool(_mission_layer.objectives_visible())
+	)
+
+
 func _tick_lobby(delta: float) -> void:
-	_lobby_t += delta
-	# Mission loading must not hold this clock. The board folds on elapsed time.
+	# One stalled frame must not skip the board or the lobby countdown.
+	var step := minf(delta, 1.0 / 20.0)
+	if _mission_allowed() and not _mission_folded and not _mission_display_ready:
+		if _mission_objectives_visible():
+			if not _mission_display_armed:
+				_mission_display_armed = true
+				hud.set_lobby(true, ceili(_lobby_len))
+				return
+			_mission_display_ready = true
+		elif _mission_wait < 4.0:
+			_mission_wait += step
+			if _mission_layer == null or not is_instance_valid(_mission_layer) or _mission_layer.mode() != "board":
+				_set_mission_presentation("board", true)
+			hud.set_lobby(true, ceili(_lobby_len))
+			return
+		else:
+			_mission_display_ready = true
+	_lobby_t += step
 	if not _mission_folded and RR.lobby_fold_due(_lobby_t, _mission_allowed()):
 		_mission_folded = true
 		_set_mission_presentation("widget")
@@ -1039,13 +1076,27 @@ func _coin_ad_hotspot(origin: Vector2, scale: float, src: Rect2, pressed: Callab
 
 
 func _skip_coin_ad() -> void:
-	if _reward_request_active:
+	if _reward_blocks_leave():
 		return
 	_abandon_coin_offer()
 
 
+func _reward_blocks_leave() -> bool:
+	if not _reward_request_active:
+		return false
+	if not RewardedAds.is_show_active():
+		return true
+	return _reward_elapsed() < _reward_hard_cap
+
+
+func _reward_elapsed() -> float:
+	if _reward_watch_msec <= 0:
+		return 0.0
+	return (Time.get_ticks_msec() - _reward_watch_msec) / 1000.0
+
+
 func _watch_coin_ad() -> void:
-	if _reward_request_active or _coin_reward_claimed:
+	if _reward_request_active or _coin_reward_claimed or RewardedAds.is_show_active():
 		return
 	if not _coin_offer_open:
 		return
@@ -1094,13 +1145,14 @@ func _abandon_coin_offer() -> void:
 func _restore_coin_ad(message: String) -> void:
 	var reason := message if not message.is_empty() else "closed before the reward"
 	print("[ReefRun ads] bonus not granted. %s" % reason)
-	_reward_request_active = false
+	var still_showing := RewardedAds.is_show_active()
+	_reward_request_active = still_showing
 	if not _coin_offer_open or _coin_reward_claimed:
 		return
 	if overlay and is_instance_valid(overlay):
 		overlay.visible = true
 	if _coin_ad_watch:
-		_coin_ad_watch.disabled = false
+		_coin_ad_watch.disabled = still_showing
 	_set_coin_ad_note(message)
 
 
@@ -1113,25 +1165,42 @@ func _set_coin_ad_note(message: String) -> void:
 
 func _invalidate_reward_session() -> void:
 	_reward_session = 0
+	_reward_watch_msec = 0
 	_cancel_reward_watchdog()
 
 
 func _cancel_reward_watchdog() -> void:
+	_watchdog_token += 1
 	_watchdog_session = 0
 
 
 func _arm_reward_watchdog(session_id: int) -> void:
+	_watchdog_token += 1
+	var token := _watchdog_token
 	_watchdog_session = session_id
+	if _reward_watch_msec <= 0:
+		_reward_watch_msec = Time.get_ticks_msec()
 	var timer := get_tree().create_timer(_reward_show_timeout, true)
-	timer.timeout.connect(_on_reward_watchdog.bind(session_id), CONNECT_ONE_SHOT)
+	timer.timeout.connect(_on_reward_watchdog.bind(session_id, token), CONNECT_ONE_SHOT)
 
 
-func _on_reward_watchdog(session_id: int) -> void:
+func _on_reward_watchdog(session_id: int, token: int) -> void:
 	# Pause and resume do not grant coins or change the session. An old timer
 	# no longer matches after a new offer, a new Yes, or a terminal callback.
+	if token != _watchdog_token:
+		return
 	if session_id <= 0 or session_id != _watchdog_session or session_id != _reward_session:
 		return
 	if _coin_reward_claimed or not _coin_offer_open:
+		return
+	if RewardedAds.is_show_active() and _reward_elapsed() < _reward_hard_cap:
+		_arm_reward_watchdog(session_id)
+		return
+	if RewardedAds.is_show_active():
+		if _coin_ad_watch:
+			_coin_ad_watch.disabled = true
+		_reward_request_active = true
+		_set_coin_ad_note("Ad still playing")
 		return
 	_cancel_reward_watchdog()
 	_restore_coin_ad("Ad timed out")
@@ -1207,21 +1276,17 @@ func _show_over(rank: int, remaining: int) -> void:
 	if share_tex:
 		share_src = Vector2(share_tex.get_width(), share_tex.get_height())
 	var gap := 6.0
-	var screen := RR.screen_size()
-	var insets := RR.display_insets(screen)
-	var avail_w := maxf(64.0, screen.x - insets.x - insets.z)
-	var avail_h := maxf(64.0, screen.y - insets.y - insets.w)
-	var card_scale := minf(avail_w, RR.VIEW_W) / src_w
-	var menu_w := minf(avail_w, RR.VIEW_W) * 0.92
+	var card_scale := RR.VIEW_W / src_w
+	var menu_w := RR.VIEW_W * 0.92
 	var menu_h := menu_w * (menu_src.y / menu_src.x)
 	var card_h := src_h * card_scale
-	if card_h + gap + menu_h > avail_h - 8.0:
-		card_scale *= (avail_h - 8.0 - gap - menu_h) / card_h
+	if card_h + gap + menu_h > RR.VIEW_H - 8.0:
+		card_scale *= (RR.VIEW_H - 8.0 - gap - menu_h) / card_h
 		card_h = src_h * card_scale
 	var card_size := Vector2(src_w, src_h) * card_scale
 	var stack_h := card_h + gap + menu_h
-	var stack_y := insets.y + (avail_h - stack_h) * 0.5
-	var card_pos := Vector2(insets.x + (avail_w - card_size.x) * 0.5, stack_y)
+	var stack_y := (RR.VIEW_H - stack_h) * 0.5
+	var card_pos := Vector2((RR.VIEW_W - card_size.x) * 0.5, stack_y)
 	var card := TextureRect.new()
 	card.texture = tex
 	card.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
@@ -1253,7 +1318,7 @@ func _show_over(rank: int, remaining: int) -> void:
 	_wipe_menu.texture_normal = menu_tex
 	_wipe_menu.ignore_texture_size = true
 	_wipe_menu.stretch_mode = TextureButton.STRETCH_KEEP_ASPECT_CENTERED
-	_wipe_menu.position = Vector2(insets.x + (avail_w - menu_w) * 0.5, stack_y + card_h + gap)
+	_wipe_menu.position = Vector2((RR.VIEW_W - menu_w) * 0.5, stack_y + card_h + gap)
 	_wipe_menu.size = Vector2(menu_w, menu_h)
 	_wipe_menu.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	_wipe_menu.pressed.connect(_menu)
@@ -1660,6 +1725,12 @@ func _build_pause() -> void:
 	_pause_leave.size = _pause_leave.custom_minimum_size
 	_pause_leave.position = Vector2(RR.VIEW_W * 0.5 - 24, RR.VIEW_H * 0.56)
 	pause_layer.add_child(_pause_leave)
+	_privacy_button = _make_privacy_button()
+	pause_layer.add_child(_privacy_button)
+	var ads := get_node_or_null("/root/RewardedAds")
+	if ads and ads.has_signal("privacy_options_changed") and not ads.privacy_options_changed.is_connected(_sync_privacy_button):
+		ads.privacy_options_changed.connect(_sync_privacy_button)
+	_sync_privacy_button()
 
 
 func _layout_pause_controls(board_open: bool) -> void:
@@ -1676,6 +1747,7 @@ func _layout_pause_controls(board_open: bool) -> void:
 	if not board_open:
 		_pause_resume.position = Vector2(screen.x * 0.5 - 33, RR.VIEW_H * 0.42)
 		_pause_leave.position = Vector2(screen.x * 0.5 - 24, RR.VIEW_H * 0.56)
+		_place_privacy_button(false)
 		return
 	var resume_size := _pause_resume.size
 	if resume_size.y < 8.0:
@@ -1689,6 +1761,49 @@ func _layout_pause_controls(board_open: bool) -> void:
 	var x := (screen.x - resume_size.x - gap - leave_size.x) * 0.5
 	_pause_resume.position = Vector2(x, y + (row_h - resume_size.y) * 0.5)
 	_pause_leave.position = Vector2(x + resume_size.x + gap, y + (row_h - leave_size.y) * 0.5)
+	_place_privacy_button(true)
+
+
+func _make_privacy_button() -> Button:
+	var button := Button.new()
+	button.flat = true
+	button.focus_mode = Control.FOCUS_NONE
+	button.visible = false
+	button.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	button.custom_minimum_size = Vector2(240, 36)
+	button.size = Vector2(240, 36)
+	button.pressed.connect(func() -> void:
+		var ads := get_node_or_null("/root/RewardedAds")
+		if ads:
+			ads.show_privacy_options()
+	)
+	var label := SpriteTextScript.new()
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	label.configure("AD PRIVACY", 16, Vector2(240, 28), HORIZONTAL_ALIGNMENT_CENTER)
+	button.add_child(label)
+	return button
+
+
+func _sync_privacy_button(_required: bool = false) -> void:
+	_place_privacy_button(pause_layer != null and pause_layer.layer == 36)
+
+
+func _place_privacy_button(board_open: bool) -> void:
+	if _privacy_button == null:
+		return
+	var ads := get_node_or_null("/root/RewardedAds")
+	var required := false
+	if ads != null:
+		required = bool(ads.privacy_options_required())
+	_privacy_button.visible = required and not board_open
+	_privacy_button.mouse_filter = Control.MOUSE_FILTER_STOP if _privacy_button.visible else Control.MOUSE_FILTER_IGNORE
+	if _pause_leave == null:
+		return
+	var screen := RR.screen_size()
+	var leave_h := _pause_leave.size.y
+	if leave_h < 8.0:
+		leave_h = _pause_leave.custom_minimum_size.y
+	_privacy_button.position = Vector2((screen.x - _privacy_button.size.x) * 0.5, _pause_leave.position.y + leave_h + 16.0)
 
 
 func _prewarm_pipes() -> void:

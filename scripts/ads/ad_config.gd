@@ -1,15 +1,16 @@
 class_name AdConfig
 extends Object
 
-# TestFlight and local development stay on Google's test rewarded units.
-# Set this to false only for a store release that should request the live units.
-const USE_TEST_ADS := true
+const AdBuild := preload("res://scripts/ads/ad_build_mode.gd")
+
+# Live rewarded units are selected only by AdBuildMode.MODE == "production".
+# A missing, empty, or unrecognized mode stays on Google's test units.
 
 # App IDs identify the AdMob app. They contain "~" and are not ad unit IDs.
 const IOS_APP_ID := "ca-app-pub-5190108736982657~5175195159"
 const ANDROID_APP_ID := "ca-app-pub-5190108736982657~2452653885"
 
-# Live rewarded units. Used only when USE_TEST_ADS is false.
+# Live rewarded units. Used only when the packed mode is exactly "production".
 const IOS_REWARDED_UNIT_ID := "ca-app-pub-5190108736982657/2549031818"
 const ANDROID_REWARDED_UNIT_ID := "ca-app-pub-5190108736982657/3355591884"
 
@@ -22,8 +23,22 @@ const WEB_PLACEMENT_ID := ""
 const WEB_TEST_PLACEMENT_ID := ""
 
 
+static func monetization_mode() -> String:
+	return normalize_mode(str(AdBuild.MODE) if AdBuild != null else "")
+
+
+static func normalize_mode(raw: String) -> String:
+	if raw.strip_edges().to_lower() == "production":
+		return "production"
+	return "test"
+
+
+static func is_production_ads() -> bool:
+	return monetization_mode() == "production"
+
+
 static func web_placement_id() -> String:
-	return WEB_TEST_PLACEMENT_ID if USE_TEST_ADS else WEB_PLACEMENT_ID
+	return WEB_PLACEMENT_ID if is_production_ads() else WEB_TEST_PLACEMENT_ID
 
 
 static func ios_placement_id() -> String:
@@ -42,18 +57,20 @@ static func is_google_test_rewarded_unit(unit_id: String) -> bool:
 	return unit_id == IOS_TEST_REWARDED_UNIT_ID or unit_id == ANDROID_TEST_REWARDED_UNIT_ID
 
 
-static func rewarded_unit_id() -> String:
+static func rewarded_unit_for(platform: String, mode: String) -> String:
 	var production := ""
 	var test_unit := ""
-	if OS.has_feature("ios"):
+	var which := platform.strip_edges().to_lower()
+	if which == "ios":
 		production = IOS_REWARDED_UNIT_ID
 		test_unit = IOS_TEST_REWARDED_UNIT_ID
-	elif OS.has_feature("android"):
+	elif which == "android":
 		production = ANDROID_REWARDED_UNIT_ID
 		test_unit = ANDROID_TEST_REWARDED_UNIT_ID
 	else:
 		return ""
-	if USE_TEST_ADS:
+	# Anything other than the exact production mode stays on the Google test unit.
+	if normalize_mode(mode) != "production":
 		if not is_google_test_rewarded_unit(test_unit):
 			push_error("[ReefRun ads] Refusing to load because the test unit is not a Google test rewarded unit.")
 			return ""
@@ -62,6 +79,15 @@ static func rewarded_unit_id() -> String:
 		push_error("[ReefRun ads] Production mode does not have a rewarded ad unit id.")
 		return ""
 	return production
+
+
+static func rewarded_unit_id() -> String:
+	var platform := ""
+	if OS.has_feature("ios"):
+		platform = "ios"
+	elif OS.has_feature("android"):
+		platform = "android"
+	return rewarded_unit_for(platform, monetization_mode())
 
 
 static func use_mock_provider() -> bool:

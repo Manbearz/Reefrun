@@ -161,6 +161,7 @@ const LOBBY_RESET := Rect2(280, 430, 580, 36)
 signal dismissed
 
 const FOLD_SECS := 0.30
+const LOBBY_FADE_SECS := 0.45
 const WIDGET_SIZE := Vector2(168, 54)
 const TOAST_SIZE := Vector2(210, 56)
 const BORDER := Color8(146, 210, 240)
@@ -170,6 +171,8 @@ const TRACK_COLOR := Color8(1, 38, 76)
 const FILL_COLOR := Color8(49, 227, 97)
 const PANEL := Color8(0, 64, 113)
 
+var _objective_state := ""
+var _fold_duration := FOLD_SECS
 var _host: Control
 var _descriptions: Array[_BubbleText] = []
 var _fills: Array[Panel] = []
@@ -327,6 +330,18 @@ func layout_to_screen() -> void:
 
 func mode() -> String:
 	return _mode
+
+
+func set_fold_duration(seconds: float) -> void:
+	_fold_duration = maxf(seconds, 0.05)
+
+
+func objectives_visible() -> bool:
+	if not visible or _mode != "board" or _host == null or not _host.visible:
+		return false
+	if _host.modulate.a < 0.98 or _motion != null:
+		return false
+	return _objective_state == "ready" or _objective_state == "unavailable"
 
 
 func announced_count() -> int:
@@ -719,6 +734,7 @@ func show_board(board: Dictionary, note: String) -> void:
 	var slots := _slots_by_name(board)
 	var loading := slots.is_empty() and note != "error"
 	var failed := slots.is_empty() and note == "error"
+	var filled := 0
 	for i in SLOTS.size():
 		var slot_name := SLOTS[i]
 		var row: Dictionary = slots.get(slot_name, {})
@@ -734,6 +750,8 @@ func show_board(board: Dictionary, note: String) -> void:
 				description = "Missions Unavailable" if i == 0 else ""
 			elif loading:
 				description = "Loading Missions" if i == 0 else ""
+		elif description != "Loading Missions" and description != "Missions Unavailable":
+			filled += 1
 		_set_description(i, description)
 		_set_icon(i, 0 if row.is_empty() else int(row.get("mission_id", 0)))
 		var ratio := 0.0 if goal <= 0 else DailyMissions.progress_ratio(progress, goal)
@@ -753,6 +771,12 @@ func show_board(board: Dictionary, note: String) -> void:
 	_sync_widget(slots)
 	_refresh_countdown()
 	_applied = true
+	if failed:
+		_objective_state = "unavailable"
+	elif filled >= SLOTS.size():
+		_objective_state = "ready"
+	else:
+		_objective_state = "loading"
 
 
 func _build_row(index: int) -> void:
@@ -1175,7 +1199,7 @@ func _animate_to_widget() -> void:
 	_widget.modulate.a = 0.0
 	_widget.scale = Vector2(0.86, 0.86)
 	var collapsed := _collapsed_transform()
-	var duration := FOLD_SECS
+	var duration := _fold_duration
 	_show_shade_now()
 	_motion = create_tween()
 	_motion.set_pause_mode(Tween.TWEEN_PAUSE_PROCESS)
@@ -1208,7 +1232,7 @@ func _animate_to_board() -> void:
 	_shade.visible = true
 	_shade.modulate.a = 0.0
 	_set_shade_input()
-	var duration := FOLD_SECS
+	var duration := _fold_duration
 	_motion = create_tween()
 	_motion.set_pause_mode(Tween.TWEEN_PAUSE_PROCESS)
 	_motion.set_parallel(true)

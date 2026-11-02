@@ -7,9 +7,12 @@ var _gold_digits := false
 var _align := HORIZONTAL_ALIGNMENT_CENTER
 var _kern := 0.74
 var _fit_box := false
+# Draw every glyph at exactly `_glyph_h`. Otherwise one scale fits the tallest
+# texture in the string, so the same letter changes size from name to name.
+var _match_height := false
 
 
-func configure(p_text: String, height: float, box: Vector2, align := HORIZONTAL_ALIGNMENT_CENTER, gold_digits := false, fit_box := false) -> void:
+func configure(p_text: String, height: float, box: Vector2, align := HORIZONTAL_ALIGNMENT_CENTER, gold_digits := false, fit_box := false, kern := 1.12, match_height := false) -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	clip_contents = fit_box
 	size = box
@@ -17,7 +20,8 @@ func configure(p_text: String, height: float, box: Vector2, align := HORIZONTAL_
 	_align = align
 	_gold_digits = gold_digits
 	_fit_box = fit_box
-	_kern = 1.12
+	_kern = kern
+	_match_height = match_height
 	set_value(p_text)
 
 
@@ -46,6 +50,12 @@ func layout_width(value: String, height: float, gold_digits := false) -> float:
 			total -= w * (1.0 - kern)
 		total += w
 	return total
+
+
+func _glyph_scale(tex: Texture2D, max_h: float) -> float:
+	if _match_height and tex != null and tex.get_height() > 0:
+		return _glyph_h / float(tex.get_height())
+	return _glyph_h / maxf(max_h, 1.0)
 
 
 func resize_box(height: float, box: Vector2) -> void:
@@ -79,28 +89,26 @@ func _rebuild() -> void:
 		glyphs.append(tex)
 		if tex:
 			max_h = maxf(max_h, float(tex.get_height()))
-	var scale := _glyph_h / max_h
-	if _fit_box:
-		scale = minf(scale, size.y / max_h)
-	var space_w := max_h * scale * 0.34
 	var widths: PackedFloat32Array = PackedFloat32Array()
+	var scales: PackedFloat32Array = PackedFloat32Array()
 	var total := 0.0
 	for i in glyphs.size():
 		var tex: Texture2D = glyphs[i]
-		var w := space_w
+		var scale := _glyph_scale(tex, max_h)
+		var w := max_h * scale * 0.34
 		if tex:
 			w = float(tex.get_width()) * scale
 		widths.append(w)
+		scales.append(scale)
 		if tex and i > 0 and glyphs[i - 1] != null:
 			total -= w * (1.0 - _kern)
 		total += w
 	if _fit_box and total > size.x and total > 0.0:
 		var shrink := size.x / total
-		scale *= shrink
-		space_w *= shrink
 		total *= shrink
 		for i in widths.size():
 			widths[i] *= shrink
+			scales[i] *= shrink
 	var x := 0.0
 	if _align == HORIZONTAL_ALIGNMENT_CENTER:
 		x = (size.x - total) * 0.5
@@ -114,7 +122,7 @@ func _rebuild() -> void:
 			continue
 		if i > 0 and glyphs[i - 1] != null:
 			x -= w * (1.0 - _kern)
-		var dh := float(tex.get_height()) * scale
+		var dh := float(tex.get_height()) * scales[i]
 		var digit := TextureRect.new()
 		digit.texture = tex
 		digit.expand_mode = TextureRect.EXPAND_IGNORE_SIZE

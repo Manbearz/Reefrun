@@ -12,11 +12,21 @@ const NAME_BOX := Rect2(270, 742, 590, 82)
 const PLAY_BOX := Rect2(250, 900, 640, 185)
 const SCORE_BOX := Rect2(210, 1124, 730, 168)
 const BACK_BOX := Rect2(230, 1478, 480, 140)
+const BACK_PLATE := Rect2(297, 1487, 370, 126)
+# Painted Back control, including its dark outline. The wood fill alone sits inside this.
+const BACK_VISUAL := Rect2(279, 1469, 406, 160)
+# Ranks through the Back button. Covering a taller screen would crop this.
+const SCORE_KEEP := Rect2(8, 80, 925, 1560)
+# Header artwork through the Back button. A 16:9 screen cannot cover this
+# without cropping, so that screen fills instead.
+const MODE_KEEP := Rect2(16, 220, 784, 1610)
 # Inner light-blue bars on the 941-wide scoreboard art, to the right of the painted ranks.
 const SCORE_ROWS_Y := [427.0, 531.0, 635.0, 739.0, 843.0, 947.0, 1052.0, 1157.0, 1261.0, 1361.0]
 const SCORE_ROWS_H := [88.0, 87.0, 87.0, 87.0, 88.0, 88.0, 88.0, 87.0, 83.0, 85.0]
-const SCORE_NAME_X := 286.0
-const SCORE_NAME_W := 310.0
+# The painted rank badge ends near art x 214. Names start inside the blue bar,
+# with a gap after that badge. The box stops before a three-digit score.
+const SCORE_NAME_X := 260.0
+const SCORE_NAME_W := 314.0
 const SCORE_VALUE_X := 554.0
 const SCORE_VALUE_W := 150.0
 const SCORE_PAGES := ["daily", "weekly", "monthly"]
@@ -43,6 +53,7 @@ var _score_swiping := false
 var _score_press := Vector2.ZERO
 var _score_arrow_left_rect := Rect2()
 var _score_arrow_right_rect := Rect2()
+var _arrow_opaque: Dictionary = {}
 var _name_edit: LineEdit
 var _ground: TextureRect
 var _fish_icons: Array[TextureRect] = []
@@ -113,6 +124,7 @@ var _daily_button: Button
 var _mode_unlimited: Button
 var _mode_back: Button
 var _mission_button: Button
+var _privacy_button: Button
 var _missions: DailyMissionsOverlay
 var _modes_return := false
 var _mode_token := 0
@@ -164,6 +176,9 @@ func _ready() -> void:
 		backend.daily_missions_changed.connect(_on_menu_missions)
 	if not get_viewport().size_changed.is_connected(_sync_menu_anchor):
 		get_viewport().size_changed.connect(_sync_menu_anchor)
+	var ads := get_node_or_null("/root/RewardedAds")
+	if ads and ads.has_signal("privacy_options_changed") and not ads.privacy_options_changed.is_connected(_sync_privacy_button):
+		ads.privacy_options_changed.connect(_sync_privacy_button)
 	_sync_menu_anchor()
 
 
@@ -340,6 +355,23 @@ func _build_home(card_size: Vector2) -> void:
 	_follow_card(scores_btn)
 	_build_fish_picker()
 	_build_hat_picker()
+	_privacy_button = Button.new()
+	_privacy_button.flat = true
+	_privacy_button.focus_mode = Control.FOCUS_NONE
+	_privacy_button.visible = false
+	_privacy_button.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_privacy_button.custom_minimum_size = Vector2(240, 36)
+	_privacy_button.size = Vector2(240, 36)
+	_privacy_button.pressed.connect(func() -> void:
+		var ads := get_node_or_null("/root/RewardedAds")
+		if ads:
+			ads.show_privacy_options()
+	)
+	var privacy_label := SpriteTextScript.new()
+	privacy_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	privacy_label.configure("AD PRIVACY", 16, Vector2(240, 28), HORIZONTAL_ALIGNMENT_CENTER)
+	_privacy_button.add_child(privacy_label)
+	_home.add_child(_privacy_button)
 
 
 func _build_scores() -> void:
@@ -355,7 +387,7 @@ func _build_scores() -> void:
 	_scores.add_child(_score_rows)
 	_build_score_labels()
 	_score_back = _hotspot(BACK_BOX, _show_home, Vector2.ZERO, 1.0)
-	_mark_plate(_score_back, "daily_overlay", BACK_BOX, Rect2(297, 1487, 370, 126), 0.46, "wood")
+	_mark_plate(_score_back, "daily_overlay", BACK_BOX, BACK_PLATE, 0.46, "wood")
 	_scores.add_child(_score_back)
 	_build_score_arrows()
 	_layout_scores()
@@ -431,6 +463,7 @@ func _sync_menu_anchor() -> void:
 		_ground.position = Vector2(0, bottom - RR.GROUND_H)
 	_layout_mode_overlay()
 	_layout_scores()
+	_sync_privacy_button()
 	if _fish_clip:
 		_fish_clip.position.y = _layout_fish_y(_fish_clip.size.y)
 	if _hat_clip == null:
@@ -444,6 +477,19 @@ func _sync_menu_anchor() -> void:
 		_wallet_coin.position.y = _wallet_rest.y
 		if _wallet_text:
 			_wallet_text.position.y = _wallet_text_rest.y
+
+
+func _sync_privacy_button(_required: bool = false) -> void:
+	if _privacy_button == null:
+		return
+	var ads := get_node_or_null("/root/RewardedAds")
+	var required := false
+	if ads != null and ads.has_method("privacy_options_required"):
+		required = bool(ads.privacy_options_required())
+	_privacy_button.visible = required
+	_privacy_button.mouse_filter = Control.MOUSE_FILTER_STOP if required else Control.MOUSE_FILTER_IGNORE
+	var screen := RR.screen_size()
+	_privacy_button.position = Vector2((screen.x - _privacy_button.size.x) * 0.5, RR.screen_bottom() - 44.0)
 
 
 func _build_fish_picker() -> void:
@@ -1240,13 +1286,14 @@ func _score_art_rect(src: Rect2) -> Rect2:
 func _layout_scores() -> void:
 	if _score_card == null:
 		return
+	# The plate covers the portrait screen. Name length must not change this rect.
 	var screen := RR.screen_size()
-	var fitted := RR.uniform_fit(Vector2(SCORE_W, SCORE_H), screen, RR.display_insets(screen))
-	_score_scale = Vector2(fitted.size.x / SCORE_W, fitted.size.y / SCORE_H)
-	_score_pos = fitted.position
+	var plate := RR.fullscreen_plate(Vector2(SCORE_W, SCORE_H), screen, SCORE_KEEP, Vector2(0.5, 0.5))
+	_score_scale = Vector2(plate.size.x / SCORE_W, plate.size.y / SCORE_H)
+	_score_pos = plate.position
 	_score_card.stretch_mode = TextureRect.STRETCH_SCALE
-	_score_card.position = fitted.position
-	_score_card.size = fitted.size
+	_score_card.position = plate.position
+	_score_card.size = plate.size
 	if _score_back:
 		var back := _score_art_rect(BACK_BOX)
 		_score_back.position = back.position
@@ -1274,27 +1321,88 @@ func _score_arrow_hit(pos: Vector2) -> bool:
 	return _score_arrow_left_rect.has_point(pos) or _score_arrow_right_rect.has_point(pos)
 
 
-func _score_arrow_boxes(y: float, size: Vector2) -> Array[Rect2]:
+func _score_arrow_boxes(size: Vector2) -> Array[Rect2]:
 	var screen := RR.screen_size()
-	var margins := RR.display_insets(screen)
-	var card := Rect2(_score_card.position, _score_card.size) if _score_card else Rect2(Vector2.ZERO, screen)
-	var left := Rect2(maxf(card.position.x + 4.0, margins.x + 4.0), y, size.x, size.y)
-	var right_x := minf(card.end.x - 4.0 - size.x, screen.x - margins.z - 4.0 - size.x)
+	var fits := _arrow_fits(size)
+	return _arrow_boxes_for(size, _score_art_rect(BACK_VISUAL), screen, RR.display_insets(screen), fits[0], fits[1])
+
+
+func _arrow_fits(size: Vector2) -> Array[Rect2]:
+	var fits: Array[Rect2] = []
+	fits.append(_arrow_fit("btn_score_left", size))
+	fits.append(_arrow_fit("btn_score_right", size))
+	return fits
+
+
+# Opaque artwork inside a texture box after keep-aspect centering.
+func _arrow_fit(id: String, box_size: Vector2) -> Rect2:
+	var tex := Sprites.tex(id)
+	var tex_size := Vector2(tex.get_width(), tex.get_height())
+	var scale := minf(box_size.x / tex_size.x, box_size.y / tex_size.y)
+	var opaque := _arrow_opaque_rect(id, tex_size)
+	var origin := (box_size - tex_size * scale) * 0.5
+	return Rect2(origin + opaque.position * scale, opaque.size * scale)
+
+
+func _arrow_opaque_rect(id: String, tex_size: Vector2) -> Rect2:
+	if _arrow_opaque.has(id):
+		return _arrow_opaque[id]
+	var rect := Rect2(Vector2.ZERO, tex_size)
+	var tex := Sprites.tex(id)
+	var image := tex.get_image() if tex else null
+	if image:
+		var used := image.get_used_rect()
+		if used.size.x > 1 and used.size.y > 1:
+			rect = Rect2(used.position, used.size)
+	_arrow_opaque[id] = rect
+	return rect
+
+
+# Boxes keep the authored arrow size. Their opaque artwork is centered on the
+# Back button, with one shared gap that shrinks only to stay on screen.
+func _arrow_boxes_for(size: Vector2, button: Rect2, screen: Vector2, margins: Vector4, left_fit: Rect2, right_fit: Rect2) -> Array[Rect2]:
+	var min_x := margins.x + 4.0
+	var max_x := screen.x - margins.z - 4.0
+	var center_y := button.position.y + button.size.y * 0.5
+	var left_y := center_y - (left_fit.position.y + left_fit.size.y * 0.5)
+	var right_y := center_y - (right_fit.position.y + right_fit.size.y * 0.5)
+	var room_left := button.position.x - min_x - left_fit.size.x
+	var room_right := max_x - button.end.x - right_fit.size.x
+	var gap := minf(minf(left_fit.size.y, right_fit.size.y) * 0.45, maxf(minf(room_left, room_right), 0.0))
+	var left_x := button.position.x - gap - (left_fit.position.x + left_fit.size.x)
+	var right_x := button.end.x + gap - right_fit.position.x
+	var shift_y := _arrow_shift_y(left_y, right_y, left_fit, right_fit, screen.y)
+	left_y += shift_y
+	right_y += shift_y
 	var boxes: Array[Rect2] = []
-	boxes.append(left)
-	boxes.append(Rect2(right_x, y, size.x, size.y))
+	boxes.append(Rect2(left_x, left_y, size.x, size.y))
+	boxes.append(Rect2(right_x, right_y, size.x, size.y))
 	return boxes
+
+
+func _arrow_shift_y(left_y: float, right_y: float, left_fit: Rect2, right_fit: Rect2, screen_h: float) -> float:
+	var top := minf(left_y + left_fit.position.y, right_y + right_fit.position.y)
+	var bottom := maxf(left_y + left_fit.end.y, right_y + right_fit.end.y)
+	var shift := 0.0
+	if top < 0.0:
+		shift = -top
+	if bottom + shift > screen_h:
+		shift -= bottom + shift - screen_h
+	return shift
+
+
+func _arrow_visible(box: Rect2, fit: Rect2) -> Rect2:
+	return Rect2(box.position + fit.position, fit.size)
 
 
 func _build_score_arrows() -> void:
 	var size := Vector2(ARROW_BOX, ARROW_BOX)
-	var back := _score_art_rect(BACK_BOX)
-	var y := back.position.y + (back.size.y - size.y) * 0.5
-	var boxes := _score_arrow_boxes(y, size)
+	var fits := _arrow_fits(size)
+	var boxes := _score_arrow_boxes(size)
 	var left := boxes[0]
 	var right := boxes[1]
-	_score_arrow_left_rect = left.grow(6.0)
-	_score_arrow_right_rect = right.grow(6.0)
+	_score_arrow_left_rect = _score_arrow_hit_rect(_arrow_visible(left, fits[0]))
+	_score_arrow_right_rect = _score_arrow_hit_rect(_arrow_visible(right, fits[1]))
 	_score_arrow_left_icon = _score_arrow_icon("btn_score_left", left)
 	_score_arrow_right_icon = _score_arrow_icon("btn_score_right", right)
 	_score_arrow_left_btn = _screen_hotspot(_score_arrow_left_rect, _cycle_score_page.bind(-1))
@@ -1309,15 +1417,21 @@ func _layout_score_arrows() -> void:
 	if _score_arrow_left_icon == null:
 		return
 	var size := Vector2(ARROW_BOX, ARROW_BOX)
-	var back := _score_art_rect(BACK_BOX)
-	var y := back.position.y + (back.size.y - size.y) * 0.5
-	var boxes := _score_arrow_boxes(y, size)
+	var fits := _arrow_fits(size)
+	var boxes := _score_arrow_boxes(size)
 	var left := boxes[0]
 	var right := boxes[1]
-	_score_arrow_left_rect = left.grow(6.0)
-	_score_arrow_right_rect = right.grow(6.0)
+	_score_arrow_left_rect = _score_arrow_hit_rect(_arrow_visible(left, fits[0]))
+	_score_arrow_right_rect = _score_arrow_hit_rect(_arrow_visible(right, fits[1]))
 	_place_score_arrow(_score_arrow_left_icon, _score_arrow_left_btn, left, _score_arrow_left_rect)
 	_place_score_arrow(_score_arrow_right_icon, _score_arrow_right_btn, right, _score_arrow_right_rect)
+
+
+func _score_arrow_hit_rect(visible: Rect2) -> Rect2:
+	var hit := visible.intersection(Rect2(Vector2.ZERO, RR.screen_size()))
+	if hit.size.x < 1.0 or hit.size.y < 1.0:
+		return visible
+	return hit
 
 
 func _place_score_arrow(icon: TextureRect, button: Button, box: Rect2, hit: Rect2) -> void:
@@ -1357,7 +1471,7 @@ func _build_score_labels() -> void:
 	var glyph_h := _score_glyph_height()
 	var name_h := _score_name_height()
 	for i in SCORE_ROWS_Y.size():
-		_score_names.append(_add_score_text(_row_content_rect(i, SCORE_NAME_X, SCORE_NAME_W, 2.0), HORIZONTAL_ALIGNMENT_LEFT, false, name_h, true))
+		_score_names.append(_add_score_text(_row_content_rect(i, SCORE_NAME_X, SCORE_NAME_W, 2.0), HORIZONTAL_ALIGNMENT_LEFT, false, name_h, false, 1.0, true))
 		_score_values.append(_add_score_text(_row_content_rect(i, SCORE_VALUE_X, SCORE_VALUE_W), HORIZONTAL_ALIGNMENT_RIGHT, true, glyph_h, true))
 	_score_status = _add_score_text(Rect2(210.0, 352.0, 520.0, 68.0), HORIZONTAL_ALIGNMENT_CENTER, false, 0.0, true)
 	_score_status.visible = false
@@ -1367,16 +1481,14 @@ func _score_glyph_height() -> float:
 	var row_h: float = SCORE_ROWS_H[0]
 	for raw in SCORE_ROWS_H:
 		row_h = minf(row_h, float(raw))
-	# Kept under the row height so a three-digit score still fits the column.
-	return row_h * _score_scale.y * 0.54
+	# 0.54 fits the row. The extra 0.85 is the shared 15% reduction of names and scores.
+	return row_h * _score_scale.y * 0.54 * 0.85
 
 
 func _score_name_height() -> float:
-	var row_h: float = SCORE_ROWS_H[0]
-	for raw in SCORE_ROWS_H:
-		row_h = minf(row_h, float(raw))
-	# The row width is what actually sets the size. A wide name shrinks to the column.
-	return row_h * _score_scale.y
+	# Same destination height as the orange score digits. Letter width follows
+	# each sprite's aspect ratio, and every name uses this one height.
+	return _score_glyph_height()
 
 
 func _row_content_rect(index: int, x: float, width: float, inset: float = 10.0) -> Rect2:
@@ -1385,13 +1497,13 @@ func _row_content_rect(index: int, x: float, width: float, inset: float = 10.0) 
 	return Rect2(x, y + inset, width, maxf(24.0, h - inset * 2.0))
 
 
-func _add_score_text(src: Rect2, align: HorizontalAlignment, gold_digits: bool, glyph_h: float, fit_box: bool) -> SpriteTextScript:
+func _add_score_text(src: Rect2, align: HorizontalAlignment, gold_digits: bool, glyph_h: float, fit_box: bool, kern: float = 1.12, match_height: bool = false) -> SpriteTextScript:
 	var line := SpriteTextScript.new()
 	line.z_index = 2
 	var box := Vector2(src.size.x * _score_scale.x, src.size.y * _score_scale.y)
 	line.position = _score_pos + src.position * _score_scale
 	var height := glyph_h if glyph_h > 0.0 else box.y * 0.92
-	line.configure("", height, box, align, gold_digits, fit_box)
+	line.configure("", height, box, align, gold_digits, fit_box, kern, match_height)
 	if not fit_box:
 		line.clip_contents = true
 	_score_rows.add_child(line)
@@ -1508,16 +1620,20 @@ func _on_menu_missions() -> void:
 		_missions.refresh_from_session()
 
 
+func _mode_cover_rect(screen: Vector2) -> Rect2:
+	return RR.fullscreen_plate(Vector2(MODE_W, MODE_H), screen, MODE_KEEP, Vector2(0.5, 1.0))
+
+
 func _layout_mode_overlay() -> void:
 	if _mode_card == null or _modes == null:
 		return
 	var screen := RR.screen_size()
-	var fitted := RR.uniform_fit(Vector2(MODE_W, MODE_H), screen, RR.display_insets(screen))
-	_mode_scale = Vector2(fitted.size.x / MODE_W, fitted.size.y / MODE_H)
-	_mode_origin = fitted.position
+	var plate := _mode_cover_rect(screen)
+	_mode_scale = Vector2(plate.size.x / MODE_W, plate.size.y / MODE_H)
+	_mode_origin = plate.position
 	_mode_card.stretch_mode = TextureRect.STRETCH_SCALE
-	_mode_card.position = fitted.position
-	_mode_card.size = fitted.size
+	_mode_card.position = plate.position
+	_mode_card.size = plate.size
 	_place_hotspot(_mode_unlimited, MODE_UNLIMITED)
 	_place_hotspot(_daily_button, MODE_DAILY)
 	_place_hotspot(_mission_button, MODE_MISSIONS)

@@ -12,6 +12,14 @@ on:
         required: false
         type: boolean
         default: false
+      ad_mode:
+        description: Rewarded ads. test is the default. production is only for an approved public release and requires scripts/ads/ad_build_mode.gd to say production.
+        required: true
+        type: choice
+        default: test
+        options:
+          - test
+          - production
 
 permissions:
   contents: read
@@ -40,9 +48,13 @@ jobs:
       # Gradle rejects the build when that differs from ANDROID_HOME.
       ANDROID_SDK_ROOT: /opt/android-sdk
       ANDROID_CMDLINE_TOOLS: commandlinetools-linux-13114758_latest.zip
+      AD_MODE: ${{ inputs.ad_mode }}
     steps:
       - name: Check out the project
         uses: actions/checkout@v4
+
+      - name: Check the rewarded ad mode
+        run: python3 tools/check_ad_build_mode.py --mode "${AD_MODE:-test}"
 
       - name: Refuse Google Play publishing
         if: ${{ inputs.publish_play }}
@@ -103,10 +115,12 @@ jobs:
               problems.append("iOS marketing version or build number changed while preparing Android.")
           if 'general/android/app_id="ca-app-pub-5190108736982657~2452653885"' not in project:
               problems.append("Android AdMob app id is not set in project.godot.")
-          if "const USE_TEST_ADS := true" not in ads:
-              problems.append("Android testing must keep USE_TEST_ADS true.")
           if "ca-app-pub-3940256099942544/5224354917" not in ads:
               problems.append("Android Google test rewarded unit is missing.")
+          if "def rewarded_unit_for" not in ads and "func rewarded_unit_for" not in ads:
+              problems.append("Rewarded unit selection must go through rewarded_unit_for().")
+          if 'normalize_mode(mode) != "production"' not in ads:
+              problems.append("Any mode other than production must stay on the Google test unit.")
           plugin = root / "addons/admob/plugin.cfg"
           if not plugin.is_file() or 'version="5.1.0"' not in plugin.read_text(encoding="utf-8"):
               problems.append("Poing AdMob plugin 5.1.0 is not installed.")
@@ -416,6 +430,9 @@ jobs:
               exit 1
               ;;
           esac
+          "$AAPT" dump xmltree build/Reefrun.apk AndroidManifest.xml > "$RUNNER_TEMP/apk-manifest.txt"
+          printf '%s\n' "$manifest" > "$RUNNER_TEMP/aab-manifest.txt"
+          python3 tools/check_ad_build_mode.py --mode "${AD_MODE:-test}" --manifest-file "$RUNNER_TEMP/apk-manifest.txt" --manifest-file "$RUNNER_TEMP/aab-manifest.txt" --package build/Reefrun.apk --package build/Reefrun.aab
           if [ "${ANDROID_VERSION_CODE}" -le "${LAST_PUBLISHED_VERSION_CODE}" ]; then
             echo "Refusing to publish version code ${ANDROID_VERSION_CODE}. Play already has ${LAST_PUBLISHED_VERSION_CODE}."
             exit 1

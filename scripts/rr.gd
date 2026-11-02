@@ -208,6 +208,29 @@ static func uniform_fit(art: Vector2, screen: Vector2, margins: Vector4) -> Rect
 	return Rect2(origin, size)
 
 
+# One scale, large enough that the art covers the screen. `anchor` places the
+# overflow: 0 keeps the start edge, 1 keeps the end edge.
+static func uniform_cover(art: Vector2, screen: Vector2, anchor: Vector2 = Vector2(0.5, 0.5)) -> Rect2:
+	var scale := maxf(screen.x / maxf(art.x, 1.0), screen.y / maxf(art.y, 1.0))
+	var size := art * scale
+	var slack := screen - size
+	return Rect2(Vector2(slack.x * anchor.x, slack.y * anchor.y), size)
+
+
+# Full-screen plate. Cover with one scale when `keep` stays on screen.
+# Otherwise fill the screen so the plate hides the menu and nothing in
+# `keep` is cropped. Safe-area insets are not applied to the plate.
+static func fullscreen_plate(art: Vector2, screen: Vector2, keep: Rect2, anchor: Vector2 = Vector2(0.5, 0.5)) -> Rect2:
+	var covered := uniform_cover(art, screen, anchor)
+	if absf(covered.position.x) <= 1.0 and absf(covered.position.y) <= 1.0 and absf(covered.size.x - screen.x) <= 1.0 and absf(covered.size.y - screen.y) <= 1.0:
+		return Rect2(Vector2.ZERO, screen)
+	var scale := covered.size.x / maxf(art.x, 1.0)
+	var kept := Rect2(covered.position + keep.position * scale, keep.size * scale)
+	if Rect2(Vector2.ZERO, screen).encloses(kept.grow(-1.0)):
+		return covered
+	return Rect2(Vector2.ZERO, screen)
+
+
 static func lobby_length(show_missions: bool) -> float:
 	if show_missions:
 		return UNLIMITED_LOBBY_SECS
