@@ -828,9 +828,10 @@ func _test_reset(backend) -> void:
 	mock.now_unix = Daily.unix_utc(2026, 10, 20, 18, 0, 0)
 	await _await_flush(backend)
 	var kept := int(_slot(session.mission_board, "easy").get("progress", 0))
-	session.mission_board["server_now"] = int(Time.get_unix_time_from_system()) - 100000
-	session.mission_board["resets_at"] = int(Time.get_unix_time_from_system()) - 10
-	session.mission_board["fetched_at"] = int(Time.get_unix_time_from_system()) - 100000
+	var kept_date := str(session.mission_board.get("mission_date", ""))
+	var period_end := int(session.mission_board.get("resets_at", 0))
+	session.mission_board["fetched_at"] = int(Time.get_unix_time_from_system()) - 7 * 86400
+	session.mission_board["fetched_ticks"] = Time.get_ticks_msec()
 	var overlay = _make_overlay()
 	overlay.use_screen_board()
 	root.add_child(overlay)
@@ -838,12 +839,11 @@ func _test_reset(backend) -> void:
 	overlay.present("board", true)
 	overlay._refresh_countdown()
 	await _wait_quiet(backend)
-	_check("reset_device_clock_keeps_server_day", str(session.mission_board.get("mission_date", "")) == Daily.challenge_date_from_unix(mock.now_unix) and int(_slot(session.mission_board, "easy").get("progress", 0)) == kept)
-	mock.now_unix = Daily.eastern_midnight_unix(2026, 10, 21) + 30
-	var boundary := int(session.mission_board.get("resets_at", 0))
-	session.mission_board["server_now"] = boundary
-	session.mission_board["fetched_at"] = int(Time.get_unix_time_from_system())
-	overlay._countdown_refresh = false
+	_check("reset_device_clock_keeps_server_day", str(session.mission_board.get("mission_date", "")) == kept_date and kept_date == Daily.challenge_date_from_unix(mock.now_unix) and int(_slot(session.mission_board, "easy").get("progress", 0)) == kept and not str(overlay._countdown._value).begins_with("CONNECTING"))
+	mock.now_unix = period_end
+	session.mission_board["server_now"] = period_end
+	session.mission_board["fetched_ticks"] = Time.get_ticks_msec()
+	overlay._countdown_retry_ticks = 0
 	overlay._refresh_countdown()
 	await _wait_quiet(backend)
 	_check("reset_open_app_refreshes", str(session.mission_board.get("mission_date", "")) == "2026-10-21")

@@ -215,7 +215,7 @@ func _process(delta: float) -> void:
 		return
 	_check_t = 0.0
 	if _mode_shows_locked() and _modes and _modes.visible:
-		_set_mode_reset(DailyAttemptScript.reset_label(_daily_resets_unix, int(Time.get_unix_time_from_system())))
+		_set_mode_reset(_daily_reset_text(_daily_resets_unix))
 	var backend := get_node_or_null("/root/Backend")
 	if _mode_busy:
 		backend = null
@@ -1961,6 +1961,22 @@ func _on_identity_ready() -> void:
 		_refresh_daily_status()
 
 
+func _trusted_server_unix() -> int:
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("estimated_server_unix"):
+		return int(backend.estimated_server_unix())
+	return 0
+
+
+func _daily_reset_text(resets_unix: int) -> String:
+	var now := _trusted_server_unix()
+	if resets_unix <= 0 or now <= 0:
+		return "RESETS AT MIDNIGHT"
+	if now >= resets_unix:
+		return DailyAttemptScript.WAITING_LABEL
+	return DailyAttemptScript.reset_label(resets_unix, now)
+
+
 func _show_daily_completed(resets_unix: int) -> void:
 	_daily_locked = true
 	_daily_checking = false
@@ -1972,7 +1988,7 @@ func _show_daily_completed(resets_unix: int) -> void:
 		_daily_button.disabled = true
 		_daily_button.modulate = Color(1, 1, 1, 0.45)
 	_set_mode_note(DailyAttemptScript.COMPLETED_LABEL)
-	_set_mode_reset(DailyAttemptScript.reset_label(resets_unix, int(Time.get_unix_time_from_system())))
+	_set_mode_reset(_daily_reset_text(resets_unix))
 
 
 func _clear_daily_lock() -> void:

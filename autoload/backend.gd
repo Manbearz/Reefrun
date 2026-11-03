@@ -51,6 +51,11 @@ var _pending_uploads: Array = []
 var _challenge: Dictionary = {}
 var _server_as_of := 0
 var _local_at_fetch := 0
+var _clock_ticks := 0
+var _mission_sync_ticks := 0
+var _resume_sync_ticks := 0
+const MISSION_SYNC_MSEC := 5 * 60 * 1000
+const RESUME_SYNC_MSEC := 2000
 var _busy := false
 var _auth_logged := false
 var _refresh_busy := false
@@ -115,12 +120,20 @@ func shared_course_seed() -> int:
 
 
 func challenge_for_new_match() -> Dictionary:
-	return DailyChallengeScript.choose_for_new_match(
-		_challenge,
-		_server_as_of,
-		_local_at_fetch,
-		int(Time.get_unix_time_from_system())
-	)
+	var now := estimated_server_unix()
+	if now <= 0:
+		if DailyChallengeScript.may_submit(_challenge):
+			return _challenge.duplicate(true)
+		return {}
+	return DailyChallengeScript.choose_for_new_match(_challenge, _server_as_of, _server_as_of, now)
+
+
+func estimated_server_unix() -> int:
+	return DailyChallengeScript.monotonic_server_unix(_server_as_of, _clock_ticks, Time.get_ticks_msec())
+
+
+func note_server_unix(server_unix: int) -> void:
+	_anchor_server_clock(server_unix)
 
 
 func prepared_roster(challenge: Dictionary) -> Array:
@@ -243,8 +256,7 @@ func fetch_daily_attempt_status() -> Dictionary:
 	):
 		GameSession.clear_claim_key()
 	if parsed.get("ok", false) and int(parsed.get("as_of_unix", 0)) > 0:
-		_server_as_of = int(parsed.get("as_of_unix", 0))
-		_local_at_fetch = int(Time.get_unix_time_from_system())
+		_anchor_server_clock(int(parsed.get("as_of_unix", 0)))
 	return parsed
 
 
@@ -814,10 +826,7 @@ func _prepare_daily_match() -> void:
 
 func _adopt_server_challenge(challenge: Dictionary) -> void:
 	_challenge = challenge.duplicate(true)
-	_server_as_of = int(challenge.get("as_of_unix", 0))
-	if _server_as_of <= 0:
-		_server_as_of = int(Time.get_unix_time_from_system())
-	_local_at_fetch = int(Time.get_unix_time_from_system())
+	_anchor_server_clock(int(challenge.get("as_of_unix", 0)))
 	_daily_roll_checked = ""
 
 
@@ -850,10 +859,7 @@ func _fetch_daily_challenge() -> void:
 		"id": str(parsed.get("challenge_id", "")),
 	})
 	_challenge = parsed
-	_server_as_of = int(parsed.get("as_of_unix", 0))
-	if _server_as_of <= 0:
-		_server_as_of = int(Time.get_unix_time_from_system())
-	_local_at_fetch = int(Time.get_unix_time_from_system())
+	_anchor_server_clock(int(parsed.get("as_of_unix", 0)))
 	_daily_roll_checked = ""
 
 
@@ -915,14 +921,47 @@ func _build_roster() -> void:
 
 
 func _estimated_server_date() -> String:
-	var unix := DailyChallengeScript.estimated_server_unix(
-		_server_as_of,
-		_local_at_fetch,
-		int(Time.get_unix_time_from_system())
-	)
+	var unix := estimated_server_unix()
 	if unix <= 0:
 		return ""
 	return DailyChallengeScript.challenge_date_from_unix(unix)
+
+
+func _anchor_server_clock(server_unix: int) -> void:
+	if server_unix <= 0:
+		return
+	_server_as_of = server_unix
+	_clock_ticks = Time.get_ticks_msec()
+	if _clock_ticks <= 0:
+		_clock_ticks = 1
+	_local_at_fetch = server_unix
+
+
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_APPLICATION_RESUMED and what != NOTIFICATION_APPLICATION_FOCUS_IN:
+		return
+	var now := Time.get_ticks_msec()
+	if _resume_sync_ticks > 0 and now - _resume_sync_ticks < RESUME_SYNC_MSEC:
+		return
+	_resume_sync_ticks = now
+	if not is_configured() or not has_session():
+		return
+	refresh_daily_missions()
+	_daily_roll_checked = ""
+
+
+func _process(_delta: float) -> void:
+	if not is_configured() or not has_session():
+		return
+	var now := Time.get_ticks_msec()
+	if _mission_sync_ticks <= 0:
+		_mission_sync_ticks = now
+		return
+	if now - _mission_sync_ticks < MISSION_SYNC_MSEC:
+		return
+	_mission_sync_ticks = now
+	refresh_daily_missions()
+	_daily_roll_checked = ""
 
 
 func _flush_uploads() -> void:

@@ -555,7 +555,7 @@ func _next_challenge() -> Dictionary:
 		var got: Variant = backend.challenge_for_new_match()
 		if typeof(got) == TYPE_DICTIONARY and int(got.get("course_seed", 0)) != 0:
 			return got
-	return DailyChallengeScript.unverified_local(int(Time.get_unix_time_from_system()))
+	return {}
 
 
 func record_run(score: int, rank: int, alive_at_death: int) -> void:
@@ -616,20 +616,31 @@ func refresh_boards() -> bool:
 
 
 func current_day_key() -> String:
-	var now := Time.get_datetime_dict_from_system()
-	return "%04d-%02d-%02d" % [int(now.year), int(now.month), int(now.day)]
+	var unix := _server_period_unix()
+	if unix <= 0:
+		return day_key
+	return DailyChallengeScript.challenge_date_from_unix(unix)
 
 
 func current_week_key() -> String:
-	var now := Time.get_datetime_dict_from_system()
-	var back := (int(now.weekday) + 6) % 7
-	var monday := _shift_date(int(now.year), int(now.month), int(now.day), -back)
-	return "%04d-%02d-%02d" % [monday.year, monday.month, monday.day]
+	var unix := _server_period_unix()
+	if unix <= 0:
+		return week_key
+	return DailyChallengeScript.week_key(DailyChallengeScript.utc_date_from_unix(unix))
 
 
 func current_month_key() -> String:
-	var now := Time.get_datetime_dict_from_system()
-	return "%04d-%02d" % [int(now.year), int(now.month)]
+	var unix := _server_period_unix()
+	if unix <= 0:
+		return month_key
+	return DailyChallengeScript.utc_date_from_unix(unix).substr(0, 7)
+
+
+func _server_period_unix() -> int:
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("estimated_server_unix"):
+		return int(backend.estimated_server_unix())
+	return 0
 
 
 func _decode_json_array(text: String) -> Array:
@@ -644,18 +655,6 @@ func _decode_json_dict(text: String) -> Dictionary:
 	if typeof(parsed) == TYPE_DICTIONARY:
 		return parsed
 	return {}
-
-
-func _shift_date(year: int, month: int, day: int, delta: int) -> Dictionary:
-	var unix := Time.get_unix_time_from_datetime_dict({
-		"year": year,
-		"month": month,
-		"day": day,
-		"hour": 12,
-		"minute": 0,
-		"second": 0,
-	})
-	return Time.get_datetime_dict_from_unix_time(unix + delta * 86400)
 
 
 func _upsert(board: Array, name: String, score: int) -> void:
@@ -739,6 +738,8 @@ func _load() -> void:
 	pending_mission_runs = _decode_json_array(str(cfg.get_value("missions", "pending", "[]")))
 	applied_mission_reward_coins = int(cfg.get_value("missions", "applied", 0))
 	mission_board = _decode_json_dict(str(cfg.get_value("missions", "board", "{}")))
+	if int(mission_board.get("server_now", 0)) > 0:
+		mission_board["fetched_ticks"] = Time.get_ticks_msec()
 
 
 func _save() -> void:
@@ -831,7 +832,13 @@ func apply_mission_board(board: Dictionary) -> int:
 	if not bool(board.get("ok", false)):
 		return 0
 	mission_board = DailyMissionsScript.settle_board(mission_board, board)
-	mission_board["fetched_at"] = int(Time.get_unix_time_from_system())
+	mission_board["fetched_ticks"] = Time.get_ticks_msec()
+	var server_now := int(mission_board.get("server_now", 0))
+	if server_now > 0:
+		mission_board["fetched_at"] = server_now
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("note_server_unix"):
+		backend.note_server_unix(server_now)
 	var total := int(board.get("mission_reward_coins", applied_mission_reward_coins))
 	var delta := DailyMissionsScript.reward_delta(applied_mission_reward_coins, total)
 	if delta > 0:

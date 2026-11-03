@@ -11,7 +11,7 @@ var _scroll: ScrollContainer
 var _list: VBoxContainer
 var _back: Button
 var _cards := {}
-var _asked_reset := false
+var _asked_reset_ticks := 0
 
 
 func _ready() -> void:
@@ -29,7 +29,7 @@ func _ready() -> void:
 
 func open() -> void:
 	visible = true
-	_asked_reset = false
+	_asked_reset_ticks = 0
 	_layout()
 	_render()
 	var backend := get_node_or_null("/root/Backend")
@@ -183,21 +183,25 @@ func _refresh_countdown() -> void:
 		board = GameSession.mission_board
 	var server_now := int(board.get("server_now", 0))
 	var resets_at := int(board.get("resets_at", 0))
-	var fetched_at := int(board.get("fetched_at", 0))
-	if server_now <= 0 or resets_at <= 0 or fetched_at <= 0:
+	if server_now <= 0 or resets_at <= 0:
 		_countdown.text = "RESETS AT MIDNIGHT"
 		return
-	var left := Missions.remaining_seconds(server_now, resets_at, fetched_at, int(Time.get_unix_time_from_system()))
+	var left := Missions.anchored_remaining(board)
+	if left < 0:
+		_countdown.text = "RESETS AT MIDNIGHT"
+		return
+	if left == 0:
+		_countdown.text = Missions.WAITING_LABEL
+		var now_ticks := Time.get_ticks_msec()
+		if not Missions.confirm_retry_due(_asked_reset_ticks, now_ticks):
+			return
+		_asked_reset_ticks = now_ticks
+		var backend := get_node_or_null("/root/Backend")
+		if backend and backend.has_method("refresh_daily_missions"):
+			backend.refresh_daily_missions()
+		return
 	_countdown.text = Missions.format_countdown(left)
-	if left > 0:
-		_asked_reset = false
-		return
-	if _asked_reset:
-		return
-	_asked_reset = true
-	var backend := get_node_or_null("/root/Backend")
-	if backend and backend.has_method("refresh_daily_missions"):
-		backend.refresh_daily_missions()
+	_asked_reset_ticks = 0
 
 
 func _show_auto_state(card: Dictionary, pending: bool, claimed: bool) -> void:

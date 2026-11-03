@@ -199,7 +199,7 @@ var _fill_ratio: Array[float] = [0.0, 0.0, 0.0]
 var _applied := false
 var _countdown: _BubbleText
 var _countdown_wait := 0.0
-var _countdown_refresh := false
+var _countdown_retry_ticks := 0
 var _widget: Panel
 var _widget_icon: Control
 var _widget_count: SpriteText
@@ -705,21 +705,25 @@ func _refresh_countdown() -> void:
 		board = GameSession.mission_board
 	var server_now := int(board.get("server_now", 0))
 	var resets_at := int(board.get("resets_at", 0))
-	var fetched_at := int(board.get("fetched_at", 0))
-	if server_now <= 0 or resets_at <= 0 or fetched_at <= 0:
+	if server_now <= 0 or resets_at <= 0:
 		_countdown.show_text("")
 		return
-	var left := DailyMissions.remaining_seconds(server_now, resets_at, fetched_at, int(Time.get_unix_time_from_system()))
+	var left := DailyMissions.anchored_remaining(board)
+	if left < 0:
+		_countdown.show_text("")
+		return
+	if left == 0:
+		_countdown.show_text(DailyMissions.WAITING_LABEL)
+		var now_ticks := Time.get_ticks_msec()
+		if not DailyMissions.confirm_retry_due(_countdown_retry_ticks, now_ticks):
+			return
+		_countdown_retry_ticks = now_ticks
+		var backend := get_node_or_null("/root/Backend")
+		if backend and backend.has_method("refresh_daily_missions"):
+			backend.refresh_daily_missions()
+		return
 	_countdown.show_text(DailyMissions.format_countdown(left))
-	if left > 0:
-		_countdown_refresh = false
-		return
-	if _countdown_refresh:
-		return
-	_countdown_refresh = true
-	var backend := get_node_or_null("/root/Backend")
-	if backend and backend.has_method("refresh_daily_missions"):
-		backend.refresh_daily_missions()
+	_countdown_retry_ticks = 0
 
 
 func refresh_from_session() -> void:

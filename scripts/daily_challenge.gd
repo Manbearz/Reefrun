@@ -136,6 +136,16 @@ static func estimated_server_unix(as_of_unix: int, fetched_local_unix: int, now_
 	return as_of_unix + (now_local_unix - fetched_local_unix)
 
 
+# Elapsed time between two monotonic samples. The phone wall clock is not an input.
+static func monotonic_server_unix(as_of_unix: int, ticks_at_fetch: int, ticks_now: int) -> int:
+	if as_of_unix <= 0 or ticks_at_fetch <= 0:
+		return 0
+	var elapsed := int((ticks_now - ticks_at_fetch) / 1000.0)
+	if elapsed < 0:
+		elapsed = 0
+	return as_of_unix + elapsed
+
+
 static func choose_for_new_match(cached: Dictionary, as_of_unix: int, fetched_local_unix: int, now_local_unix: int) -> Dictionary:
 	var estimated := estimated_server_unix(as_of_unix, fetched_local_unix, now_local_unix)
 	var estimated_date := challenge_date_from_unix(estimated) if estimated > 0 else ""

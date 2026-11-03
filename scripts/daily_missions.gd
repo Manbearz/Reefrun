@@ -286,8 +286,36 @@ static func evaluate(rule: String, goal: int, goal_b: int, stats: Dictionary) ->
 	}
 
 
+const WAITING_LABEL := "CONNECTING"
+const RESET_CONFIRM_MSEC := 30000
+
+
+# Honest elapsed samples only. The live countdown uses anchored_remaining so a
+# changed phone clock cannot move this value.
 static func remaining_seconds(server_now: int, resets_at: int, fetched_at: int, now_unix: int) -> int:
 	return maxi(0, resets_at - server_now - (now_unix - fetched_at))
+
+
+static func anchored_remaining(board: Dictionary, ticks_now: int = -1) -> int:
+	var server_now := int(board.get("server_now", 0))
+	var resets_at := int(board.get("resets_at", 0))
+	if server_now <= 0 or resets_at <= 0:
+		return -1
+	var now_ticks := Time.get_ticks_msec() if ticks_now < 0 else ticks_now
+	var fetched := int(board.get("fetched_ticks", 0))
+	if fetched <= 0:
+		board["fetched_ticks"] = now_ticks
+		fetched = now_ticks
+	var elapsed := int((now_ticks - fetched) / 1000.0)
+	if elapsed < 0:
+		elapsed = 0
+	return maxi(0, resets_at - server_now - elapsed)
+
+
+static func confirm_retry_due(last_ticks: int, now_ticks: int) -> bool:
+	if last_ticks <= 0:
+		return true
+	return now_ticks - last_ticks >= RESET_CONFIRM_MSEC
 
 
 # One daily period keeps one Easy, Medium, and Hard assignment.
@@ -305,7 +333,11 @@ static func settle_board(current: Dictionary, incoming: Dictionary) -> Dictionar
 		return current.duplicate(true)
 	if current_date == "" or current_date != incoming_date:
 		if incoming_date > current_date and _period_still_open(current, incoming):
-			return current.duplicate(true)
+			var kept := current.duplicate(true)
+			var server_now := int(incoming.get("server_now", 0))
+			if server_now > 0:
+				kept["server_now"] = server_now
+			return kept
 		return incoming.duplicate(true)
 	var merged := incoming.duplicate(true)
 	var current_slots := _slots_map(current)

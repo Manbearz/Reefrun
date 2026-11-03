@@ -7,6 +7,7 @@ extends RefCounted
 
 const DailyChallengeScript := preload("res://scripts/daily_challenge.gd")
 const COMPLETED_LABEL := "COMPLETED - COME BACK TOMORROW"
+const WAITING_LABEL := "CONNECTING"
 
 
 static func attempt_required(mode: String) -> bool:
