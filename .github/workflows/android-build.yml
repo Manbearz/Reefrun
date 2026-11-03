@@ -111,8 +111,9 @@ jobs:
               problems.append("Portrait orientation is not set. window/handheld/orientation must be 1.")
           if 'application/bundle_identifier="com.lunarentertainment.reefrun"' not in preset:
               problems.append("iOS bundle identifier changed while preparing Android.")
-          if 'application/short_version="1.0.0"' not in preset or 'application/version="6"' not in preset:
-              problems.append("iOS marketing version or build number changed while preparing Android.")
+          ios_build = re.search(r'(?m)^application/version="(\d+)"\s*$', preset)
+          if 'application/short_version="1.0.0"' not in preset or ios_build is None:
+              problems.append("iOS marketing version must stay 1.0.0 and the iOS build number must be a positive integer.")
           if 'general/android/app_id="ca-app-pub-5190108736982657~2452653885"' not in project:
               problems.append("Android AdMob app id is not set in project.godot.")
           if "ca-app-pub-3940256099942544/5224354917" not in ads:
