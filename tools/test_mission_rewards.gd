@@ -75,6 +75,7 @@ func _run() -> void:
 	await _test_generation(backend)
 	await _test_progress(backend)
 	await _test_claims(backend)
+	await _test_finished_board_stays(backend)
 	await _test_bonus_orders(backend)
 	await _test_reset(backend)
 	await _test_network(backend)
@@ -661,6 +662,98 @@ func _test_claims(backend) -> void:
 	_check("claim_parallel_no_duplicate", mock.claim_hits == inflight + 1 and mock.claim_count(PLAYER_A, mock.today(), "easy") == 1 and int(session.coins) == 5, "hits=%d coins=%d" % [mock.claim_hits - inflight, int(session.coins)])
 
 
+func _test_finished_board_stays(backend) -> void:
+	_reset_client(backend)
+	mock.clear_player(PLAYER_A)
+	mock.zone = "eastern"
+	mock.now_unix = Daily.unix_utc(2026, 10, 20, 18, 0, 0)
+	mock.force_today(1, 19, 33)
+	var session = _gs()
+	session.match_mode = session.MODE_UNLIMITED
+	mock._prepare_complete(PLAYER_A)
+	await _await_flush(backend)
+	var finished: Dictionary = session.mission_board.duplicate(true)
+	var finished_date := str(finished.get("mission_date", ""))
+	var ids := [
+		int(_slot(finished, "easy").get("mission_id", 0)),
+		int(_slot(finished, "medium").get("mission_id", 0)),
+		int(_slot(finished, "hard").get("mission_id", 0)),
+	]
+	_check("finished_three_claimed", finished_date == "2026-10-20" and ids == [1, 19, 33] and bool(_slot(finished, "easy").get("claimed", false)) and bool(_slot(finished, "medium").get("claimed", false)) and bool(_slot(finished, "hard").get("claimed", false)) and bool(finished.get("bonus", {}).get("claimed", false)) and int(session.coins) == 60)
+	await _await_flush(backend)
+	_check("finished_refresh_keeps_set", _same_finished(session.mission_board, ids, finished_date) and int(session.coins) == 60)
+	session.remember_mission_run("after-clear-01", 12, 20, 0)
+	await _await_flush(backend)
+	_check("finished_another_run_keeps_set", _same_finished(session.mission_board, ids, finished_date) and int(session.coins) == 60 and mock.claim_count(PLAYER_A, finished_date, "easy") == 1)
+	var coins_before := int(session.coins)
+	await backend.claim_daily_mission("bonus")
+	await _wait_quiet(backend)
+	_check("finished_claim_twice_no_coins", int(session.coins) == coins_before and mock.profile_coins(PLAYER_A) == 60 and mock.claim_count(PLAYER_A, finished_date, "bonus") == 1)
+	session._save()
+	session.mission_board = {}
+	session.coins = 0
+	session.applied_mission_reward_coins = 0
+	session._load()
+	_check("finished_restart_keeps_set", _same_finished(session.mission_board, ids, finished_date) and int(session.coins) == 60)
+	var overlay = _make_overlay()
+	overlay.use_screen_board()
+	root.add_child(overlay)
+	overlay.refresh_from_session()
+	overlay.present("board", true)
+	await process_frame
+	var labels := [
+		str(overlay._descriptions[0]._value),
+		str(overlay._descriptions[1]._value),
+		str(overlay._descriptions[2]._value),
+	]
+	_check("finished_overlay_complete", labels == ["COMPLETE", "COMPLETE", "COMPLETE"] and str(overlay._counters[0]._text) == "10/10" and str(overlay._status[0]._mode) == "done" and str(overlay._status[1]._mode) == "done" and str(overlay._status[2]._mode) == "done" and str(overlay._countdown._value).begins_with("RESETS IN ") and not str(overlay._countdown._value).ends_with("00:00:00"), " ".join(labels))
+	overlay.queue_free()
+	var reroll: Dictionary = session.mission_board.duplicate(true)
+	reroll["slots"] = [
+		{"slot": "easy", "mission_id": 2, "description": "Pass 25 pipes total.", "reward": 5, "progress": 0, "goal": 25, "complete": false, "claimed": false},
+		{"slot": "medium", "mission_id": 20, "description": "Pass 40 pipes in one run.", "reward": 10, "progress": 0, "goal": 40, "complete": false, "claimed": false},
+		{"slot": "hard", "mission_id": 34, "description": "Pass 80 pipes in one run.", "reward": 20, "progress": 0, "goal": 80, "complete": false, "claimed": false},
+	]
+	reroll["bonus"] = {"reward": 25, "progress": 0, "goal": 3, "unlocked": false, "claimed": false, "description": "COMPLETE ALL 3"}
+	session.apply_mission_board(reroll)
+	_check("finished_same_day_reroll_ignored", _same_finished(session.mission_board, ids, finished_date) and int(session.coins) == 60)
+	var early: Dictionary = session.mission_board.duplicate(true)
+	early["mission_date"] = "2026-10-21"
+	early["server_now"] = int(session.mission_board.get("resets_at", 0)) - 60
+	early["slots"] = reroll["slots"]
+	early["bonus"] = reroll["bonus"]
+	session.apply_mission_board(early)
+	_check("finished_before_reset_keeps_set", _same_finished(session.mission_board, ids, finished_date))
+	mock.fault = "offline"
+	await _await_flush(backend)
+	_check("finished_offline_keeps_set", _same_finished(session.mission_board, ids, finished_date) and int(session.coins) == 60)
+	mock.fault = ""
+	mock.now_unix = Daily.eastern_midnight_unix(2026, 10, 21) + 30
+	await _await_flush(backend)
+	var rolled: Dictionary = session.mission_board
+	_check("finished_reset_assigns_next_day", str(rolled.get("mission_date", "")) == "2026-10-21" and not bool(_slot(rolled, "easy").get("claimed", false)) and not bool(_slot(rolled, "easy").get("complete", false)) and int(_slot(rolled, "easy").get("progress", -1)) == 0 and int(session.coins) == 60)
+	session._save()
+	session.mission_board = {}
+	session._load()
+	_check("finished_restart_after_reset", str(session.mission_board.get("mission_date", "")) == "2026-10-21" and not bool(_slot(session.mission_board, "easy").get("complete", false)))
+
+
+func _same_finished(board: Dictionary, ids: Array, date: String) -> bool:
+	return (
+		str(board.get("mission_date", "")) == date
+		and int(_slot(board, "easy").get("mission_id", 0)) == int(ids[0])
+		and int(_slot(board, "medium").get("mission_id", 0)) == int(ids[1])
+		and int(_slot(board, "hard").get("mission_id", 0)) == int(ids[2])
+		and bool(_slot(board, "easy").get("complete", false))
+		and bool(_slot(board, "medium").get("complete", false))
+		and bool(_slot(board, "hard").get("complete", false))
+		and bool(_slot(board, "easy").get("claimed", false))
+		and bool(_slot(board, "medium").get("claimed", false))
+		and bool(_slot(board, "hard").get("claimed", false))
+		and bool(board.get("bonus", {}).get("claimed", false))
+	)
+
+
 func _test_bonus_orders(backend) -> void:
 	_reset_client(backend)
 	mock.clear_player(PLAYER_A)
@@ -747,8 +840,8 @@ func _test_reset(backend) -> void:
 	await _wait_quiet(backend)
 	_check("reset_device_clock_keeps_server_day", str(session.mission_board.get("mission_date", "")) == Daily.challenge_date_from_unix(mock.now_unix) and int(_slot(session.mission_board, "easy").get("progress", 0)) == kept)
 	mock.now_unix = Daily.eastern_midnight_unix(2026, 10, 21) + 30
-	session.mission_board["server_now"] = int(Time.get_unix_time_from_system())
-	session.mission_board["resets_at"] = int(Time.get_unix_time_from_system())
+	var boundary := int(session.mission_board.get("resets_at", 0))
+	session.mission_board["server_now"] = boundary
 	session.mission_board["fetched_at"] = int(Time.get_unix_time_from_system())
 	overlay._countdown_refresh = false
 	overlay._refresh_countdown()
@@ -1120,7 +1213,7 @@ func _test_ui(backend) -> void:
 	panel._render()
 	var easy_card: Dictionary = panel._cards.easy
 	var bonus_card: Dictionary = panel._cards.bonus
-	_check("ui_panel_description", str(easy_card.body.text) == "Pass 10 pipes total." and str(easy_card.count.text).begins_with("10 / 10"))
+	_check("ui_panel_description", str(easy_card.body.text) == "COMPLETE" and str(easy_card.count.text).begins_with("10 / 10"))
 	_check("ui_panel_claim_hidden", not easy_card.claim.visible and not bonus_card.claim.visible and easy_card.claim.mouse_filter == Control.MOUSE_FILTER_IGNORE)
 	_check("ui_panel_pending", str(easy_card.mark.text) == "PENDING" and easy_card.mark.visible)
 	panel.open()

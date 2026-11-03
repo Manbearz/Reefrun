@@ -6,6 +6,7 @@ extends SceneTree
 
 const Mock := preload("res://scripts/ads/mock_rewarded_ads.gd")
 const AdCfg := preload("res://scripts/ads/ad_config.gd")
+const MobileScript := preload("res://scripts/ads/mobile_rewarded_ads.gd")
 
 var _passed := 0
 var _failed := 0
@@ -340,6 +341,28 @@ func _test_old_ad_and_timeout(ads: Node) -> void:
 	_check("timeout_late_reward_not_twice", int(session.coins) == 12)
 	await _drop(stalled)
 	session.coins = 0
+	session.add_coins(6)
+	var active := _boot()
+	active._reward_show_timeout = 0.12
+	active._reward_hard_cap = 0.4
+	ads.set_mock_outcome(Mock.Outcome.STALL, false, 0.0)
+	_offer(active, 6)
+	active._coin_ad_watch.pressed.emit()
+	ads._provider.show_active = true
+	var active_session: int = active._reward_session
+	await create_timer(0.2).timeout
+	_check(
+		"active_timeout_keeps_yes_disabled",
+		active._coin_ad_watch.disabled and not active.overlay.visible and int(session.coins) == 6 and active._reward_session == active_session,
+		"disabled=%s visible=%s wallet=%d" % [active._coin_ad_watch.disabled, active.overlay.visible, int(session.coins)]
+	)
+	active._watch_coin_ad()
+	_check("active_timeout_second_yes_ignored", ads.mock_show_count() == 1 and active._reward_session == active_session, "shows=%d" % ads.mock_show_count())
+	ads.reward_earned.emit(active_session)
+	_check("active_timeout_late_reward_pays_once", int(session.coins) == 12 and active._coin_reward_claimed, "wallet=%d" % int(session.coins))
+	ads._provider.show_active = false
+	await _drop(active)
+	session.coins = 0
 	session.add_coins(4)
 	var crossed := _boot()
 	crossed._reward_show_timeout = 0.2
@@ -392,6 +415,10 @@ func _test_mobile_guards() -> void:
 		mobile._start_sdk()
 	else:
 		_warn("PoingGodotAdMob is present. _start_sdk was not called, so this process did not initialize the SDK.")
+	mobile._on_consent_failure(null)
+	_check("consent_error_does_not_start_ads", not mobile._sdk_started and not mobile._ads_request_allowed and not mobile.is_available())
+	_check("consent_obtained_allows", MobileScript.consent_status_allows(1) and MobileScript.consent_status_allows(3))
+	_check("consent_unknown_or_required_blocks", not MobileScript.consent_status_allows(0) and not MobileScript.consent_status_allows(2) and not MobileScript.consent_status_allows(-1))
 	_check("mobile_missing_plugin_does_not_init", not mobile._sdk_started and not mobile.is_available())
 	mobile.queue_free()
 	var web = load("res://scripts/ads/web_rewarded_ads.gd").new()
@@ -409,14 +436,25 @@ func _test_platforms() -> void:
 	var android := FileAccess.get_file_as_string("res://scripts/ads/android_rewarded_ads.gd")
 	var project := FileAccess.get_file_as_string("res://project.godot")
 	_check("platforms_share_mobile_provider", ios.contains("extends MobileRewardedAds") and android.contains("extends MobileRewardedAds"))
-	_check("test_ads_enabled", AdCfg.USE_TEST_ADS)
+	_check("desktop_stays_on_test", AdCfg.monetization_mode() == "test" and not AdCfg.is_production_ads())
+	_check("packed_ios_mode_is_production", AdCfg.mode_for_platform("ios") == "production")
+	_check("packed_android_mode_is_test", AdCfg.mode_for_platform("android") == "test")
+	_check("packed_ios_unit_is_live", AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios")) == AdCfg.IOS_REWARDED_UNIT_ID)
+	_check("packed_android_unit_is_google_test", AdCfg.rewarded_unit_for("android", AdCfg.mode_for_platform("android")) == AdCfg.ANDROID_TEST_REWARDED_UNIT_ID and AdCfg.is_google_test_rewarded_unit(AdCfg.rewarded_unit_for("android", AdCfg.mode_for_platform("android"))))
+	_check("android_test_unit", AdCfg.rewarded_unit_for("android", "test") == AdCfg.ANDROID_TEST_REWARDED_UNIT_ID)
+	_check("ios_test_unit", AdCfg.rewarded_unit_for("ios", "test") == AdCfg.IOS_TEST_REWARDED_UNIT_ID)
+	_check("ambiguous_mode_is_test", AdCfg.rewarded_unit_for("android", "") == AdCfg.ANDROID_TEST_REWARDED_UNIT_ID and AdCfg.rewarded_unit_for("ios", "release") == AdCfg.IOS_TEST_REWARDED_UNIT_ID)
+	_check("android_production_unit_not_requested", AdCfg.rewarded_unit_for("android", "production") == AdCfg.ANDROID_REWARDED_UNIT_ID and AdCfg.rewarded_unit_for("android", "production") != AdCfg.ANDROID_TEST_REWARDED_UNIT_ID)
+	_check("ios_production_unit_not_requested", AdCfg.rewarded_unit_for("ios", "production") == AdCfg.IOS_REWARDED_UNIT_ID and AdCfg.rewarded_unit_for("ios", "production") != AdCfg.IOS_TEST_REWARDED_UNIT_ID)
+	_check("desktop_production_unit_empty", AdCfg.rewarded_unit_for("windows", "production").is_empty() and AdCfg.rewarded_unit_id().is_empty())
 	_check("test_units_are_google", AdCfg.is_google_test_rewarded_unit(AdCfg.IOS_TEST_REWARDED_UNIT_ID) and AdCfg.is_google_test_rewarded_unit(AdCfg.ANDROID_TEST_REWARDED_UNIT_ID) and AdCfg.IOS_TEST_REWARDED_UNIT_ID != AdCfg.ANDROID_TEST_REWARDED_UNIT_ID)
 	_check("production_units_distinct", AdCfg.IOS_REWARDED_UNIT_ID.contains("/") and AdCfg.ANDROID_REWARDED_UNIT_ID.contains("/") and not AdCfg.IOS_REWARDED_UNIT_ID.contains("~") and AdCfg.IOS_REWARDED_UNIT_ID != AdCfg.ANDROID_REWARDED_UNIT_ID)
 	_check("app_ids_match_project", project.contains(AdCfg.IOS_APP_ID) and project.contains(AdCfg.ANDROID_APP_ID))
-	_check("windows_unit_empty", AdCfg.rewarded_unit_id().is_empty())
 	_check("editor_mock_allowed", AdCfg.use_mock_provider())
-	_check("consent_continues_if_plugin_missing", FileAccess.get_file_as_string("res://scripts/ads/mobile_rewarded_ads.gd").contains("consent plugin is missing"))
-	_warn("iOS and Android use one GDScript provider. The native PoingGodotAdMob singletons are not in this Windows run, so load, show, consent forms, and real callbacks were not executed. USE_TEST_ADS is true, so a device build currently requests Google's test rewarded units.")
+	var mobile_source := FileAccess.get_file_as_string("res://scripts/ads/mobile_rewarded_ads.gd")
+	_check("consent_missing_plugin_blocks", mobile_source.contains("consent plugin is missing. Ads will not be requested."))
+	_check("privacy_options_api", mobile_source.contains("func show_privacy_options") and mobile_source.contains("PrivacyOptionsRequirementStatus.REQUIRED"))
+	_warn("iOS and Android use one GDScript provider. The native PoingGodotAdMob singletons are not in this Windows run, so load, show, consent forms, and real callbacks were not executed. No ad request was made. The packed iOS mode selects the live iOS unit. The packed Android mode stays on Google's test unit.")
 	_warn("Headless mode cannot confirm the offer artwork's spacing. The Yes and No hotspots, the failure note, and the post-run buttons were exercised. A phone screenshot is still needed for alignment.")
 
 

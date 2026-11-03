@@ -10,11 +10,14 @@ const BAR := Rect2(208, 1068, 524, 56)
 const BAR_ART := Rect2(45, 228, 2050, 313)
 const FISH_ID := "fish_blue"
 const BATCH := 3
-const FADE_SEC := 0.4
+# Sprite and menu-file progress fill up to this. The remainder is the live menu.
+const PREPARE_CAP := 0.9
+# How quickly the bar closes the gap to the measured value. Not a load duration.
+const SMOOTH_RATE := 14.0
+const FINISH_RATE := 28.0
 
 var _overlay: CanvasLayer
 var _plate: Control
-var _fade: Tween
 var _art: TextureRect
 var _clip: Control
 var _fill: TextureRect
@@ -22,19 +25,24 @@ var _status: Label
 var _ids: PackedStringArray = PackedStringArray()
 var _cursor := 0
 var _finished := 0
+var _failed := 0
 var _inflight: PackedStringArray = PackedStringArray()
-var _progress := 0.0
-var _shown := 0.0
+var _retries := {}
+var _actual := 0.0
+var _displayed := 0.0
+var _visual_ready := false
 var _aspect_saved := -1
 var _menu_requested := false
-var _opening := false
+var _menu_packed: PackedScene
+var _menu_node: Node
+var _menu_retries := 0
 var _handoff := false
-var _stall := 0.0
-var _stall_mark := -1
-var _menu_gave_up := false
+var _t0 := 0
+var boot_ms := {}
 
 
 func _ready() -> void:
+	_t0 = Time.get_ticks_usec()
 	set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_use_full_screen()
@@ -43,21 +51,25 @@ func _ready() -> void:
 	_request_menu()
 	_kick()
 	set_process(true)
+	_stamp("screen")
 
 
 func _process(delta: float) -> void:
-	if not _opening:
+	if _handoff:
+		return
+	# The menu was created last frame, so its first draw has finished.
+	if _menu_node != null and not _visual_ready:
+		_visual_ready = true
+		_actual = 1.0
+	elif _menu_node == null:
 		_kick()
 		_poll()
 		_try_open()
-	var target := 1.0 if _opening else _progress
-	if target > _shown:
-		_shown = minf(target, _shown + delta * 0.85)
-	else:
-		_shown = target
+	_follow(delta)
 	_layout()
-	if _opening and _shown >= 0.995:
-		_reveal_menu()
+	if _visual_ready and _displayed >= 0.999:
+		_stamp("shown")
+		_finish_handoff(_menu_node)
 
 
 func _priority_first(ids: PackedStringArray) -> PackedStringArray:
@@ -90,7 +102,8 @@ func _kick() -> void:
 		_cursor += 1
 		var path := Sprites.sprite_path(id)
 		if not ResourceLoader.exists(path):
-			_finished += 1
+			_failed += 1
+			push_warning("[boot] missing sprite %s" % path)
 			continue
 		var err := ResourceLoader.load_threaded_request(path, "", false)
 		if err == OK or err == ERR_ALREADY_EXISTS or err == ERR_BUSY:
@@ -100,7 +113,7 @@ func _kick() -> void:
 			if status == ResourceLoader.THREAD_LOAD_IN_PROGRESS or status == ResourceLoader.THREAD_LOAD_LOADED:
 				_inflight.append(path)
 			else:
-				_finished += 1
+				_recover_sprite(path)
 
 
 func _poll() -> void:
@@ -111,44 +124,123 @@ func _poll() -> void:
 		var status := ResourceLoader.load_threaded_get_status(path, progress)
 		match status:
 			ResourceLoader.THREAD_LOAD_LOADED:
-				var resource := ResourceLoader.load_threaded_get(path)
-				if resource is Texture2D:
-					Sprites.remember(path.get_file().get_basename(), resource)
-				_finished += 1
+				_take_sprite(path)
 			ResourceLoader.THREAD_LOAD_FAILED, ResourceLoader.THREAD_LOAD_INVALID_RESOURCE:
-				_finished += 1
+				if not _retry_sprite(path):
+					_recover_sprite(path)
+				else:
+					still.append(path)
 			ResourceLoader.THREAD_LOAD_IN_PROGRESS:
 				still.append(path)
+				# Stay under 1 until the loader reports the resource as loaded.
 				if not progress.is_empty():
-					partial += clampf(float(progress[0]), 0.0, 1.0)
+					partial += clampf(float(progress[0]), 0.0, 0.99)
 			_:
 				still.append(path)
 	_inflight = still
-	var denom := float(maxi(_ids.size(), 1) + 1)
-	_progress = clampf((float(_finished) + partial + _menu_fraction()) / denom, 0.0, 1.0)
+	var required := float(_ids.size() + 1)
+	var resource := clampf((float(_finished) + partial + _menu_fraction()) / required, 0.0, 1.0)
+	# Leave the last slice for building and drawing the live menu.
+	_actual = maxf(_actual, resource * PREPARE_CAP)
+
+
+func _follow(delta: float) -> void:
+	# Ease toward the measured value. A stall does not count as animation time.
+	var gap := _actual - _displayed
+	if gap <= 0.0:
+		return
+	if _actual >= 1.0 and gap <= 0.004:
+		_displayed = _actual
+		return
+	var rate := FINISH_RATE if _actual >= 1.0 else SMOOTH_RATE
+	var step_delta := clampf(delta, 0.0, 0.05)
+	var blend := 1.0 - exp(-rate * step_delta)
+	_displayed = minf(_actual, _displayed + gap * blend)
+
+
+func _retry_sprite(path: String) -> bool:
+	var attempts := int(_retries.get(path, 0))
+	if attempts >= 1:
+		return false
+	_retries[path] = attempts + 1
+	var err := ResourceLoader.load_threaded_request(path, "", false)
+	var status := ResourceLoader.load_threaded_get_status(path)
+	if status == ResourceLoader.THREAD_LOAD_LOADED:
+		_take_sprite(path)
+		return false
+	if status == ResourceLoader.THREAD_LOAD_IN_PROGRESS:
+		return true
+	if err != OK and err != ERR_ALREADY_EXISTS and err != ERR_BUSY:
+		push_warning("[boot] retry failed for %s: %s" % [path, error_string(err)])
+	return false
+
+
+func _take_sprite(path: String) -> void:
+	var resource := ResourceLoader.load_threaded_get(path)
+	if resource is Texture2D:
+		Sprites.remember(path.get_file().get_basename(), resource)
+		_finished += 1
+	else:
+		_failed += 1
+		push_warning("[boot] sprite was not a texture: %s" % path)
+
+
+func _recover_sprite(path: String) -> void:
+	var resource := load(path) as Texture2D
+	if resource:
+		Sprites.remember(path.get_file().get_basename(), resource)
+		_finished += 1
+	else:
+		_failed += 1
+		push_warning("[boot] could not load %s" % path)
 
 
 func _menu_fraction() -> float:
+	if _menu_packed != null:
+		return 1.0
 	var progress: Array = [0.0]
 	var status := ResourceLoader.load_threaded_get_status(MENU_PATH, progress)
 	match status:
 		ResourceLoader.THREAD_LOAD_LOADED:
+			var packed := ResourceLoader.load_threaded_get(MENU_PATH) as PackedScene
+			if packed == null:
+				return 0.0
+			_menu_packed = packed
 			return 1.0
 		ResourceLoader.THREAD_LOAD_IN_PROGRESS:
 			if progress.is_empty():
-				return 0.15
+				return 0.0
 			return clampf(float(progress[0]), 0.0, 0.99)
-		ResourceLoader.THREAD_LOAD_FAILED, ResourceLoader.THREAD_LOAD_INVALID_RESOURCE:
-			return 1.0
 		_:
 			return 0.0
 
 
-func _menu_failed() -> bool:
-	if _menu_gave_up:
-		return true
-	var status := ResourceLoader.load_threaded_get_status(MENU_PATH)
-	return status == ResourceLoader.THREAD_LOAD_FAILED or status == ResourceLoader.THREAD_LOAD_INVALID_RESOURCE
+func _menu_status() -> int:
+	return ResourceLoader.load_threaded_get_status(MENU_PATH)
+
+
+func _menu_ready() -> bool:
+	return _menu_packed != null or _menu_status() == ResourceLoader.THREAD_LOAD_LOADED
+
+
+func _service_menu() -> void:
+	if _menu_ready() or _menu_retries >= 2:
+		return
+	var status := _menu_status()
+	if status == ResourceLoader.THREAD_LOAD_IN_PROGRESS:
+		return
+	if status != ResourceLoader.THREAD_LOAD_FAILED and status != ResourceLoader.THREAD_LOAD_INVALID_RESOURCE:
+		return
+	_menu_retries += 1
+	var err := ResourceLoader.load_threaded_request(MENU_PATH, "", false)
+	status = _menu_status()
+	if status == ResourceLoader.THREAD_LOAD_IN_PROGRESS or status == ResourceLoader.THREAD_LOAD_LOADED:
+		return
+	if err != OK and err != ERR_ALREADY_EXISTS and err != ERR_BUSY:
+		push_warning("[boot] menu request failed: %s" % error_string(err))
+	var packed := load(MENU_PATH) as PackedScene
+	if packed != null:
+		_menu_packed = packed
 
 
 func _assets_done() -> bool:
@@ -156,41 +248,21 @@ func _assets_done() -> bool:
 
 
 func _try_open() -> void:
-	if _opening or _handoff:
+	if _menu_node != null or _handoff:
 		return
-	_watch_for_stall()
 	if not _assets_done():
 		_set_status("")
 		return
-	if _menu_failed():
-		_set_status("Menu unavailable")
-		_progress = 1.0
+	_service_menu()
+	if not _menu_ready():
+		if _menu_retries >= 2:
+			_set_status("Menu unavailable")
 		return
-	if ResourceLoader.load_threaded_get_status(MENU_PATH) != ResourceLoader.THREAD_LOAD_LOADED:
-		_set_status("")
+	if _failed == 0 and _finished < _ids.size():
 		return
-	_opening = true
-	_progress = 1.0
 	_set_status("")
-
-
-func _watch_for_stall() -> void:
-	var menu_busy := ResourceLoader.load_threaded_get_status(MENU_PATH) == ResourceLoader.THREAD_LOAD_IN_PROGRESS
-	var busy := not _inflight.is_empty() or menu_busy
-	if not busy or _finished != _stall_mark:
-		_stall = 0.0
-		_stall_mark = _finished
-		return
-	_stall += get_process_delta_time()
-	if _stall < 8.0:
-		return
-	_finished += _inflight.size()
-	_inflight = PackedStringArray()
-	_cursor = _ids.size()
-	if menu_busy:
-		_menu_gave_up = true
-	_stall = 0.0
-	_stall_mark = _finished
+	_stamp("resources")
+	_spawn_menu()
 
 
 func _use_full_screen() -> void:
@@ -210,12 +282,11 @@ func _restore_screen() -> void:
 	_aspect_saved = -1
 
 
-func _reveal_menu() -> void:
-	if _handoff or (_fade != null and _fade.is_valid()):
+func _spawn_menu() -> void:
+	if _menu_node != null or _handoff:
 		return
-	var packed := ResourceLoader.load_threaded_get(MENU_PATH) as PackedScene
+	var packed := _menu_packed if _menu_packed != null else ResourceLoader.load_threaded_get(MENU_PATH) as PackedScene
 	if packed == null:
-		_opening = false
 		_set_status("Menu unavailable")
 		return
 	var menu := packed.instantiate()
@@ -223,17 +294,12 @@ func _reveal_menu() -> void:
 	move_child(menu, 0)
 	if menu is Control:
 		(menu as Control).set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	if _plate == null or not is_instance_valid(_plate):
-		_finish_handoff(menu)
-		return
-	_fade = create_tween()
-	var step := _fade.tween_property(_plate, "modulate:a", 0.0, FADE_SEC)
-	if step == null:
-		_finish_handoff(menu)
-		return
-	step.set_trans(Tween.TRANS_SINE)
-	step.set_ease(Tween.EASE_IN_OUT)
-	_fade.finished.connect(_finish_handoff.bind(menu), CONNECT_ONE_SHOT)
+	_menu_node = menu
+	_stamp("spawned")
+
+
+func _stamp(key: String) -> void:
+	boot_ms[key] = (Time.get_ticks_usec() - _t0) / 1000.0
 
 
 func _finish_handoff(menu: Node) -> void:
@@ -244,6 +310,7 @@ func _finish_handoff(menu: Node) -> void:
 	var tree := get_tree()
 	if tree == null:
 		return
+	tree.root.set_meta("boot_ms", boot_ms.duplicate())
 	menu.reparent(tree.root, false)
 	if menu is Control:
 		(menu as Control).set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -267,7 +334,7 @@ func _layout() -> void:
 	_art.size = view
 	var slot_pos := BAR.position * scale
 	var slot_size := BAR.size * scale
-	var amount := clampf(_shown, 0.0, 1.0)
+	var amount := clampf(_displayed, 0.0, 1.0)
 	_clip.position = slot_pos
 	_clip.size = Vector2(slot_size.x * amount, slot_size.y)
 	_fill.position = Vector2.ZERO

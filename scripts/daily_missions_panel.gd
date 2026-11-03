@@ -154,11 +154,11 @@ func _render() -> void:
 func _fill_slot(slot: String, row: Dictionary) -> void:
 	var card: Dictionary = _cards[slot]
 	var reward := int(Missions.REWARDS.get(slot, 0))
-	card.body.text = str(row.get("description", ""))
 	var progress := int(row.get("progress", 0))
 	var goal := maxi(1, int(row.get("goal", 1)))
 	var complete := bool(row.get("complete", false))
 	var claimed := bool(row.get("claimed", false))
+	card.body.text = Missions.completed_label(slot) if complete or claimed else str(row.get("description", ""))
 	card.count.text = "%d / %d    %d COINS" % [mini(progress, goal), goal, reward]
 	card.bar.anchor_right = clampf(float(progress) / float(goal), 0.0, 1.0)
 	card.claim.visible = false

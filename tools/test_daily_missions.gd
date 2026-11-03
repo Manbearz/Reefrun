@@ -1291,7 +1291,7 @@ func _test_readable_labels() -> bool:
 	var counters: Array = overlay.get("_counters")
 	var rewards: Array = overlay.get("_reward_text")
 	var marks: Array = overlay.get("_marks")
-	var wanted := ["Pass 10 Pipes", "Survive 90 Seconds", "100 Pipes 5 Runs"]
+	var wanted := ["Pass 10 Pipes", "COMPLETE", "100 Pipes 5 Runs"]
 	var counts := ["4/10", "90/90", "40/100"]
 	var payouts := ["+5", "+10", "+20"]
 	var ok := descriptions.size() == 3 and counters.size() == 3 and rewards.size() == 3

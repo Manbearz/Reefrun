@@ -3,14 +3,15 @@ extends Object
 
 const AdBuild := preload("res://scripts/ads/ad_build_mode.gd")
 
-# Live rewarded units are selected only by AdBuildMode.MODE == "production".
+# Each platform has its own packed mode in AdBuildMode.
 # A missing, empty, or unrecognized mode stays on Google's test units.
+# iOS production does not change the Android unit.
 
 # App IDs identify the AdMob app. They contain "~" and are not ad unit IDs.
 const IOS_APP_ID := "ca-app-pub-5190108736982657~5175195159"
 const ANDROID_APP_ID := "ca-app-pub-5190108736982657~2452653885"
 
-# Live rewarded units. Used only when the packed mode is exactly "production".
+# Live rewarded units. Used only when that platform's packed mode is exactly "production".
 const IOS_REWARDED_UNIT_ID := "ca-app-pub-5190108736982657/2549031818"
 const ANDROID_REWARDED_UNIT_ID := "ca-app-pub-5190108736982657/3355591884"
 
@@ -23,8 +24,24 @@ const WEB_PLACEMENT_ID := ""
 const WEB_TEST_PLACEMENT_ID := ""
 
 
+static func mode_for_platform(platform: String) -> String:
+	var which := platform.strip_edges().to_lower()
+	if AdBuild == null:
+		return "test"
+	if which == "ios":
+		return normalize_mode(str(AdBuild.IOS_MODE))
+	if which == "android":
+		return normalize_mode(str(AdBuild.ANDROID_MODE))
+	return "test"
+
+
 static func monetization_mode() -> String:
-	return normalize_mode(str(AdBuild.MODE) if AdBuild != null else "")
+	var platform := ""
+	if OS.has_feature("ios"):
+		platform = "ios"
+	elif OS.has_feature("android"):
+		platform = "android"
+	return mode_for_platform(platform)
 
 
 static func normalize_mode(raw: String) -> String:

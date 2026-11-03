@@ -25,6 +25,7 @@ func _run() -> void:
 	ok = _check("device_switch", _test_device_switch()) and ok
 	ok = _check("client_count_ignored", _test_client_count_ignored()) and ok
 	ok = _check("links", _test_links()) and ok
+	ok = _check("run_message", _test_run_message()) and ok
 	ok = _check("rpc_urls", _test_rpc_urls()) and ok
 	ok = _check("wired", _test_wired()) and ok
 	print("[share-reward] ok=%s" % ok)
@@ -180,6 +181,25 @@ func _test_links() -> bool:
 		and ignored == ""
 		and message == "Swim with me in ReefRun! https://lunarent.gg/?ref=AB12CD34"
 		and RulesScript.progress_label(0) == "FRIENDS 0/3"
+	)
+
+
+func _test_run_message() -> bool:
+	var with_code := RulesScript.run_share_message(42, "ab12cd34")
+	var no_code := RulesScript.run_share_message(7, "")
+	var zero := RulesScript.run_share_message(0, "   ")
+	return (
+		with_code == "I scored 42 in ReefRun! Can you beat me? 🐟\nSwim with me in ReefRun! https://lunarent.gg/?ref=AB12CD34"
+		and no_code == "I scored 7 in ReefRun! Can you beat me? 🐟"
+		and "http" not in no_code.to_lower()
+		and "play.google" not in no_code.to_lower()
+		and "apps.apple" not in no_code.to_lower()
+		and zero == "I scored 0 in ReefRun! Can you beat me? 🐟"
+		and not RulesScript.rewards_change_on_share("ok")
+		and not RulesScript.rewards_change_on_share("cancel")
+		and not RulesScript.rewards_change_on_share("closed")
+		and not RulesScript.rewards_change_on_share("failed")
+		and not RulesScript.rewards_change_on_share("saved")
 	)
 
 

@@ -40,6 +40,11 @@ var _pause_resume: TextureButton
 var _pause_leave: TextureButton
 var _privacy_button: Button
 var swimming := 100
+# Participant id -> 1-based elimination order. One entry per person, never repeated.
+var _eliminated: Dictionary = {}
+var _elimination_count := 0
+var _final_rank := -1
+var _final_remaining := -1
 var _feed_wait := 0.0
 var school: Node2D
 var course: Node2D
@@ -111,6 +116,8 @@ var _mission_display_ready := false
 var _mission_wait := 0.0
 var _over_rank := 0
 var _over_remaining := 0
+# True only when this swim beat the saved personal best. Cleared when the next swim starts.
+var _wipe_new_best := false
 var _coin_reward_claimed := false
 var _reward_request_active := false
 var _coin_offer_open := false
@@ -504,6 +511,7 @@ func _try_player_flap() -> void:
 func _begin_run() -> void:
 	if started or finished:
 		return
+	_wipe_new_best = false
 	started = true
 	# Locked for this swim. A later mode change cannot turn a Daily Challenge
 	# into mission progress, or an Unlimited swim into a Daily Challenge attempt.
@@ -540,6 +548,9 @@ func _begin_run() -> void:
 		ghost.reset_for_match()
 		ghost.started = true
 		ghost.rest_y = ghost.position.y
+	# The lobby fill is cosmetic. The match starts from a full field, then
+	# scripted deaths at tick 0 join the elimination order.
+	_reset_elimination_state()
 	_advance_playback()
 	if _pending_start_flap:
 		_pending_start_flap = false
@@ -942,17 +953,66 @@ func _alive_count() -> int:
 	return swimming
 
 
+func _field_size() -> int:
+	return RR.GHOST_COUNT + 1
+
+
+func _reset_elimination_state() -> void:
+	_eliminated.clear()
+	_elimination_count = 0
+	_final_rank = -1
+	_final_remaining = -1
+	swimming = _field_size()
+
+
+func _death_due(death_tick: int, tick: int) -> bool:
+	# A run with no recorded death (death_tick < 0) is still swimming.
+	return death_tick >= 0 and tick >= death_tick
+
+
+func _eliminate_participant(id: String) -> bool:
+	if id == "" or _eliminated.has(id):
+		return false
+	if _elimination_count >= _field_size():
+		return false
+	_elimination_count += 1
+	_eliminated[id] = _elimination_count
+	swimming = clampi(_field_size() - _elimination_count, 0, _field_size())
+	return true
+
+
+func _rank_for_order(order: int) -> int:
+	return _field_size() + 1 - order
+
+
+func _freeze_player_rank() -> bool:
+	if _final_rank >= 0 or not _eliminate_participant("player"):
+		return false
+	_final_rank = _rank_for_order(int(_eliminated["player"]))
+	_final_remaining = swimming
+	return true
+
+
 func _on_ghost_died(ghost: ReefFish) -> void:
 	if ghost.alive:
 		return
-	swimming = maxi(swimming - 1, 0)
+	if not _eliminate_participant("g:%d" % ghost.get_instance_id()):
+		return
 	ghost.visible = false
 	if finished:
 		return
 	if _feed_wait > 0.0:
 		return
 	_feed_wait = 0.45
-	hud.show_feed("%s wiped out" % ghost.display_name)
+	hud.show_elimination(ghost.display_name)
+
+
+func _note_personal_best() -> void:
+	# Practice runs never record. Compare before record_run stores the new best.
+	if GameSession.practice_daily:
+		_wipe_new_best = false
+		return
+	_wipe_new_best = score > GameSession.best_score
 
 
 func _on_player_died() -> void:
@@ -965,9 +1025,11 @@ func _on_player_died() -> void:
 		_synced_state = _events.state
 		_halt_dive()
 	Sfx.play_death(-10.0)
-	swimming = maxi(swimming - 1, 0)
-	var remaining := swimming
-	var rank := remaining + 1
+	if not _freeze_player_rank():
+		return
+	var rank := _final_rank
+	var remaining := _final_remaining
+	_note_personal_best()
 	if not GameSession.practice_daily:
 		_save_ghost_run()
 		if _mission_track:
@@ -1300,9 +1362,11 @@ func _show_over(rank: int, remaining: int) -> void:
 		["glyph", "/"],
 		["num_white", RR.GHOST_COUNT + 1],
 	]))
-	overlay.add_child(_over_digits(card_pos, card_scale, Rect2(541, 824, 317, 117), [
+	var score_box := _over_digits(card_pos, card_scale, Rect2(541, 824, 317, 117), [
 		["num_gold", score],
-	]))
+	], "NEW" if _wipe_new_best else "")
+	score_box.name = "ScoreDigits"
+	overlay.add_child(score_box)
 	overlay.add_child(_over_digits(card_pos, card_scale, Rect2(559, 991, 296, 119), [
 		["num_white", remaining],
 	]))
@@ -1337,7 +1401,7 @@ func _show_over(rank: int, remaining: int) -> void:
 		overlay.add_child(_wipe_share)
 
 
-func _over_digits(card_pos: Vector2, card_scale: float, src: Rect2, parts: Array) -> Control:
+func _over_digits(card_pos: Vector2, card_scale: float, src: Rect2, parts: Array, mark := "") -> Control:
 	var box := Control.new()
 	box.position = card_pos + src.position * card_scale
 	box.size = src.size * card_scale
@@ -1371,8 +1435,9 @@ func _over_digits(card_pos: Vector2, card_scale: float, src: Rect2, parts: Array
 		if group_widths.size() > 1:
 			total_w += group_gap
 		total_w += gw
-	if total_w > box.size.x - x_pad * 2.0:
-		scale *= (box.size.x - x_pad * 2.0) / maxf(total_w, 1.0)
+	var usable := box.size.x - x_pad * 2.0
+	if total_w > usable:
+		scale *= usable / maxf(total_w, 1.0)
 		total_w = 0.0
 		group_gap = target_h * 0.05 * (scale / (target_h / max_h))
 		for g in groups.size():
@@ -1380,12 +1445,53 @@ func _over_digits(card_pos: Vector2, card_scale: float, src: Rect2, parts: Array
 			if g > 0:
 				total_w += group_gap
 			total_w += group_widths[g]
-	var x := (box.size.x - total_w) * 0.5
+	var mark_glyphs: Array = []
+	var mark_scale := 1.0
+	var mark_gap := 0.0
+	var mark_w := 0.0
+	var mark_h := 0.0
+	if mark != "":
+		var mark_max_h := 1.0
+		for ch in mark.to_upper():
+			var glyph_tex := Sprites.glyph(ch)
+			mark_glyphs.append(glyph_tex)
+			if glyph_tex:
+				mark_max_h = maxf(mark_max_h, float(glyph_tex.get_height()))
+		mark_scale = scale * max_h * 0.46 / mark_max_h
+		mark_gap = max_h * scale * 0.16
+		mark_w = _digit_width(mark_glyphs, mark_scale, 1.0)
+		var combined := total_w + mark_gap + mark_w
+		if combined > usable and combined > 0.0:
+			var factor := usable / combined
+			scale *= factor
+			group_gap = target_h * 0.05 * (scale / (target_h / max_h))
+			total_w = 0.0
+			for g in groups.size():
+				group_widths[g] = _digit_width(groups[g], scale, kern)
+				if g > 0:
+					total_w += group_gap
+				total_w += group_widths[g]
+			mark_scale = scale * max_h * 0.46 / mark_max_h
+			mark_gap = max_h * scale * 0.16
+			mark_w = _digit_width(mark_glyphs, mark_scale, 1.0)
+		mark_h = mark_max_h * mark_scale
+	var shown_w := total_w + (mark_gap + mark_w if mark != "" else 0.0)
+	var x := (box.size.x - shown_w) * 0.5
 	for g in groups.size():
 		if g > 0:
 			x += group_gap
 		_place_digit_group(box, groups[g], x, scale, kern)
 		x += group_widths[g]
+	if mark != "":
+		x += mark_gap
+		var tag := Control.new()
+		tag.name = "ScoreNew"
+		tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tag.modulate = Palette.GOLD
+		tag.position = Vector2(x, (box.size.y - mark_h) * 0.5)
+		tag.size = Vector2(mark_w, mark_h)
+		_place_digit_group(tag, mark_glyphs, 0.0, mark_scale, 1.0)
+		box.add_child(tag)
 	return box
 
 
@@ -1489,6 +1595,9 @@ func _open_share_overlay() -> void:
 	_share_share_btn.size = SHARE_SHARE_RECT.size * card_scale
 	_share_share_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	_share_share_btn.pressed.connect(_share_card_pressed)
+	if _share_service and _share_service.is_busy():
+		_share_busy = true
+		_share_share_btn.disabled = true
 	ButtonFeedbackScript.use_plate(_share_share_btn, tex, SHARE_SHARE_RECT, Rect2(583, 806, 484, 154), 0.45)
 	_share_layer.add_child(_share_share_btn)
 	_share_progress = SpriteTextScript.new()
@@ -1632,7 +1741,7 @@ func _share_card_pressed() -> void:
 	if _share_service == null:
 		_on_share_finished("failed")
 		return
-	var message := ReferralRulesScript.share_message(GameSession.referral_code)
+	var message := ReferralRulesScript.run_share_message(score, GameSession.referral_code)
 	var status := str(_share_service.share_image(png, message))
 	if status == "busy" or status.is_empty():
 		_on_share_finished(status)
@@ -1988,14 +2097,15 @@ func _advance_playback() -> void:
 		if ghost.next_flap_index < flaps.size() and int(flaps[ghost.next_flap_index]) == match_tick:
 			ghost.flap(false)
 			ghost.next_flap_index += 1
-		if run.death_tick >= 0 and match_tick >= run.death_tick:
+		if _death_due(run.death_tick, match_tick):
 			ghost.kill()
 	for i in logical_death.size():
 		if logical_alive[i] == 0:
 			continue
-		if match_tick >= logical_death[i]:
-			logical_alive[i] = 0
-			swimming = maxi(swimming - 1, 0)
+		if not _death_due(logical_death[i], match_tick):
+			continue
+		logical_alive[i] = 0
+		_eliminate_participant("l:%d" % i)
 
 
 func _save_ghost_run() -> void:

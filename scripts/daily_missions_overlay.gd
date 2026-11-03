@@ -745,6 +745,8 @@ func show_board(board: Dictionary, note: String) -> void:
 		var claimed := bool(row.get("claimed", false))
 		var mission_id := int(row.get("mission_id", 0))
 		var description := DailyMissions.display_text(str(row.get("description", "")), mission_id)
+		if complete or claimed:
+			description = DailyMissions.completed_label(slot_name)
 		if description.is_empty():
 			if failed:
 				description = "Missions Unavailable" if i == 0 else ""
@@ -854,7 +856,9 @@ func _add_coin_icon(rect: Rect2, texture_path: String) -> TextureRect:
 	var coin := TextureRect.new()
 	coin.texture = load(texture_path) if rect.size.x > 1.0 else null
 	coin.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	coin.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	# Lobby stacks are small photos scaled with the board. Nearest sampling
+	# turned their outline into a hard fringe under the gold.
+	coin.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR if not _screen else CanvasItem.TEXTURE_FILTER_NEAREST
 	coin.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	coin.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	coin.position = rect.position

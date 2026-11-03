@@ -44,6 +44,13 @@ func load_session() -> bool:
 	refresh_token = str(cfg.get_value("session", "refresh_token", ""))
 	user_id = str(cfg.get_value("session", "user_id", ""))
 	expires_at = int(cfg.get_value("session", "expires_at", 0))
+	# Headless tests persist non-JWT placeholders in this same file. Sending one
+	# as a Bearer token makes PostgREST return 401 (PGRST301, not a JWT).
+	if not _is_user_jwt(access_token):
+		access_token = ""
+		expires_at = 0
+		if not has_refresh_token():
+			user_id = ""
 	return can_restore()
 
 
@@ -102,6 +109,16 @@ func _extract_user_id(root: Dictionary, session: Dictionary) -> String:
 			if not uid.is_empty():
 				return uid
 	return ""
+
+
+func _is_user_jwt(token: String) -> bool:
+	var parts := token.strip_edges().split(".", false)
+	return (
+		parts.size() == 3
+		and not parts[0].is_empty()
+		and not parts[1].is_empty()
+		and not parts[2].is_empty()
+	)
 
 
 func signup_url() -> String:

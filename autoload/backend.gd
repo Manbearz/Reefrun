@@ -64,6 +64,10 @@ var leaderboard_meta: Dictionary = {}
 var daily_submit_error := ""
 var _followup_busy := false
 var _finalize_running := false
+var _finalize_confirmed := {}
+
+const FINALIZE_TRIES := 3
+const FINALIZE_RETRY_SEC := 0.6
 
 
 func _ready() -> void:
@@ -987,6 +991,9 @@ func fetch_leaderboards() -> void:
 		leaderboards_ready.emit()
 		return
 	if not is_configured() or not has_session():
+		if _busy:
+			_lb_needs_refresh = true
+			return
 		for period in ["daily", "weekly", "monthly"]:
 			_log_leaderboard(period, {"ok": false, "status": 0, "error": "no_session"}, [])
 		leaderboards_ready.emit()
@@ -1004,32 +1011,56 @@ func on_menu_ready() -> void:
 
 
 func finalize_daily_attempt(attempt_id: String, score: int, display_name: String) -> void:
+	var clean_id := attempt_id.strip_edges()
+	if clean_id != "" and bool(_finalize_confirmed.get(clean_id, false)):
+		if GameSession.has_method("clear_pending_finalize"):
+			GameSession.clear_pending_finalize(clean_id)
+		return
 	if _finalize_running:
 		while _finalize_running:
 			await get_tree().process_frame
-		if not _has_pending_finalize():
+		if bool(_finalize_confirmed.get(clean_id, false)):
+			if GameSession.has_method("clear_pending_finalize"):
+				GameSession.clear_pending_finalize(clean_id)
 			return
 	_finalize_running = true
-	var clean_id := attempt_id.strip_edges()
-	if clean_id == "" or not is_configured() or not has_session():
-		var reason := "no_attempt" if clean_id == "" else "no_session"
-		_log_rpc("finalize_daily_attempt", {"ok": false, "status": 0, "error": reason})
-		_set_daily_submit_error(reason)
+	if clean_id == "":
+		_log_rpc("finalize_daily_attempt", {"ok": false, "status": 0, "error": "no_attempt"})
+		_set_daily_submit_error("no_attempt")
 		_finalize_running = false
 		return
-	var result: Dictionary = await _authed_request(
-		"POST",
-		_leaderboards.finalize_url(),
-		JSON.stringify({
-			"p_attempt_id": clean_id,
-			"p_score": score,
-			"p_display_name": display_name,
-		}),
-		true,
-		false
-	)
-	_log_rpc("finalize_daily_attempt", result)
-	var parsed: Dictionary = DailyAttemptScript.parse_finalize(result)
+	if GameSession.has_method("remember_pending_finalize"):
+		GameSession.remember_pending_finalize(clean_id, score, display_name)
+	if not is_configured():
+		_log_rpc("finalize_daily_attempt", {"ok": false, "status": 0, "error": "not_configured"})
+		_set_daily_submit_error("not_configured")
+		_finalize_running = false
+		return
+	if not await _restore_finalize_session():
+		_log_rpc("finalize_daily_attempt", {"ok": false, "status": 0, "error": "no_session"})
+		_set_daily_submit_error("no_session")
+		_finalize_running = false
+		return
+	var result: Dictionary = {}
+	var parsed: Dictionary = {}
+	for attempt in FINALIZE_TRIES:
+		result = await _authed_request(
+			"POST",
+			_leaderboards.finalize_url(),
+			JSON.stringify({
+				"p_attempt_id": clean_id,
+				"p_score": score,
+				"p_display_name": display_name,
+			}),
+			true,
+			false
+		)
+		_log_rpc("finalize_daily_attempt", result)
+		parsed = DailyAttemptScript.parse_finalize(result)
+		if parsed.get("stored", false) or not DailyAttemptScript.finalize_retryable(result, parsed):
+			break
+		if attempt < FINALIZE_TRIES - 1:
+			await get_tree().create_timer(FINALIZE_RETRY_SEC).timeout
 	print("[rpc] finalize_daily_attempt status=%d stored=%d accepted=%d duplicate=%d score=%d error=%s" % [
 		int(result.get("status", 0)),
 		1 if parsed.get("stored", false) else 0,
@@ -1042,12 +1073,24 @@ func finalize_daily_attempt(attempt_id: String, score: int, display_name: String
 		_set_daily_submit_error(str(parsed.get("error", result.get("error", "not_stored"))))
 		_finalize_running = false
 		return
-	daily_submit_error = ""
+	_finalize_confirmed[clean_id] = true
 	if GameSession.has_method("clear_pending_finalize"):
-		GameSession.clear_pending_finalize()
+		GameSession.clear_pending_finalize(clean_id)
+	if _has_pending_finalize():
+		daily_submit_error = "pending_finalize"
+	else:
+		daily_submit_error = ""
 	_lb_needs_refresh = true
 	_finalize_running = false
 	fetch_leaderboards()
+
+
+func _restore_finalize_session() -> bool:
+	if has_session() and auth != null and auth.access_token_fresh():
+		return true
+	if auth != null and auth.has_refresh_token():
+		await _refresh_session()
+	return has_session()
 
 
 func _set_daily_submit_error(reason: String) -> void:
@@ -1097,21 +1140,21 @@ func _fetch_leaderboards() -> void:
 		"POST",
 		_leaderboards.list_url(),
 		JSON.stringify({"p_period": "daily"}),
-		false,
+		true,
 		false
 	)
 	var week: Dictionary = await _authed_request(
 		"POST",
 		_leaderboards.list_url(),
 		JSON.stringify({"p_period": "weekly"}),
-		false,
+		true,
 		false
 	)
 	var month: Dictionary = await _authed_request(
 		"POST",
 		_leaderboards.list_url(),
 		JSON.stringify({"p_period": "monthly"}),
-		false,
+		true,
 		false
 	)
 	day = _leaderboard_payload(day)
@@ -1185,26 +1228,39 @@ func _log_leaderboard(period: String, result: Dictionary, rows: Array) -> void:
 
 
 func _menu_followup() -> void:
-	if _followup_busy or not _pre_match_network_allowed() or not has_session():
+	if _followup_busy or not _pre_match_network_allowed():
 		return
 	_followup_busy = true
-	await _retry_pending_finalize()
-	await _retry_pending_unlimited()
-	if has_session() and _share_network_allowed():
-		await refresh_share_rewards()
-	if _lb_needs_refresh and _pre_match_network_allowed():
-		fetch_leaderboards()
+	if not has_session() and auth != null and auth.has_refresh_token():
+		await _refresh_session()
+	if has_session():
+		await _retry_pending_finalize()
+		await _retry_pending_unlimited()
+		if _share_network_allowed():
+			await refresh_share_rewards()
+		if _lb_needs_refresh and _pre_match_network_allowed():
+			fetch_leaderboards()
 	_followup_busy = false
 
 
 func _retry_pending_finalize() -> void:
-	if not _has_pending_finalize() or not is_configured() or not has_session():
+	if not _has_pending_finalize() or not is_configured():
 		return
-	await finalize_daily_attempt(
-		GameSession.pending_finalize_attempt,
-		int(GameSession.pending_finalize_score),
-		str(GameSession.pending_finalize_name)
-	)
+	if not await _restore_finalize_session():
+		return
+	var queued: Array = GameSession.pending_finalize_entries() if GameSession.has_method("pending_finalize_entries") else [{
+		"attempt_id": GameSession.pending_finalize_attempt,
+		"score": int(GameSession.pending_finalize_score),
+		"name": str(GameSession.pending_finalize_name),
+	}]
+	for row in queued:
+		if typeof(row) != TYPE_DICTIONARY:
+			continue
+		await finalize_daily_attempt(
+			str(row.get("attempt_id", "")),
+			int(row.get("score", 0)),
+			str(row.get("name", ""))
+		)
 
 
 func _has_pending_finalize() -> bool:

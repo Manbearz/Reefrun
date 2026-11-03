@@ -6,11 +6,10 @@ const RulesScript := preload("res://scripts/share/referral_rules.gd")
 # Web reads https://lunarent.gg/?ref=CODE from the page URL and from
 # localStorage key reefrun_ref (see tools/web/referral.js).
 #
-# iOS and Android are not wired. This project has an iOS export preset and
-# no Android preset. Neither preset declares a URL scheme, an associated
-# domain, or an intent filter, and there is no native share/deep-link plugin.
-# ingest() is the hook a future plugin can call. Until that export work is
-# installed and tested, a store install from a referral link does not attribute.
+# Outgoing share sheets are opened by scripts/share/native_share_provider.gd.
+# This file only reads an incoming referral code. The export presets still do
+# not register a URL scheme or an intent filter, so a store install from a
+# referral link does not attribute. ingest() is the hook for that later work.
 
 
 static func capture() -> String:

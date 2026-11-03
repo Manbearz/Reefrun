@@ -11,6 +11,7 @@ const SCORE_H := 1672.0
 const NAME_BOX := Rect2(270, 742, 590, 82)
 const PLAY_BOX := Rect2(250, 900, 640, 185)
 const SCORE_BOX := Rect2(210, 1124, 730, 168)
+const SCORE_PLATE := Rect2(218, 1132, 714, 152)
 const BACK_BOX := Rect2(230, 1478, 480, 140)
 const BACK_PLATE := Rect2(297, 1487, 370, 126)
 # Painted Back control, including its dark outline. The wood fill alone sits inside this.
@@ -40,6 +41,7 @@ const MODE_NOTE := Rect2(90, 1148, 660, 52)
 const MODE_RESET_LINE := Rect2(90, 1250, 660, 28)
 const SWIPE_MIN := 48.0
 const ARROW_BOX := 96.0
+const CAROUSEL_SLIDE_SEC := 0.22
 
 var _home: Control
 var _scores: Control
@@ -68,6 +70,10 @@ var _fish_order: PackedInt32Array = PackedInt32Array()
 var _fish_clip: Control
 var _fish_row: Control
 var _fish_scroll_x := 0.0
+var _fish_scroll_visual := 0.0
+var _fish_slide_from := 0.0
+var _fish_slide_to := 0.0
+var _fish_slide_t := 1.0
 var _fish_max_scroll := 0.0
 var _fish_cell := 76.0
 var _fish_gap := 8.0
@@ -86,7 +92,16 @@ var _hat_ids: PackedInt32Array = PackedInt32Array()
 var _hat_clip: Control
 var _hat_row: Control
 var _hat_scroll_x := 0.0
+var _hat_scroll_visual := 0.0
+var _hat_slide_from := 0.0
+var _hat_slide_to := 0.0
+var _hat_slide_t := 1.0
 var _hat_max_scroll := 0.0
+var _fish_ring_on: StyleBoxFlat
+var _fish_ring_off: StyleBoxFlat
+var _hat_ring_on: StyleBoxFlat
+var _hat_ring_off: StyleBoxFlat
+var _shown_menu_hat := -999
 var _hat_cell := 68.0
 var _hat_gap := 8.0
 var _hat_pressing := false
@@ -95,6 +110,9 @@ var _hat_press := Vector2.ZERO
 var _hat_press_scroll := 0.0
 var _wallet_coin: TextureRect
 var _wallet_text: SpriteTextScript
+var _best_row: Control
+var _best_crown: TextureRect
+var _best_text: SpriteTextScript
 var _wallet_rest := Vector2.ZERO
 var _wallet_text_rest := Vector2.ZERO
 var _wallet_phase := 0.22
@@ -184,7 +202,7 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	if _home.visible:
-		_bob_picker(delta)
+		_tick_carousels(delta)
 		if _wallet_flash > 0.0:
 			_wallet_flash = maxf(_wallet_flash - delta, 0.0)
 			if _wallet_text:
@@ -350,11 +368,12 @@ func _build_home(card_size: Vector2) -> void:
 	_home.add_child(play)
 	_follow_card(play)
 	var scores_btn := _hotspot(SCORE_BOX, _show_scores, _card_pos, _card_scale)
-	_mark_plate(scores_btn, "main_menu_overlay", SCORE_BOX, Rect2(218, 1132, 714, 152), 0.46, "blue")
+	_mark_plate(scores_btn, "main_menu_overlay", SCORE_BOX, SCORE_PLATE, 0.46, "blue")
 	_home.add_child(scores_btn)
 	_follow_card(scores_btn)
 	_build_fish_picker()
 	_build_hat_picker()
+	_build_personal_best()
 	_privacy_button = Button.new()
 	_privacy_button.flat = true
 	_privacy_button.focus_mode = Control.FOCUS_NONE
@@ -477,6 +496,7 @@ func _sync_menu_anchor() -> void:
 		_wallet_coin.position.y = _wallet_rest.y
 		if _wallet_text:
 			_wallet_text.position.y = _wallet_text_rest.y
+	_layout_personal_best()
 
 
 func _sync_privacy_button(_required: bool = false) -> void:
@@ -506,12 +526,15 @@ func _build_fish_picker() -> void:
 	var edge := 14.0
 	var clip_h := row_h + hat_room + bob + edge * 2.0
 	var row_y := _layout_fish_y(clip_h)
+	_fish_ring_on = _ring_style(Color(0.12, 0.42, 0.62, 0.22), 3, 18)
+	_fish_ring_off = _ring_style(Color(0.12, 0.42, 0.62, 0.0), 0, 18)
 	_fish_clip = Control.new()
 	_fish_clip.position = Vector2(pad, row_y)
 	_fish_clip.size = Vector2(RR.VIEW_W - pad * 2.0, clip_h)
 	_fish_clip.mouse_filter = Control.MOUSE_FILTER_STOP
 	_fish_clip.clip_contents = true
 	_fish_clip.z_index = 30
+	_still_motion(_fish_clip)
 	_fish_clip.gui_input.connect(_on_fish_gui)
 	_home.add_child(_fish_clip)
 	var inner_w := 4.0 + float(count) * (cell + gap) - gap
@@ -520,6 +543,7 @@ func _build_fish_picker() -> void:
 	_fish_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_fish_row.custom_minimum_size = Vector2(inner_w, _fish_clip.size.y)
 	_fish_row.size = Vector2(inner_w, _fish_clip.size.y)
+	_still_motion(_fish_row)
 	_fish_clip.add_child(_fish_row)
 	_fish_order = _fish_display_order()
 	for n in count:
@@ -530,6 +554,7 @@ func _build_fish_picker() -> void:
 		holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		holder.position = Vector2(x, y)
 		holder.size = Vector2(cell, row_h)
+		_still_motion(holder)
 		_fish_row.add_child(holder)
 		_fish_cells.append(holder)
 		_fish_rest.append(holder.position)
@@ -551,6 +576,7 @@ func _build_fish_picker() -> void:
 		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		icon.position = icon_pos
 		icon.size = icon_size
+		icon.pivot_offset = icon_size * 0.5
 		_fish_icons.append(icon)
 		holder.add_child(icon)
 		var hat := TextureRect.new()
@@ -588,14 +614,16 @@ func _build_hat_picker() -> void:
 	var edge := 14.0
 	var clip_h := row_h + bob + edge * 2.0
 	var row_y := _hat_row_under_fish(clip_h)
-	var wallet_w := 92.0
-	_build_wallet(Vector2(pad, row_y + edge + 18.0), Vector2(wallet_w, 48.0))
+	var wallet_w := _build_wallet(Vector2(pad, row_y + edge + 18.0))
+	_hat_ring_on = _ring_style(Color(0, 0, 0, 0), 3, 14, false)
+	_hat_ring_off = _ring_style(Color(0, 0, 0, 0), 0, 14, false)
 	_hat_clip = Control.new()
 	_hat_clip.position = Vector2(pad + wallet_w + 6.0, row_y)
 	_hat_clip.size = Vector2(RR.VIEW_W - pad * 2.0 - wallet_w - 6.0, clip_h)
 	_hat_clip.mouse_filter = Control.MOUSE_FILTER_STOP
 	_hat_clip.clip_contents = true
 	_hat_clip.z_index = 40
+	_still_motion(_hat_clip)
 	_hat_clip.gui_input.connect(_on_hat_gui)
 	_home.add_child(_hat_clip)
 	_hat_ids = _hat_display_order()
@@ -606,6 +634,7 @@ func _build_hat_picker() -> void:
 	_hat_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_hat_row.custom_minimum_size = Vector2(inner_w, clip_h)
 	_hat_row.size = Vector2(inner_w, clip_h)
+	_still_motion(_hat_row)
 	_hat_clip.add_child(_hat_row)
 	for n in count:
 		var hat_i := _hat_ids[n]
@@ -616,6 +645,7 @@ func _build_hat_picker() -> void:
 		holder.position = Vector2(x, y)
 		holder.size = Vector2(cell, row_h)
 		holder.z_index = 1
+		_still_motion(holder)
 		_hat_row.add_child(holder)
 		_hat_cells.append(holder)
 		_hat_rest.append(holder.position)
@@ -722,7 +752,9 @@ func _begin_hat_drag(pos: Vector2) -> void:
 	_hat_pressing = true
 	_hat_dragged = false
 	_hat_press = pos
-	_hat_press_scroll = _hat_scroll_x
+	_hat_scroll_x = _hat_scroll_visual
+	_hat_slide_t = 1.0
+	_hat_press_scroll = _hat_scroll_visual
 
 
 func _move_hat_drag(pos: Vector2) -> void:
@@ -732,7 +764,9 @@ func _move_hat_drag(pos: Vector2) -> void:
 	if absf(dx) > 6.0:
 		_hat_dragged = true
 	_hat_scroll_x = clampf(_hat_press_scroll - dx, 0.0, _hat_max_scroll)
-	_apply_hat_scroll()
+	_hat_scroll_visual = _hat_scroll_x
+	_hat_slide_t = 1.0
+	_place_hat_row()
 
 
 func _end_hat_drag(pos: Vector2) -> void:
@@ -745,17 +779,34 @@ func _end_hat_drag(pos: Vector2) -> void:
 
 
 func _scroll_hats(delta_x: float) -> void:
-	_hat_scroll_x = clampf(_hat_scroll_x + delta_x, 0.0, _hat_max_scroll)
-	_apply_hat_scroll()
+	_start_hat_slide(clampf(_hat_scroll_x + delta_x, 0.0, _hat_max_scroll))
 
 
 func _apply_hat_scroll() -> void:
+	_hat_scroll_visual = _hat_scroll_x
+	_hat_slide_from = _hat_scroll_x
+	_hat_slide_to = _hat_scroll_x
+	_hat_slide_t = 1.0
+	_place_hat_row()
+
+
+func _start_hat_slide(target: float) -> void:
+	_hat_scroll_x = target
+	if absf(_hat_scroll_visual - target) < 0.5:
+		_apply_hat_scroll()
+		return
+	_hat_slide_from = _hat_scroll_visual
+	_hat_slide_to = target
+	_hat_slide_t = 0.0
+
+
+func _place_hat_row() -> void:
 	if _hat_row:
-		_hat_row.position.x = -_hat_scroll_x
+		_hat_row.position.x = -_hat_scroll_visual
 
 
 func _click_hat_at(pos: Vector2) -> void:
-	var x := pos.x + _hat_scroll_x - 4.0
+	var x := pos.x + _hat_scroll_visual - 4.0
 	if x < 0.0:
 		return
 	var stride := _hat_cell + _hat_gap
@@ -767,29 +818,125 @@ func _click_hat_at(pos: Vector2) -> void:
 	_choose_hat(_hat_ids[index])
 
 
-func _build_wallet(origin: Vector2, box: Vector2) -> void:
+func _build_wallet(origin: Vector2) -> float:
+	# Previous indicator: 34.56 coin, 22px number, 4px gap. Grown in place.
+	var old_coin := 48.0 * 0.72
+	var coin_size := old_coin * 1.6
+	var glyph_h := 22.0 * 1.4
+	var gap := 4.0
+	var mid_y := origin.y + old_coin * 0.5
 	_wallet_coin = TextureRect.new()
+	_wallet_coin.name = "WalletCoin"
 	_wallet_coin.texture = Sprites.tex("coin")
 	_wallet_coin.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_wallet_coin.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	_wallet_coin.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_wallet_coin.z_index = 40
-	_wallet_coin.position = origin
-	_wallet_coin.size = Vector2(box.y * 0.72, box.y * 0.72)
+	_still_motion(_wallet_coin)
+	_wallet_coin.position = Vector2(origin.x, mid_y - coin_size * 0.5)
+	_wallet_coin.size = Vector2(coin_size, coin_size)
 	_wallet_rest = _wallet_coin.position
 	_home.add_child(_wallet_coin)
 	_wallet_text = SpriteTextScript.new()
+	_wallet_text.name = "WalletBalance"
+	_still_motion(_wallet_text)
+	var text_w := _wallet_text.layout_width("10000", glyph_h, true)
 	_wallet_text.z_index = 40
-	_wallet_text.position = Vector2(origin.x + _wallet_coin.size.x + 4.0, origin.y + 10.0)
+	_wallet_text.position = Vector2(origin.x + coin_size + gap, mid_y - glyph_h * 0.5)
 	_wallet_text_rest = _wallet_text.position
-	_wallet_text.configure(str(GameSession.coins), 22, Vector2(box.x - _wallet_coin.size.x, 28), HORIZONTAL_ALIGNMENT_LEFT, true)
+	_wallet_text.configure(str(GameSession.coins), glyph_h, Vector2(text_w, glyph_h), HORIZONTAL_ALIGNMENT_LEFT, true)
 	_home.add_child(_wallet_text)
+	return coin_size + gap + text_w
 
 
 func _refresh_wallet() -> void:
 	if _wallet_text:
 		_wallet_text.set_value(str(GameSession.coins))
 		_wallet_text.modulate = Color.WHITE
+
+
+func _build_personal_best() -> void:
+	_best_row = Control.new()
+	_best_row.name = "PersonalBest"
+	_best_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_best_row.z_index = 20
+	_home.add_child(_best_row)
+	_best_crown = TextureRect.new()
+	_best_crown.name = "BestCrown"
+	_best_crown.texture = Sprites.tex("crown_gold")
+	_best_crown.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_best_crown.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_best_crown.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_best_row.add_child(_best_crown)
+	_best_text = SpriteTextScript.new()
+	_best_text.name = "BestText"
+	_best_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_best_text.configure("PERSONAL BEST 0", 18.0, Vector2(RR.VIEW_W, 22.0), HORIZONTAL_ALIGNMENT_CENTER, true, false, 1.05, true)
+	_best_row.add_child(_best_text)
+
+
+func _fish_icon_rest_top() -> float:
+	if _fish_clip == null or _fish_rest.is_empty() or _fish_row == null:
+		return _fish_band_bottom()
+	return _fish_clip.position.y + _fish_row.position.y + _fish_rest[0].y
+
+
+func _layout_personal_best() -> void:
+	if _best_row == null or _best_text == null:
+		return
+	var label := "PERSONAL BEST %d" % maxi(GameSession.best_score, 0)
+	var plate_bottom := _card_pos.y + SCORE_PLATE.end.y * _card_scale
+	var icon_top := _fish_icon_rest_top()
+	var bob := 8.0
+	var band_top := plate_bottom + 6.0
+	var band_bottom := icon_top - bob - 6.0
+	if band_bottom < band_top + 16.0:
+		band_top = plate_bottom + 2.0
+		band_bottom = icon_top - 2.0
+	var avail := maxf(12.0, band_bottom - band_top)
+	var glyph := clampf(minf(22.0, avail * 0.46), 12.0, 22.0)
+	if glyph + 2.0 > band_bottom - band_top:
+		glyph = maxf(11.0, band_bottom - band_top - 2.0)
+	for _pass in 2:
+		var width := _place_personal_best(label, glyph, band_top, band_bottom)
+		if width <= RR.VIEW_W - 16.0:
+			break
+		glyph = maxf(11.0, glyph * (RR.VIEW_W - 16.0) / maxf(width, 1.0))
+
+
+func _place_personal_best(label: String, glyph: float, band_top: float, band_bottom: float) -> float:
+	var block := maxf(glyph, 11.0)
+	_best_text.configure(label, block, Vector2(RR.VIEW_W, block), HORIZONTAL_ALIGNMENT_CENTER, true, false, 1.05, true)
+	_best_text.resize_box(block, Vector2(RR.VIEW_W, block))
+	var bounds := _best_glyph_bounds()
+	var crown_h := block * 0.86
+	var aspect := 1.15
+	if _best_crown.texture != null and _best_crown.texture.get_height() > 0:
+		aspect = float(_best_crown.texture.get_width()) / float(_best_crown.texture.get_height())
+	var crown_w := crown_h * aspect
+	var gap := maxf(3.0, block * 0.16)
+	var group_w := crown_w + gap + bounds.size.x
+	var group_x := (RR.VIEW_W - group_w) * 0.5
+	_best_crown.position = Vector2(group_x, (block - crown_h) * 0.5)
+	_best_crown.size = Vector2(crown_w, crown_h)
+	_best_text.position = Vector2(group_x + crown_w + gap - bounds.position.x, 0.0)
+	var y := band_top + (band_bottom - band_top - block) * 0.5
+	_best_row.position = Vector2(0.0, y)
+	_best_row.size = Vector2(RR.VIEW_W, block)
+	return group_w
+
+
+func _best_glyph_bounds() -> Rect2:
+	var left := _best_text.size.x
+	var right := 0.0
+	var any := false
+	for child in _best_text.get_children():
+		any = true
+		left = minf(left, child.position.x)
+		right = maxf(right, child.position.x + child.size.x)
+	if not any:
+		return Rect2(0.0, 0.0, 0.0, _best_text.size.y)
+	return Rect2(left, 0.0, right - left, _best_text.size.y)
 
 
 func _flash_wallet() -> void:
@@ -871,13 +1018,7 @@ func _refresh_hat_pick() -> void:
 		var hat_i := _hat_ids[n]
 		var equipped := hat_i == GameSession.hat_index
 		var owned := hat_i < 0 or GameSession.owns_hat(hat_i)
-		var ring_style := StyleBoxFlat.new()
-		ring_style.bg_color = Color(0, 0, 0, 0)
-		ring_style.draw_center = false
-		ring_style.set_border_width_all(3 if equipped else 0)
-		ring_style.border_color = Color(1.0, 0.92, 0.42, 0.95)
-		ring_style.set_corner_radius_all(14)
-		_hat_rings[n].add_theme_stylebox_override("panel", ring_style)
+		_hat_rings[n].add_theme_stylebox_override("panel", _hat_ring_on if equipped else _hat_ring_off)
 		_hat_rings[n].z_index = 8
 		if hat_i < 0:
 			_hat_icons[n].modulate = Color(0.75, 0.84, 0.9, 0.55 if not equipped else 0.9)
@@ -933,7 +1074,9 @@ func _begin_fish_drag(pos: Vector2) -> void:
 	_fish_pressing = true
 	_fish_dragged = false
 	_fish_press = pos
-	_fish_press_scroll = _fish_scroll_x
+	_fish_scroll_x = _fish_scroll_visual
+	_fish_slide_t = 1.0
+	_fish_press_scroll = _fish_scroll_visual
 
 
 func _move_fish_drag(pos: Vector2) -> void:
@@ -943,7 +1086,9 @@ func _move_fish_drag(pos: Vector2) -> void:
 	if absf(dx) > 6.0:
 		_fish_dragged = true
 	_fish_scroll_x = clampf(_fish_press_scroll - dx, 0.0, _fish_max_scroll)
-	_apply_fish_scroll()
+	_fish_scroll_visual = _fish_scroll_x
+	_fish_slide_t = 1.0
+	_place_fish_row()
 
 
 func _end_fish_drag(pos: Vector2) -> void:
@@ -956,17 +1101,34 @@ func _end_fish_drag(pos: Vector2) -> void:
 
 
 func _scroll_fish(delta_x: float) -> void:
-	_fish_scroll_x = clampf(_fish_scroll_x + delta_x, 0.0, _fish_max_scroll)
-	_apply_fish_scroll()
+	_start_fish_slide(clampf(_fish_scroll_x + delta_x, 0.0, _fish_max_scroll))
 
 
 func _apply_fish_scroll() -> void:
+	_fish_scroll_visual = _fish_scroll_x
+	_fish_slide_from = _fish_scroll_x
+	_fish_slide_to = _fish_scroll_x
+	_fish_slide_t = 1.0
+	_place_fish_row()
+
+
+func _start_fish_slide(target: float) -> void:
+	_fish_scroll_x = target
+	if absf(_fish_scroll_visual - target) < 0.5:
+		_apply_fish_scroll()
+		return
+	_fish_slide_from = _fish_scroll_visual
+	_fish_slide_to = target
+	_fish_slide_t = 0.0
+
+
+func _place_fish_row() -> void:
 	if _fish_row:
-		_fish_row.position.x = -_fish_scroll_x
+		_fish_row.position.x = -_fish_scroll_visual
 
 
 func _click_fish_at(pos: Vector2) -> void:
-	var x := pos.x + _fish_scroll_x - 4.0
+	var x := pos.x + _fish_scroll_visual - 4.0
 	if x < 0.0:
 		return
 	var stride := _fish_cell + _fish_gap
@@ -1050,22 +1212,14 @@ func _refresh_fish_pick() -> void:
 		var fish_i := _fish_order[i]
 		var owned := GameSession.owns_fish(fish_i)
 		var on := fish_i == chosen and owned
-		var ring_style := StyleBoxFlat.new()
-		ring_style.bg_color = Color(0.12, 0.42, 0.62, 0.22 if on else 0.0)
-		ring_style.set_border_width_all(3 if on else 0)
-		ring_style.border_color = Color(1.0, 0.92, 0.42, 0.95)
-		ring_style.set_corner_radius_all(18)
-		_fish_rings[i].add_theme_stylebox_override("panel", ring_style)
+		_fish_rings[i].add_theme_stylebox_override("panel", _fish_ring_on if on else _fish_ring_off)
 		if on:
 			_fish_icons[i].modulate = Color.WHITE
 		elif owned:
 			_fish_icons[i].modulate = Color(0.82, 0.88, 0.92, 0.78)
 		else:
 			_fish_icons[i].modulate = Color(0.55, 0.62, 0.7, 0.9)
-		_fish_icons[i].scale = Vector2.ONE
-		var grow := 1.08 if on else 1.0
-		_fish_icons[i].pivot_offset = _fish_icons[i].size * 0.5
-		_fish_icons[i].scale = Vector2(grow, grow)
+		_fish_icons[i].set_meta("scale_goal", 1.08 if on else 1.0)
 		if i < _fish_prices.size():
 			_fish_prices[i].visible = not owned
 	_refresh_fish_hats()
@@ -1073,6 +1227,9 @@ func _refresh_fish_pick() -> void:
 
 func _refresh_fish_hats() -> void:
 	var equipped := GameSession.hat_index
+	if equipped == _shown_menu_hat:
+		return
+	_shown_menu_hat = equipped
 	var hat_tex: Texture2D = null
 	if equipped >= 0 and equipped < RR.HAT_COUNT:
 		hat_tex = Sprites.tex(RR.hat_id(equipped))
@@ -1103,6 +1260,51 @@ func _place_hat_on_fish(hat: TextureRect, skin: String, box: Vector2) -> void:
 	hat.position = sit - hat_size * 0.5 + Vector2(0.0, 3.0)
 
 
+func _tick_carousels(delta: float) -> void:
+	_advance_slide(delta, true)
+	_advance_slide(delta, false)
+	_ease_icon_scales(delta)
+	_bob_picker(delta)
+
+
+func _advance_slide(delta: float, fish: bool) -> void:
+	var t := _fish_slide_t if fish else _hat_slide_t
+	if t >= 1.0:
+		return
+	t = minf(1.0, t + delta / CAROUSEL_SLIDE_SEC)
+	var from := _fish_slide_from if fish else _hat_slide_from
+	var to := _fish_slide_to if fish else _hat_slide_to
+	var visual := lerpf(from, to, _slide_ease(t))
+	if t >= 1.0:
+		visual = to
+	if fish:
+		_fish_slide_t = t
+		_fish_scroll_visual = visual
+		_place_fish_row()
+	else:
+		_hat_slide_t = t
+		_hat_scroll_visual = visual
+		_place_hat_row()
+
+
+func _slide_ease(t: float) -> float:
+	t = clampf(t, 0.0, 1.0)
+	return t * t * (3.0 - 2.0 * t)
+
+
+func _ease_icon_scales(delta: float) -> void:
+	var keep := exp(-delta / 0.06)
+	for icon in _fish_icons:
+		var goal := float(icon.get_meta("scale_goal", 1.0))
+		var shown := icon.scale.x
+		if absf(shown - goal) < 0.001:
+			continue
+		var next := goal + (shown - goal) * keep
+		if absf(next - goal) < 0.001:
+			next = goal
+		icon.scale = Vector2(next, next)
+
+
 func _bob_picker(delta: float) -> void:
 	_bob_t += delta
 	for i in _fish_cells.size():
@@ -1116,6 +1318,20 @@ func _bob_picker(delta: float) -> void:
 		_wallet_coin.position = _wallet_rest + Vector2(0.0, wy)
 		if _wallet_text:
 			_wallet_text.position = _wallet_text_rest + Vector2(0.0, wy)
+
+
+func _still_motion(node: CanvasItem) -> void:
+	node.physics_interpolation_mode = CanvasItem.PHYSICS_INTERPOLATION_MODE_OFF
+
+
+func _ring_style(fill: Color, border: int, radius: int, draw_center := true) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = fill
+	style.draw_center = draw_center
+	style.set_border_width_all(border)
+	style.border_color = Color(1.0, 0.92, 0.42, 0.95)
+	style.set_corner_radius_all(radius)
+	return style
 
 
 func _hotspot(src: Rect2, pressed: Callable, origin: Vector2, scale: float) -> Button:
@@ -1541,6 +1757,7 @@ func _show_home() -> void:
 	_home.visible = true
 	if _ground:
 		_ground.visible = true
+	_layout_personal_best()
 
 
 func _play() -> void:

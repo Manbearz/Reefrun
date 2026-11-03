@@ -11,6 +11,11 @@ var lobby_text: SpriteTextScript
 var lobby_time: SpriteTextScript
 var jump_hint: TextureRect
 var feed_text: SpriteTextScript
+var feed_row: Control
+var feed_name: SpriteTextScript
+const FEED_GLYPH := 14.0
+const FEED_NAME_GLYPH := 21.0
+const FEED_BOX_H := 24.0
 var crown: TextureRect
 var _coin_icon: TextureRect
 var _coin_text: SpriteTextScript
@@ -59,7 +64,7 @@ func _ready() -> void:
 	lobby_text = _line("LOBBY", 22, Vector2(0, RR.VIEW_H * 0.30), Vector2(RR.VIEW_W, 32), HORIZONTAL_ALIGNMENT_CENTER)
 	lobby_time = _line("12", 64, Vector2(0, RR.VIEW_H * 0.36), Vector2(RR.VIEW_W, 80), HORIZONTAL_ALIGNMENT_CENTER, true)
 	_build_jump_hint()
-	feed_text = _line("", 14, Vector2(12, RR.screen_bottom() - 92.0), Vector2(RR.VIEW_W - 24, 24), HORIZONTAL_ALIGNMENT_LEFT)
+	_build_feed()
 	apply_screen_layout()
 	_prewarm_glyphs()
 
@@ -72,8 +77,8 @@ func apply_screen_layout() -> void:
 			continue
 		var base: Vector2 = entry["base"]
 		node.position = base + Vector2(0.0, inset)
-	if feed_text:
-		feed_text.position.y = RR.screen_bottom() - 92.0 - RR.display_insets(RR.screen_size()).w
+	if feed_row:
+		feed_row.position.y = RR.screen_bottom() - 92.0 - RR.display_insets(RR.screen_size()).w
 
 
 func _track_top(node: CanvasItem) -> void:
@@ -96,7 +101,7 @@ func _prewarm_glyphs() -> void:
 	score_text.set_value("1")
 	score_text.set_value("0")
 	show_feed(" ")
-	feed_text.modulate.a = 0.0
+	feed_row.modulate.a = 0.0
 
 
 func hide_prewarm() -> void:
@@ -231,11 +236,53 @@ func set_coins(value: int) -> void:
 	_coin_text.set_value(str(maxi(0, value)))
 
 
+func _build_feed() -> void:
+	feed_row = Control.new()
+	feed_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	feed_row.position = Vector2(12, RR.screen_bottom() - 92.0)
+	feed_row.size = Vector2(RR.VIEW_W - 24.0, FEED_BOX_H)
+	add_child(feed_row)
+	feed_name = SpriteTextScript.new()
+	feed_name.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	feed_name.visible = false
+	feed_name.configure("", FEED_NAME_GLYPH, Vector2(1, FEED_BOX_H), HORIZONTAL_ALIGNMENT_LEFT)
+	feed_row.add_child(feed_name)
+	feed_text = SpriteTextScript.new()
+	feed_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	feed_text.configure("", FEED_GLYPH, feed_row.size, HORIZONTAL_ALIGNMENT_LEFT)
+	feed_row.add_child(feed_text)
+
+
+func show_elimination(player_name: String) -> void:
+	var name := player_name.strip_edges().substr(0, GameSession.NAME_MAX_LEN)
+	var rest := " WIPED OUT"
+	var name_w := feed_name.layout_width(name, FEED_NAME_GLYPH)
+	var rest_w := feed_text.layout_width(rest, FEED_GLYPH)
+	var name_h := FEED_NAME_GLYPH
+	var limit := feed_row.size.x
+	if name_w + rest_w > limit and name_w > 1.0:
+		name_h = FEED_NAME_GLYPH * maxf(0.0, limit - rest_w) / name_w
+		name_w = maxf(0.0, limit - rest_w)
+	feed_name.visible = true
+	feed_name.position = Vector2.ZERO
+	feed_name.configure(name, name_h, Vector2(maxf(name_w, 1.0), FEED_BOX_H), HORIZONTAL_ALIGNMENT_LEFT)
+	feed_text.visible = true
+	feed_text.position = Vector2(name_w, 0.0)
+	feed_text.configure(rest, FEED_GLYPH, Vector2(maxf(rest_w, 1.0), FEED_BOX_H), HORIZONTAL_ALIGNMENT_LEFT)
+	_present_feed()
+
+
 func show_feed(text: String) -> void:
-	feed_text.set_value(text)
-	feed_text.modulate.a = 1.0
+	feed_name.visible = false
+	feed_text.position = Vector2.ZERO
+	feed_text.configure(text, FEED_GLYPH, feed_row.size, HORIZONTAL_ALIGNMENT_LEFT)
+	_present_feed()
+
+
+func _present_feed() -> void:
+	feed_row.modulate.a = 1.0
 	if _feed_tween:
 		_feed_tween.kill()
 	_feed_tween = create_tween()
 	_feed_tween.tween_interval(0.9)
-	_feed_tween.tween_property(feed_text, "modulate:a", 0.0, 0.5)
+	_feed_tween.tween_property(feed_row, "modulate:a", 0.0, 0.5)

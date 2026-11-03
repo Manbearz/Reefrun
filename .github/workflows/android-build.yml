@@ -13,7 +13,7 @@ on:
         type: boolean
         default: false
       ad_mode:
-        description: Rewarded ads. test is the default. production is only for an approved public release and requires scripts/ads/ad_build_mode.gd to say production.
+        description: Android rewarded ads. test is the default and matches ANDROID_MODE. production is refused while ANDROID_MODE is test. The iOS mode does not change this.
         required: true
         type: choice
         default: test
@@ -54,7 +54,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check the rewarded ad mode
-        run: python3 tools/check_ad_build_mode.py --mode "${AD_MODE:-test}"
+        run: python3 tools/check_ad_build_mode.py --platform android --mode "${AD_MODE:-test}"
 
       - name: Refuse Google Play publishing
         if: ${{ inputs.publish_play }}
@@ -432,7 +432,7 @@ jobs:
           esac
           "$AAPT" dump xmltree build/Reefrun.apk AndroidManifest.xml > "$RUNNER_TEMP/apk-manifest.txt"
           printf '%s\n' "$manifest" > "$RUNNER_TEMP/aab-manifest.txt"
-          python3 tools/check_ad_build_mode.py --mode "${AD_MODE:-test}" --manifest-file "$RUNNER_TEMP/apk-manifest.txt" --manifest-file "$RUNNER_TEMP/aab-manifest.txt" --package build/Reefrun.apk --package build/Reefrun.aab
+          python3 tools/check_ad_build_mode.py --platform android --mode "${AD_MODE:-test}" --manifest-file "$RUNNER_TEMP/apk-manifest.txt" --manifest-file "$RUNNER_TEMP/aab-manifest.txt" --package build/Reefrun.apk --package build/Reefrun.aab
           if [ "${ANDROID_VERSION_CODE}" -le "${LAST_PUBLISHED_VERSION_CODE}" ]; then
             echo "Refusing to publish version code ${ANDROID_VERSION_CODE}. Play already has ${LAST_PUBLISHED_VERSION_CODE}."
             exit 1

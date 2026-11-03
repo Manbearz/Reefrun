@@ -68,6 +68,14 @@ static func share_message(code: String) -> String:
 	return "Swim with me in ReefRun! " + url
 
 
+static func run_share_message(run_score: int, code: String) -> String:
+	var line := "I scored %d in ReefRun! Can you beat me? 🐟" % maxi(run_score, 0)
+	var invite := share_message(code)
+	if invite.is_empty():
+		return line
+	return line + "\n" + invite
+
+
 static func progress_label(qualified: int) -> String:
 	return "FRIENDS %d/%d" % [clampi(qualified, 0, TARGET), TARGET]
 

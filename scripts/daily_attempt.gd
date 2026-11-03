@@ -256,6 +256,20 @@ static func parse_finalize(result: Dictionary) -> Dictionary:
 	return out
 
 
+# Transport loss, rate limits, and 5xx may have committed. Retry the same attempt.
+# A definite 4xx other than auth or timeout did not store a score.
+static func finalize_retryable(result: Dictionary, parsed: Dictionary) -> bool:
+	if bool(parsed.get("stored", false)):
+		return false
+	var status := int(result.get("status", parsed.get("status", 0)))
+	if status == 401 or status == 403 or status == 408 or status == 429:
+		return true
+	if status == 0 or status >= 500:
+		return true
+	var err := str(parsed.get("error", result.get("error", ""))).to_lower()
+	return err.find("invalid_json") >= 0 or err.find("empty_payload") >= 0
+
+
 static func parse_start(result: Dictionary) -> Dictionary:
 	var out := {
 		"ok": false,

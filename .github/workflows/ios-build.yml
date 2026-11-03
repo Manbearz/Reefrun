@@ -12,6 +12,14 @@ on:
         required: false
         type: boolean
         default: false
+      ad_mode:
+        description: iOS rewarded ads. test is the default and will fail while IOS_MODE is production. Choose production for the approved TestFlight build. That requests the live iOS unit and still requires an AdMob test device. Android stays on Google's test unit.
+        required: true
+        type: choice
+        default: test
+        options:
+          - test
+          - production
 
 permissions:
   contents: read
@@ -34,9 +42,13 @@ jobs:
       BUNDLE_ID: com.lunarentertainment.reefrun
       GODOT_MACOS_SHA256: c58a24e31d720be9d62f60cb5627c4e695fb72f21b0cfe1bc9ccaa9a3b3ba63e
       GODOT_TEMPLATES_SHA256: f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011
+      AD_MODE: ${{ inputs.ad_mode }}
     steps:
       - name: Check out the project
         uses: actions/checkout@v4
+
+      - name: Check the rewarded ad mode
+        run: python3 tools/check_ad_build_mode.py --platform ios --mode "${AD_MODE:-test}"
 
       - name: Select an Xcode with the iOS 26 Metal symbols
         run: |
@@ -148,12 +160,11 @@ jobs:
               problems.append("Daily practice mode must stay false for a release export.")
           if "OS.is_debug_build()" in ads.split("static func use_mock_provider", 1)[-1]:
               problems.append("Mock rewarded ads must not run in exported builds.")
-          if "const USE_TEST_ADS := true" not in ads:
-              problems.append("TestFlight must keep USE_TEST_ADS true so live rewarded units are not requested.")
-          reward_fn = ads.split("static func rewarded_unit_id", 1)[-1].split("static func use_mock_provider", 1)[0]
-          test_branch = reward_fn.split("if USE_TEST_ADS:", 1)[-1].split("return production", 1)[0]
-          if "if USE_TEST_ADS:" not in reward_fn or "return test_unit" not in test_branch:
-              problems.append("Rewarded requests must return the Google test unit while USE_TEST_ADS is true.")
+          reward_fn = ads.split("static func rewarded_unit_for", 1)[-1].split("static func rewarded_unit_id", 1)[0]
+          if "static func rewarded_unit_for" not in ads or 'normalize_mode(mode) != "production"' not in reward_fn or "return test_unit" not in reward_fn:
+              problems.append("Rewarded requests must return the Google test unit unless the mode is exactly production.")
+          if "is_google_test_rewarded_unit(production)" not in reward_fn:
+              problems.append("Production mode must refuse a Google sample rewarded unit.")
           for required in (
               "ca-app-pub-3940256099942544/1712485313",
               "ca-app-pub-3940256099942544/5224354917",
@@ -187,6 +198,14 @@ jobs:
                   problems.append(f"AdMob native library is missing: {relative}")
           if 'application/bundle_identifier="com.lunarentertainment.reefrun"' not in preset:
               problems.append("iOS bundle identifier is not com.lunarentertainment.reefrun.")
+          for relative in (
+              "ios/plugins/SharePlugin.gdip",
+              "ios/plugins/SharePlugin.release.xcframework/ios-arm64/SharePlugin.a",
+              "ios/plugins/SharePlugin.debug.xcframework/ios-arm64/SharePlugin.a",
+          ):
+              library = root / relative
+              if not library.is_file() or library.stat().st_size < 32:
+                  problems.append(f"iOS share plugin is missing: {relative}")
           ios_at = preset.find('name="iOS"')
           if ios_at == -1:
               problems.append("iOS export preset was not found.")
@@ -197,6 +216,8 @@ jobs:
               next_preset = re.search(r"\n\[preset\.\d+\]\n", preset[ios_at + 1:])
               ios_end = ios_at + 1 + next_preset.start() if next_preset else len(preset)
               ios_preset = preset[ios_at:ios_end]
+          if "plugins/SharePlugin=true" not in ios_preset:
+              problems.append("iOS export must enable SharePlugin.")
           if 'application/short_version="1.0.0"' not in ios_preset:
               problems.append("iOS marketing version (CFBundleShortVersionString) must stay 1.0.0.")
           if 'application/version="6"' not in ios_preset:
@@ -851,6 +872,7 @@ jobs:
               sys.exit(1)
           print(f"Exported iOS build number is 6. Marketing version is 1.0.0. AdMob app id, tracking description, and SDK reference are present. Checked {len(plists)} Info.plist file(s).")
           PY
+          python3 tools/check_ad_build_mode.py --platform ios --mode "${AD_MODE:-test}" --package build
 
       - name: Resolve the Google Mobile Ads Swift package
         run: |

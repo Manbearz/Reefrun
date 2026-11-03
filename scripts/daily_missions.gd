@@ -290,6 +290,116 @@ static func remaining_seconds(server_now: int, resets_at: int, fetched_at: int, 
 	return maxi(0, resets_at - server_now - (now_unix - fetched_at))
 
 
+# One daily period keeps one Easy, Medium, and Hard assignment.
+# A response for that same mission_date cannot swap the missions or
+# walk progress, completion, or a claim backwards. The next period is
+# accepted only after the stored reset instant, which comes from the server.
+static func settle_board(current: Dictionary, incoming: Dictionary) -> Dictionary:
+	if not bool(incoming.get("ok", false)):
+		return current
+	if not bool(current.get("ok", false)):
+		return incoming.duplicate(true)
+	var current_date := str(current.get("mission_date", ""))
+	var incoming_date := str(incoming.get("mission_date", ""))
+	if incoming_date == "":
+		return current.duplicate(true)
+	if current_date == "" or current_date != incoming_date:
+		if incoming_date > current_date and _period_still_open(current, incoming):
+			return current.duplicate(true)
+		return incoming.duplicate(true)
+	var merged := incoming.duplicate(true)
+	var current_slots := _slots_map(current)
+	var incoming_rows: Variant = merged.get("slots", [])
+	var next_slots: Array = []
+	for name in ["easy", "medium", "hard"]:
+		var incoming_row := {}
+		if typeof(incoming_rows) == TYPE_ARRAY:
+			for row in incoming_rows:
+				if typeof(row) == TYPE_DICTIONARY and str(row.get("slot", "")) == name:
+					incoming_row = row
+					break
+		next_slots.append(_merge_slot(current_slots.get(name, {}), incoming_row, name))
+	merged["slots"] = next_slots
+	merged["bonus"] = _merge_bonus(current.get("bonus", {}), merged.get("bonus", {}), next_slots)
+	return merged
+
+
+# The mission card has one objective line per row. "COMPLETE" fits that line
+# at the same glyph size as the objective. The row order is Easy, Medium, Hard.
+static func completed_label(_slot: String) -> String:
+	return "COMPLETE"
+
+
+static func _period_still_open(current: Dictionary, incoming: Dictionary) -> bool:
+	var resets_at := int(current.get("resets_at", 0))
+	var server_now := int(incoming.get("server_now", 0))
+	return resets_at > 0 and server_now > 0 and server_now < resets_at
+
+
+static func _slots_map(board: Dictionary) -> Dictionary:
+	var found := {}
+	var rows: Variant = board.get("slots", [])
+	if typeof(rows) != TYPE_ARRAY:
+		return found
+	for row in rows:
+		if typeof(row) != TYPE_DICTIONARY:
+			continue
+		var name := str(row.get("slot", ""))
+		if name == "easy" or name == "medium" or name == "hard":
+			found[name] = row
+	return found
+
+
+static func _merge_slot(current: Dictionary, incoming: Dictionary, slot: String) -> Dictionary:
+	if current.is_empty():
+		return incoming.duplicate(true) if not incoming.is_empty() else {}
+	if incoming.is_empty():
+		var kept_only := current.duplicate(true)
+		kept_only["slot"] = slot
+		return kept_only
+	var current_id := int(current.get("mission_id", 0))
+	var incoming_id := int(incoming.get("mission_id", 0))
+	if current_id > 0 and incoming_id > 0 and current_id != incoming_id:
+		var kept := current.duplicate(true)
+		kept["slot"] = slot
+		kept["claimed"] = bool(current.get("claimed", false)) or bool(incoming.get("claimed", false))
+		kept["complete"] = bool(current.get("complete", false)) or bool(kept.get("claimed", false))
+		return kept
+	var row := incoming.duplicate(true)
+	var goal := int(row.get("goal", current.get("goal", 0)))
+	var progress := maxi(int(current.get("progress", 0)), int(row.get("progress", 0)))
+	row["slot"] = slot
+	row["progress"] = progress
+	row["goal"] = goal
+	row["complete"] = bool(current.get("complete", false)) or bool(row.get("complete", false)) or (goal > 0 and progress >= goal)
+	row["claimed"] = bool(current.get("claimed", false)) or bool(row.get("claimed", false))
+	if int(row.get("reward", 0)) <= 0:
+		row["reward"] = int(current.get("reward", 0))
+	if str(row.get("description", "")) == "":
+		row["description"] = str(current.get("description", ""))
+	if int(row.get("mission_id", 0)) <= 0 and current_id > 0:
+		row["mission_id"] = current_id
+	return row
+
+
+static func _merge_bonus(current: Variant, incoming: Variant, slots: Array) -> Dictionary:
+	var bonus: Dictionary = incoming.duplicate(true) if typeof(incoming) == TYPE_DICTIONARY else {}
+	var previous: Dictionary = current if typeof(current) == TYPE_DICTIONARY else {}
+	var claimed_slots := 0
+	for row in slots:
+		if typeof(row) == TYPE_DICTIONARY and bool(row.get("claimed", false)):
+			claimed_slots += 1
+	bonus["claimed"] = bool(previous.get("claimed", false)) or bool(bonus.get("claimed", false))
+	bonus["progress"] = maxi(claimed_slots, maxi(int(previous.get("progress", 0)), int(bonus.get("progress", 0))))
+	bonus["unlocked"] = bool(previous.get("unlocked", false)) or bool(bonus.get("unlocked", false)) or claimed_slots >= 3
+	bonus["goal"] = 3
+	if int(bonus.get("reward", 0)) <= 0:
+		bonus["reward"] = int(previous.get("reward", int(REWARDS.bonus)))
+	if str(bonus.get("description", "")) == "":
+		bonus["description"] = str(previous.get("description", "COMPLETE ALL 3"))
+	return bonus
+
+
 static func progress_ratio(current: int, goal: int) -> float:
 	if goal <= 0:
 		return 0.0

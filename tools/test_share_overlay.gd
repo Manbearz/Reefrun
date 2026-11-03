@@ -36,7 +36,7 @@ class Runner extends Node:
 			push_error("[share] Main Menu is not below small share")
 			get_tree().quit(1)
 			return
-		game.call("_open_share_overlay")
+		game.call("_play_press", wipe_share.get_global_rect().get_center(), true)
 		await get_tree().process_frame
 		await get_tree().process_frame
 		if wipe_again.disabled != true or wipe_menu.disabled != true:
@@ -77,6 +77,37 @@ class Runner extends Node:
 				if c.r > 0.82 and c.g < 0.28 and c.b < 0.24:
 					red_btn += 1
 		print("[share] bottom control colors lime=%s red=%s" % [lime, red_btn])
+		var session := get_node("/root/GameSession")
+		var coins_before := int(session.coins)
+		var reward_before := int(session.applied_share_reward_coins)
+		var share_btn: Button = game.get("_share_share_btn")
+		if share_btn == null:
+			push_error("[share] missing confirm button")
+			get_tree().quit(1)
+			return
+		game.call("_play_press", share_btn.get_global_rect().get_center(), true)
+		await get_tree().process_frame
+		if int(game.get("score")) != 7 or int(session.coins) != coins_before or int(session.applied_share_reward_coins) != reward_before:
+			push_error("[share] confirming share changed score or coins")
+			get_tree().quit(1)
+			return
+		game.set("score", 42)
+		game.call("_share_card_pressed")
+		await get_tree().process_frame
+		if int(game.get("score")) != 42 or int(session.coins) != coins_before:
+			push_error("[share] a second run share changed score or coins")
+			get_tree().quit(1)
+			return
+		var provider: Node = game.get("_share_service").get("_provider")
+		provider.set("_busy", true)
+		game.call("_share_card_pressed")
+		if int(game.get("score")) != 42 or provider.get("_busy") != true:
+			push_error("[share] a repeat tap was not ignored")
+			get_tree().quit(1)
+			return
+		provider.set("_busy", false)
+		game.set("_share_busy", false)
+		game.set("score", 7)
 		game.call("_close_share_overlay", true)
 		await get_tree().process_frame
 		if game.get("_share_layer") != null:

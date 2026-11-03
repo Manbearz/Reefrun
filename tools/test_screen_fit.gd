@@ -20,6 +20,7 @@ func _run() -> void:
 	ok = _check("keyboard lock", _keyboard()) and ok
 	ok = _check("game content", _features()) and ok
 	ok = _check("scripts parse", _parse()) and ok
+	ok = _check("mode cover", _mode_cover()) and ok
 	print("[screen-fit] ok=%s" % ok)
 	quit(0 if ok else 1)
 
@@ -123,7 +124,16 @@ func _preset() -> bool:
 		return false
 	if not workflow.contains("Google Play publishing is disabled"):
 		return false
-	return ads.contains("const USE_TEST_ADS := true") and ads.contains("ca-app-pub-3940256099942544/5224354917")
+	var mode := FileAccess.get_file_as_string("res://scripts/ads/ad_build_mode.gd")
+	return (
+		mode.contains('const ANDROID_MODE := "test"')
+		and mode.contains('const ANDROID_OUTPUT_MARKER := "REEFRUN_ANDROID_AD_MODE=test"')
+		and mode.contains('const IOS_MODE := "production"')
+		and ads.contains('normalize_mode(mode) != "production"')
+		and ads.contains("ca-app-pub-3940256099942544/5224354917")
+		and workflow.contains("default: test")
+		and workflow.contains("--platform android")
+	)
 
 
 func _keyboard() -> bool:
@@ -159,6 +169,39 @@ func _features() -> bool:
 		if path.begins_with("res://tools/") or not FileAccess.file_exists(path):
 			push_error("[screen-fit] missing game content %s" % path)
 			return false
+	return true
+
+
+func _mode_cover() -> bool:
+	var menu_script: GDScript = load("res://scenes/menu/main_menu.gd") as GDScript
+	if menu_script == null:
+		push_error("[screen-fit] mode menu did not load")
+		return false
+	var menu = menu_script.new()
+	var ratios: Array[float] = [16.0 / 9.0, 18.0 / 9.0, 19.5 / 9.0, 20.0 / 9.0, 21.0 / 9.0]
+	var sources: Array[Rect2] = [menu.MODE_UNLIMITED, menu.MODE_DAILY, menu.MODE_MISSIONS, menu.MODE_BACK]
+	for ratio in ratios:
+		var screen := Vector2(RR.VIEW_W, RR.VIEW_W * ratio)
+		var cover: Rect2 = menu._mode_cover_rect(screen)
+		var scale := Vector2(cover.size.x / menu.MODE_W, cover.size.y / menu.MODE_H)
+		var filled: bool = cover.position.is_equal_approx(Vector2.ZERO) and cover.size.is_equal_approx(screen)
+		if not filled and absf(scale.x - scale.y) > 0.0001:
+			push_error("[screen-fit] mode art stretched on %s" % screen)
+			return false
+		if cover.position.x > 0.05 or cover.position.y > 0.05 or cover.end.x < screen.x - 0.05 or cover.end.y < screen.y - 0.05:
+			push_error("[screen-fit] mode art does not cover %s with %s" % [screen, cover])
+			return false
+		var bounds := Rect2(Vector2.ZERO, screen)
+		for src in sources:
+			var button := Rect2(cover.position + src.position * scale, src.size * scale)
+			if not bounds.encloses(button.grow(-1.0)):
+				push_error("[screen-fit] mode button %s left %s" % [button, screen])
+				return false
+		var score: Rect2 = RR.fullscreen_plate(Vector2(menu.SCORE_W, menu.SCORE_H), screen, menu.SCORE_KEEP, Vector2(0.5, 0.5))
+		if score.position.x > 0.05 or score.end.x < screen.x - 0.05 or score.end.y < screen.y - 0.05:
+			push_error("[screen-fit] leaderboard does not cover %s with %s" % [screen, score])
+			return false
+	menu.free()
 	return true
 
 

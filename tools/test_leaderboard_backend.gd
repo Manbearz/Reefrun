@@ -94,6 +94,7 @@ func _run() -> void:
 	await _test_cross_device(backend)
 	await _test_network(backend)
 	await _test_out_of_order(backend)
+	await _test_daily_reliability(backend)
 	_warn_local_mirror()
 	var restored := _restore_userdata()
 	_check("userdata_restored", restored, "snapshot_ok=%s" % _snap_ok)
@@ -127,6 +128,8 @@ func _install(backend, token: String, uid: String) -> void:
 	backend.auth.user_id = uid
 	backend.auth.refresh_token = ""
 	backend.auth.expires_at = int(Time.get_unix_time_from_system()) + 7200
+	mock.session_token = token
+	mock.session_uid = uid
 
 
 func _reset(backend) -> void:
@@ -153,6 +156,8 @@ func _reset(backend) -> void:
 	_gs().pending_finalize_attempt = ""
 	_gs().pending_finalize_score = 0
 	_gs().pending_finalize_name = ""
+	_gs().pending_finalizes = []
+	backend._finalize_confirmed = {}
 	_gs().pending_unlimited_score = 0
 	_gs().pending_unlimited_name = ""
 	_gs().match_mode = ""
@@ -286,6 +291,14 @@ func _request(url_suffix: String, which: int = -1) -> Dictionary:
 			return row
 		seen += 1
 	return found if which < 0 else {}
+
+
+func _count_url(part: String) -> int:
+	var n := 0
+	for row in mock.requests:
+		if typeof(row) == TYPE_DICTIONARY and str(row.get("url", "")).find(part) >= 0:
+			n += 1
+	return n
 
 
 func _keys_exact(row: Dictionary, expected: Array) -> bool:
@@ -790,30 +803,33 @@ func _test_network(backend) -> void:
 	)
 	await _reset(backend)
 	var ready: Dictionary = await _claim_and_start(backend)
+	mock.requests.clear()
 	mock.fault = "429"
-	mock.fault_once = true
 	_gs().pending_finalize_attempt = str(ready.get("attempt_id", ""))
 	_gs().pending_finalize_score = 27
 	_gs().pending_finalize_name = "REEF"
 	await backend.finalize_daily_attempt(str(ready.get("attempt_id", "")), 27, "REEF")
 	var limited := await _wait_quiet(backend)
+	var limited_hits := _count_url("/finalize_daily_attempt")
 	_check(
-		"network_429_not_shown_as_saved",
+		"network_429_persistent_not_saved",
 		limited
+		and limited_hits == 3
 		and mock.count_scores(PLAYER_A, "daily") == 0
 		and _joined(_shown(backend, "daily")) == ""
 		and str(backend.daily_submit_error) != ""
 		and _note(backend, "daily") == "SCORE NOT SAVED"
 		and _gs().pending_finalize_attempt == str(ready.get("attempt_id", "")),
-		"error=%s pending=%s" % [backend.daily_submit_error, _gs().pending_finalize_attempt]
+		"hits=%d error=%s pending=%s" % [limited_hits, backend.daily_submit_error, _gs().pending_finalize_attempt]
 	)
 	mock.fault = ""
+	mock.requests.clear()
 	backend.on_menu_ready()
 	var retried := await _wait_quiet(backend)
 	_check(
-		"network_429_retry_one_row",
-		retried and _joined(_shown(backend, "daily")) == "REEF 27" and mock.count_scores(PLAYER_A, "daily") == 1 and _gs().pending_finalize_attempt == "",
-		"shown=%s rows=%d pending=%s" % [_shown(backend, "daily"), mock.count_scores(PLAYER_A, "daily"), _gs().pending_finalize_attempt]
+		"network_429_menu_recovers_one_row",
+		retried and _joined(_shown(backend, "daily")) == "REEF 27" and mock.count_scores(PLAYER_A, "daily") == 1 and _gs().pending_finalize_attempt == "" and _count_url("/finalize_daily_attempt") == 1,
+		"shown=%s rows=%d pending=%s hits=%d" % [_shown(backend, "daily"), mock.count_scores(PLAYER_A, "daily"), _gs().pending_finalize_attempt, _count_url("/finalize_daily_attempt")]
 	)
 	await _reset(backend)
 	ready = await _claim_and_start(backend)
@@ -821,21 +837,15 @@ func _test_network(backend) -> void:
 	mock.fault_once = true
 	mock.commit_on_fault = true
 	await backend.finalize_daily_attempt(str(ready.get("attempt_id", "")), 27, "REEF")
-	var failed_store := await _wait_quiet(backend)
-	_check(
-		"network_500_not_shown_until_confirmed",
-		failed_store
-		and mock.count_scores(PLAYER_A, "daily") == 1
-		and _joined(_shown(backend, "daily")) == ""
-		and str(backend.daily_submit_error) != "",
-		"shown=%s error=%s rows=%d" % [_shown(backend, "daily"), backend.daily_submit_error, mock.count_scores(PLAYER_A, "daily")]
-	)
-	await backend.finalize_daily_attempt(str(ready.get("attempt_id", "")), 27, "REEF")
 	var confirmed := await _wait_quiet(backend)
 	_check(
-		"network_500_retry_no_duplicate",
-		confirmed and _joined(_shown(backend, "daily")) == "REEF 27" and mock.count_scores(PLAYER_A, "daily") == 1,
-		str(_shown(backend, "daily"))
+		"network_500_confirms_on_retry",
+		confirmed
+		and _joined(_shown(backend, "daily")) == "REEF 27"
+		and mock.count_scores(PLAYER_A, "daily") == 1
+		and mock.finalize_applies == 2
+		and str(backend.daily_submit_error) == "",
+		"shown=%s error=%s applies=%d" % [_shown(backend, "daily"), backend.daily_submit_error, mock.finalize_applies]
 	)
 	await _reset(backend)
 	ready = await _claim_and_start(backend)
@@ -844,9 +854,9 @@ func _test_network(backend) -> void:
 	await backend.finalize_daily_attempt(str(ready.get("attempt_id", "")), 27, "REEF")
 	var bad := await _wait_quiet(backend)
 	_check(
-		"network_bad_json",
-		bad and mock.count_scores(PLAYER_A, "daily") == 0 and _joined(_shown(backend, "daily")) == "" and str(backend.daily_submit_error) != "",
-		"error=%s" % backend.daily_submit_error
+		"network_bad_json_retries_until_confirmed",
+		bad and mock.count_scores(PLAYER_A, "daily") == 1 and _joined(_shown(backend, "daily")) == "REEF 27" and str(backend.daily_submit_error) == "",
+		"shown=%s error=%s rows=%d" % [_shown(backend, "daily"), backend.daily_submit_error, mock.count_scores(PLAYER_A, "daily")]
 	)
 	mock.fault = ""
 	mock.force_empty_get = true
@@ -874,7 +884,7 @@ func _test_network(backend) -> void:
 	backend.fetch_leaderboards()
 	var slow := await _wait_quiet(backend)
 	mock.delay = 0.0
-	_check("network_slow_response", slow and _shown(backend, "daily").is_empty(), str(_shown(backend, "daily")))
+	_check("network_slow_response", slow and _joined(_shown(backend, "daily")) == "REEF 27", str(_shown(backend, "daily")))
 	await _reset(backend)
 	ready = await _claim_and_start(backend)
 	mock.fault = "timeout"
@@ -886,6 +896,272 @@ func _test_network(backend) -> void:
 		"network_timeout_after_commit_retries_once",
 		lost and _joined(_shown(backend, "daily")) == "REEF 22" and mock.count_scores(PLAYER_A, "daily") == 1 and mock.finalize_applies == 2,
 		"shown=%s applies=%d" % [_shown(backend, "daily"), mock.finalize_applies]
+	)
+
+
+func _test_daily_reliability(backend) -> void:
+	var split := _sql("res://tools/supabase/leaderboard_split.sql")
+	var board_sql := _between(split, "function public.get_leaderboard", "grant execute on function public.get_leaderboard")
+	var finalize_sql := _between(split, "function public.finalize_daily_attempt", "function public.submit_leaderboard_score")
+	var client := _between(_sql("res://autoload/backend.gd"), "func finalize_daily_attempt", "func _restore_finalize_session")
+	_check(
+		"rules_top_ten_and_challenge_date",
+		board_sql.find("order by ls.score desc, ls.created_at asc") >= 0
+		and board_sql.find("limit 10") >= 0
+		and board_sql.find("America/New_York") >= 0
+		and finalize_sql.find("c.challenge_date") >= 0
+		and finalize_sql.find("timezone('utc'") < 0
+		and client.find("OS.") < 0
+		and client.find("\"p_attempt_id\"") >= 0
+		and client.find("\"p_player_id\"") < 0
+		and client.find("_sign_in_anonymous") < 0,
+		"client_has_os=%s" % (client.find("OS.") >= 0)
+	)
+	_check(
+		"rules_retryable_errors",
+		DailyAttemptScript.finalize_retryable({"ok": false, "status": 500}, {"stored": false})
+		and DailyAttemptScript.finalize_retryable({"ok": false, "status": 429}, {"stored": false})
+		and DailyAttemptScript.finalize_retryable({"ok": false, "status": 401}, {"stored": false})
+		and DailyAttemptScript.finalize_retryable({"ok": false, "status": 0}, {"stored": false, "error": "transport"})
+		and DailyAttemptScript.finalize_retryable({"ok": false, "status": 200, "error": "invalid_json"}, {"stored": false, "error": "invalid_json"})
+		and not DailyAttemptScript.finalize_retryable({"ok": false, "status": 400}, {"stored": false, "error": "attempt not found"})
+		and not DailyAttemptScript.finalize_retryable({"ok": true, "status": 200}, {"stored": true}),
+		""
+	)
+	_gs().pending_finalizes = []
+	_gs().remember_pending_finalize("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", 44, "YDAY")
+	_gs().remember_pending_finalize("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2", 12, "TODAY")
+	var queued: Array = _gs().pending_finalize_entries()
+	_gs().clear_pending_finalize("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2")
+	var kept: Array = _gs().pending_finalize_entries()
+	var saved := FileAccess.get_file_as_string("user://reefrun.cfg")
+	_check(
+		"pending_queue_keeps_both_attempts",
+		queued.size() == 2
+		and kept.size() == 1
+		and str(kept[0].get("attempt_id", "")) == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
+		and saved.find("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1") >= 0
+		and saved.find("access_token") < 0
+		and saved.find("refresh_token") < 0
+		and saved.find("eyJ") < 0,
+		"queued=%d kept=%s" % [queued.size(), kept]
+	)
+	_gs().clear_pending_finalize("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
+	await _reset(backend)
+	for n in 10:
+		var score := 100 - n * 10
+		var uid := "aaaaaaaa-aaaa-4aaa-8aaa-%012d" % (n + 1)
+		mock.tokens[uid] = uid
+		mock.seed_daily(uid, "s%03d" % score, score)
+	mock.tokens["bbbbbbbb-bbbb-4bbb-8bbb-000000000001"] = "bbbbbbbb-bbbb-4bbb-8bbb-000000000001"
+	mock.seed_daily("bbbbbbbb-bbbb-4bbb-8bbb-000000000001", "s001", 1)
+	backend.fetch_leaderboards()
+	if not await _wait_quiet(backend):
+		_check("rank_below_top_ten_hidden", false, "not quiet")
+		return
+	var below := _joined(_shown(backend, "daily"))
+	mock.tokens["cccccccc-cccc-4ccc-8ccc-000000000015"] = "cccccccc-cccc-4ccc-8ccc-000000000015"
+	mock.seed_daily("cccccccc-cccc-4ccc-8ccc-000000000015", "s015", 15)
+	backend.fetch_leaderboards()
+	var pushed_quiet := await _wait_quiet(backend)
+	var pushed := _joined(_shown(backend, "daily"))
+	_check(
+		"rank_tenth_pushed_out",
+		pushed_quiet
+		and _shown(backend, "daily").size() == 10
+		and below == "S100 100, S090 90, S080 80, S070 70, S060 60, S050 50, S040 40, S030 30, S020 20, S010 10"
+		and below.find("S001") < 0
+		and pushed == "S100 100, S090 90, S080 80, S070 70, S060 60, S050 50, S040 40, S030 30, S020 20, S015 15"
+		and pushed.find("S010") < 0
+		and pushed.find("S001") < 0,
+		"before=%s after=%s" % [below, pushed]
+	)
+	await _reset(backend)
+	mock.seed_daily(PLAYER_A, "early", 40)
+	mock.seed_daily(PLAYER_B, "later", 40)
+	mock.seed_daily("33333333-3333-4333-8333-333333333333", "best", 90)
+	mock.tokens["33333333-3333-4333-8333-333333333333"] = "33333333-3333-4333-8333-333333333333"
+	backend.fetch_leaderboards()
+	var tie_quiet := await _wait_quiet(backend)
+	_check(
+		"rank_tie_keeps_earlier_submission",
+		tie_quiet and _joined(_shown(backend, "daily")) == "BEST 90, EARLY 40, LATER 40",
+		str(_shown(backend, "daily"))
+	)
+	await _reset(backend)
+	var yesterday: Dictionary = await _claim_and_start(backend)
+	var yesterday_id := str(yesterday.get("attempt_id", ""))
+	var yesterday_date := str(yesterday.get("challenge", {}).get("challenge_date", ""))
+	mock.now_unix = DailyChallengeScript.eastern_midnight_unix(2026, 10, 13) + 120
+	var today: Dictionary = await _claim_and_start(backend)
+	var today_id := str(today.get("attempt_id", ""))
+	var today_date := str(today.get("challenge", {}).get("challenge_date", ""))
+	await backend.finalize_daily_attempt(yesterday_id, 44, "YDAY")
+	var delayed := await _wait_quiet(backend)
+	var delayed_key := ""
+	for row in mock.scores:
+		if typeof(row) == TYPE_DICTIONARY and int(row.get("score", 0)) == 44:
+			delayed_key = str(row.get("period_key", ""))
+	_check(
+		"reset_delayed_score_stays_on_its_day",
+		delayed
+		and yesterday_date == "2026-10-12"
+		and today_date == "2026-10-13"
+		and delayed_key == yesterday_date
+		and _joined(_shown(backend, "daily")).find("YDAY") < 0
+		and mock.attempt_count(PLAYER_A) == 2,
+		"yesterday=%s today=%s key=%s shown=%s" % [yesterday_date, today_date, delayed_key, _shown(backend, "daily")]
+	)
+	await backend.finalize_daily_attempt(today_id, 12, "TODAY")
+	var today_quiet := await _wait_quiet(backend)
+	_check(
+		"reset_today_board_excludes_yesterday",
+		today_quiet and _joined(_shown(backend, "daily")) == "TODAY 12" and mock.count_scores(PLAYER_A, "daily") == 2,
+		str(_shown(backend, "daily"))
+	)
+	await _reset(backend)
+	yesterday = await _claim_and_start(backend)
+	yesterday_id = str(yesterday.get("attempt_id", ""))
+	yesterday_date = str(yesterday.get("challenge", {}).get("challenge_date", ""))
+	mock.now_unix = DailyChallengeScript.eastern_midnight_unix(2026, 10, 13) + 120
+	today = await _claim_and_start(backend)
+	today_id = str(today.get("attempt_id", ""))
+	_gs().remember_pending_finalize(today_id, 12, "TODAY")
+	mock.stall_finalize_once = true
+	backend.finalize_daily_attempt(yesterday_id, 44, "YDAY")
+	var spins := 0
+	while not mock.stalled and spins < 80:
+		await process_frame
+		spins += 1
+	var during: Array = _gs().pending_finalize_entries()
+	mock.release_stall = true
+	while backend._finalize_running and spins < 160:
+		await process_frame
+		spins += 1
+	var after_older := await _wait_quiet(backend)
+	var still_today := false
+	for row in _gs().pending_finalize_entries():
+		if str(row.get("attempt_id", "")) == today_id:
+			still_today = true
+	backend.on_menu_ready()
+	var recovered := await _wait_quiet(backend)
+	var older_key := ""
+	for row in mock.scores:
+		if typeof(row) == TYPE_DICTIONARY and int(row.get("score", 0)) == 44:
+			older_key = str(row.get("period_key", ""))
+	_check(
+		"pending_other_attempt_survives_confirm",
+		mock.stalled == false
+		and after_older
+		and recovered
+		and during.size() == 2
+		and still_today
+		and older_key == yesterday_date
+		and _joined(_shown(backend, "daily")) == "TODAY 12"
+		and _gs().pending_finalize_attempt == ""
+		and mock.count_scores(PLAYER_A, "daily") == 2,
+		"during=%d still=%s shown=%s key=%s pending=%s" % [during.size(), still_today, _shown(backend, "daily"), older_key, _gs().pending_finalize_attempt]
+	)
+	await _reset(backend)
+	var overlap: Dictionary = await _claim_and_start(backend)
+	var overlap_id := str(overlap.get("attempt_id", ""))
+	mock.stall_finalize_once = true
+	backend.finalize_daily_attempt(overlap_id, 18, "REEF")
+	spins = 0
+	while not mock.stalled and spins < 80:
+		await process_frame
+		spins += 1
+	backend.finalize_daily_attempt(overlap_id, 40, "REEF")
+	await process_frame
+	await process_frame
+	mock.release_stall = true
+	while backend._finalize_running and spins < 160:
+		await process_frame
+		spins += 1
+	var overlap_quiet := await _wait_quiet(backend)
+	_check(
+		"duplicate_callback_one_row",
+		overlap_quiet and mock.finalize_applies == 1 and mock.count_scores(PLAYER_A, "daily") == 1 and _joined(_shown(backend, "daily")) == "REEF 18",
+		"applies=%d shown=%s" % [mock.finalize_applies, _shown(backend, "daily")]
+	)
+	await _reset(backend)
+	var closed: Dictionary = await _claim_and_start(backend)
+	var closed_id := str(closed.get("attempt_id", ""))
+	_gs().remember_pending_finalize(closed_id, 33, "REEF")
+	_gs().pending_finalizes = []
+	_gs().pending_finalize_attempt = ""
+	_gs().pending_finalize_score = 0
+	_gs().pending_finalize_name = ""
+	_gs()._load()
+	var loaded := ""
+	for row in _gs().pending_finalize_entries():
+		loaded = str(row.get("attempt_id", ""))
+	backend.on_menu_ready()
+	var restarted := await _wait_quiet(backend)
+	_check(
+		"restart_recovers_pending_finalize",
+		loaded == closed_id
+		and restarted
+		and _joined(_shown(backend, "daily")) == "REEF 33"
+		and mock.count_scores(PLAYER_A, "daily") == 1
+		and _gs().pending_finalize_attempt == "",
+		"loaded=%s shown=%s pending=%s" % [loaded, _shown(backend, "daily"), _gs().pending_finalize_attempt]
+	)
+	await _reset(backend)
+	var authed: Dictionary = await _claim_and_start(backend)
+	var same_user := str(backend.auth.user_id)
+	backend.auth.access_token = ""
+	backend.auth.expires_at = 0
+	backend.auth.refresh_token = "refresh-a"
+	backend.auth.user_id = same_user
+	mock.requests.clear()
+	await backend.finalize_daily_attempt(str(authed.get("attempt_id", "")), 27, "REEF")
+	var auth_quiet := await _wait_quiet(backend)
+	_check(
+		"auth_expired_refreshes_same_player",
+		auth_quiet
+		and str(backend.auth.user_id) == same_user
+		and _count_url("/auth/v1/token") == 1
+		and _count_url("/auth/v1/signup") == 0
+		and _joined(_shown(backend, "daily")) == "REEF 27"
+		and mock.count_scores(PLAYER_A, "daily") == 1,
+		"uid=%s token_calls=%d signup=%d shown=%s" % [backend.auth.user_id, _count_url("/auth/v1/token"), _count_url("/auth/v1/signup"), _shown(backend, "daily")]
+	)
+	await _reset(backend)
+	var denied: Dictionary = await _claim_and_start(backend)
+	mock.session_token = ""
+	backend.auth.access_token = ""
+	backend.auth.expires_at = 0
+	backend.auth.refresh_token = "refresh-a"
+	mock.requests.clear()
+	await backend.finalize_daily_attempt(str(denied.get("attempt_id", "")), 27, "REEF")
+	var denied_quiet := await _wait_quiet(backend)
+	_check(
+		"auth_refresh_failure_does_not_new_player",
+		denied_quiet
+		and str(backend.auth.user_id) == PLAYER_A
+		and _count_url("/auth/v1/signup") == 0
+		and _count_url("/finalize_daily_attempt") == 0
+		and mock.count_scores(PLAYER_A, "daily") == 0
+		and _gs().pending_finalize_attempt == str(denied.get("attempt_id", ""))
+		and str(backend.daily_submit_error) == "no_session",
+		"uid=%s error=%s pending=%s signup=%d" % [backend.auth.user_id, backend.daily_submit_error, _gs().pending_finalize_attempt, _count_url("/auth/v1/signup")]
+	)
+	await _reset(backend)
+	var rejected: Dictionary = await _claim_and_start(backend)
+	mock.fault = "400"
+	mock.requests.clear()
+	await backend.finalize_daily_attempt(str(rejected.get("attempt_id", "")), 27, "REEF")
+	var rejected_quiet := await _wait_quiet(backend)
+	_check(
+		"client_error_does_not_retry_or_fake_success",
+		rejected_quiet
+		and _count_url("/finalize_daily_attempt") == 1
+		and mock.count_scores(PLAYER_A, "daily") == 0
+		and _joined(_shown(backend, "daily")) == ""
+		and _gs().pending_finalize_attempt == str(rejected.get("attempt_id", ""))
+		and str(backend.daily_submit_error) != "",
+		"hits=%d error=%s shown=%s" % [_count_url("/finalize_daily_attempt"), backend.daily_submit_error, _shown(backend, "daily")]
 	)
 
 
@@ -1008,6 +1284,9 @@ class MockServer extends RefCounted:
 	var force_empty_get := false
 	var force_null_get := false
 	var stall_daily_once := false
+	var stall_finalize_once := false
+	var session_token := ""
+	var session_uid := ""
 	var stalled := false
 	var release_stall := false
 	var attempts: Array = []
@@ -1048,6 +1327,7 @@ class MockServer extends RefCounted:
 		force_empty_get = false
 		force_null_get = false
 		stall_daily_once = false
+		stall_finalize_once = false
 		release_stall = false
 		unexpected = 0
 		finalize_applies = 0
@@ -1103,10 +1383,13 @@ class MockServer extends RefCounted:
 		_gate = true
 		var response := _apply(method, url, headers, body)
 		var hold: bool = stall_daily_once and url.ends_with("/get_leaderboard") and body.find("daily") >= 0 and bool(response.get("ok", false))
+		var hold_finalize: bool = stall_finalize_once and url.ends_with("/finalize_daily_attempt")
 		if hold:
 			stall_daily_once = false
+		if hold_finalize:
+			stall_finalize_once = false
 		_gate = false
-		if hold:
+		if hold or hold_finalize:
 			stalled = true
 			while not release_stall:
 				await tree.process_frame
@@ -1138,6 +1421,13 @@ class MockServer extends RefCounted:
 			fault = ""
 			fault_once = false
 			commit_on_fault = false
+		if url.find("/auth/v1/token") >= 0:
+			return _auth_refresh()
+		if url.find("/auth/v1/signup") >= 0:
+			unexpected += 1
+			return _err(401, "signup blocked")
+		if mode == "401":
+			return _err(401, "JWT expired")
 		if mode == "offline":
 			return _transport(HTTPRequest.RESULT_CANT_CONNECT)
 		if mode == "timeout":
@@ -1272,8 +1562,8 @@ class MockServer extends RefCounted:
 		row["score"] = score
 		row["finalized"] = true
 		if score > 0:
-			var today := _publish()
-			_upsert(uid, _clean(display_name), score, "daily", str(today.get("challenge_date", "")), str(row.get("challenge_id", "")))
+			var challenge_id := str(row.get("challenge_id", ""))
+			_upsert(uid, _clean(display_name), score, "daily", _date_of_challenge(challenge_id), challenge_id)
 		return _ok([{"attempt_id": attempt_id, "score": score, "accepted": true, "duplicate": false}])
 
 	func _submit(uid: String, score: int, display_name: String) -> Dictionary:
@@ -1319,6 +1609,24 @@ class MockServer extends RefCounted:
 				"score": int(row.get("score", 0)),
 			})
 		return _ok(out)
+
+	func _auth_refresh() -> Dictionary:
+		if session_token == "" or session_uid == "":
+			return _err(401, "refresh failed")
+		return _ok({
+			"access_token": session_token,
+			"refresh_token": "refresh-kept",
+			"expires_in": 3600,
+			"user": {"id": session_uid},
+		})
+
+
+	func _date_of_challenge(challenge_id: String) -> String:
+		var parts := challenge_id.split(":")
+		if parts.size() >= 2 and parts[1].length() == 10:
+			return parts[1]
+		return str(_publish().get("challenge_date", ""))
+
 
 	func _publish() -> Dictionary:
 		var date := _zone_date(publish_zone)

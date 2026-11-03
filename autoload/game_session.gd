@@ -19,6 +19,7 @@ var active_challenge: Dictionary = {}
 var pending_finalize_attempt: String = ""
 var pending_finalize_score: int = 0
 var pending_finalize_name: String = ""
+var pending_finalizes: Array = []
 var pending_unlimited_score: int = 0
 var pending_unlimited_name: String = ""
 var pending_claim_key: String = ""
@@ -719,6 +720,13 @@ func _load() -> void:
 	pending_finalize_attempt = str(cfg.get_value("pending", "attempt_id", "")).strip_edges()
 	pending_finalize_score = int(cfg.get_value("pending", "score", 0))
 	pending_finalize_name = str(cfg.get_value("pending", "name", ""))
+	pending_finalizes = _clean_pending_finalizes(_decode_json_array(str(cfg.get_value("pending", "finalizes", "[]"))))
+	if pending_finalize_attempt != "" and not _pending_finalize_has(pending_finalize_attempt):
+		pending_finalizes.append({
+			"attempt_id": pending_finalize_attempt,
+			"score": pending_finalize_score,
+			"name": pending_finalize_name,
+		})
 	pending_unlimited_score = int(cfg.get_value("pending", "unlimited_score", 0))
 	pending_unlimited_name = str(cfg.get_value("pending", "unlimited_name", ""))
 	pending_claim_key = str(cfg.get_value("pending", "claim_key", "")).strip_edges()
@@ -763,6 +771,7 @@ func _save() -> void:
 	cfg.set_value("pending", "attempt_id", pending_finalize_attempt)
 	cfg.set_value("pending", "score", pending_finalize_score)
 	cfg.set_value("pending", "name", pending_finalize_name)
+	cfg.set_value("pending", "finalizes", JSON.stringify(pending_finalizes))
 	cfg.set_value("pending", "unlimited_score", pending_unlimited_score)
 	cfg.set_value("pending", "unlimited_name", pending_unlimited_name)
 	cfg.set_value("pending", "claim_key", pending_claim_key)
@@ -821,7 +830,7 @@ func drop_mission_run(run_id: String) -> void:
 func apply_mission_board(board: Dictionary) -> int:
 	if not bool(board.get("ok", false)):
 		return 0
-	mission_board = board.duplicate(true)
+	mission_board = DailyMissionsScript.settle_board(mission_board, board)
 	mission_board["fetched_at"] = int(Time.get_unix_time_from_system())
 	var total := int(board.get("mission_reward_coins", applied_mission_reward_coins))
 	var delta := DailyMissionsScript.reward_delta(applied_mission_reward_coins, total)
@@ -870,23 +879,113 @@ func clear_claim_key() -> void:
 
 
 func has_pending_finalize() -> bool:
-	return pending_finalize_attempt.strip_edges() != ""
+	return not pending_finalize_entries().is_empty()
+
+
+func pending_finalize_entries() -> Array:
+	var out: Array = []
+	var seen := {}
+	for row in pending_finalizes:
+		if typeof(row) != TYPE_DICTIONARY:
+			continue
+		var id := str(row.get("attempt_id", "")).strip_edges()
+		if id == "" or seen.has(id):
+			continue
+		seen[id] = true
+		out.append({
+			"attempt_id": id,
+			"score": int(row.get("score", 0)),
+			"name": str(row.get("name", "")),
+		})
+	var scalar := pending_finalize_attempt.strip_edges()
+	if scalar != "" and not seen.has(scalar):
+		out.append({
+			"attempt_id": scalar,
+			"score": pending_finalize_score,
+			"name": pending_finalize_name,
+		})
+	return out
 
 
 func remember_pending_finalize(attempt_id: String, score: int, player_label: String) -> void:
-	pending_finalize_attempt = attempt_id.strip_edges()
+	var id := attempt_id.strip_edges()
+	if id == "":
+		return
+	var kept: Array = []
+	for row in pending_finalizes:
+		if typeof(row) != TYPE_DICTIONARY:
+			continue
+		var existing := str(row.get("attempt_id", "")).strip_edges()
+		if existing == "" or existing == id:
+			continue
+		kept.append(row)
+	kept.append({
+		"attempt_id": id,
+		"score": score,
+		"name": player_label,
+	})
+	pending_finalizes = kept
+	pending_finalize_attempt = id
 	pending_finalize_score = score
 	pending_finalize_name = player_label
 	_save()
 
 
-func clear_pending_finalize() -> void:
-	if pending_finalize_attempt == "":
+func clear_pending_finalize(attempt_id: String = "") -> void:
+	var target := attempt_id.strip_edges()
+	if target == "":
+		if pending_finalize_attempt == "" and pending_finalizes.is_empty():
+			return
+		pending_finalizes = []
+		pending_finalize_attempt = ""
+		pending_finalize_score = 0
+		pending_finalize_name = ""
+		_save()
 		return
-	pending_finalize_attempt = ""
-	pending_finalize_score = 0
-	pending_finalize_name = ""
+	var kept: Array = []
+	for row in pending_finalizes:
+		if typeof(row) != TYPE_DICTIONARY:
+			continue
+		if str(row.get("attempt_id", "")).strip_edges() == target:
+			continue
+		kept.append(row)
+	pending_finalizes = kept
+	if pending_finalize_attempt == target:
+		if kept.is_empty():
+			pending_finalize_attempt = ""
+			pending_finalize_score = 0
+			pending_finalize_name = ""
+		else:
+			var head: Dictionary = kept[0]
+			pending_finalize_attempt = str(head.get("attempt_id", ""))
+			pending_finalize_score = int(head.get("score", 0))
+			pending_finalize_name = str(head.get("name", ""))
 	_save()
+
+
+func _pending_finalize_has(attempt_id: String) -> bool:
+	for row in pending_finalizes:
+		if typeof(row) == TYPE_DICTIONARY and str(row.get("attempt_id", "")).strip_edges() == attempt_id:
+			return true
+	return false
+
+
+func _clean_pending_finalizes(rows: Array) -> Array:
+	var out: Array = []
+	var seen := {}
+	for row in rows:
+		if typeof(row) != TYPE_DICTIONARY:
+			continue
+		var id := str(row.get("attempt_id", "")).strip_edges()
+		if id == "" or seen.has(id):
+			continue
+		seen[id] = true
+		out.append({
+			"attempt_id": id,
+			"score": int(row.get("score", 0)),
+			"name": str(row.get("name", "")),
+		})
+	return out
 
 
 func has_pending_unlimited() -> bool:

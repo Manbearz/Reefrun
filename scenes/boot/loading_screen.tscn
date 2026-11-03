@@ -1,8 +1,8 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene format=3 uid="uid://qusej05gs1m7"]
 
-[ext_resource type="Script" path="res://scenes/boot/loading_screen.gd" id="1"]
+[ext_resource type="Script" uid="uid://bji0e55did5c" path="res://scenes/boot/loading_screen.gd" id="1"]
 
-[node name="LoadingScreen" type="Control"]
+[node name="LoadingScreen" type="Control" unique_id=2101617400]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0

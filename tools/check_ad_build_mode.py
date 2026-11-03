@@ -27,35 +27,45 @@ def const_string(source: str, name: str) -> str:
     return match.group(1)
 
 
-def check_source(mode: str) -> str:
+def check_source(platform: str, mode: str) -> str:
+    if platform not in ("ios", "android"):
+        fail("Pass --platform ios or --platform android. One mode no longer applies to both stores.")
     if mode not in ("test", "production"):
         fail(f"Unsupported ad mode {mode!r}. Use test or production.")
     build = (ROOT / "scripts/ads/ad_build_mode.gd").read_text(encoding="utf-8")
     ads = (ROOT / "scripts/ads/ad_config.gd").read_text(encoding="utf-8")
     project = (ROOT / "project.godot").read_text(encoding="utf-8")
-    packed = const_string(build, "MODE")
-    marker = const_string(build, "OUTPUT_MARKER")
-    expected_marker = f"REEFRUN_AD_MODE={packed}"
-    if marker != expected_marker:
-        fail(f"OUTPUT_MARKER is {marker!r}, expected {expected_marker!r}.")
-    if packed not in ("test", "production"):
-        fail(f"ad_build_mode.gd MODE is {packed!r}. Only test or production are valid, and anything else must not be shipped as production.")
-    if mode == "test" and packed != "test":
+    ios_mode = const_string(build, "IOS_MODE")
+    android_mode = const_string(build, "ANDROID_MODE")
+    ios_marker = const_string(build, "IOS_OUTPUT_MARKER")
+    android_marker = const_string(build, "ANDROID_OUTPUT_MARKER")
+    if ios_mode not in ("test", "production") or android_mode not in ("test", "production"):
+        fail("IOS_MODE and ANDROID_MODE must each be exactly test or production.")
+    if ios_marker != f"REEFRUN_IOS_AD_MODE={ios_mode}":
+        fail(f"IOS_OUTPUT_MARKER is {ios_marker!r}.")
+    if android_marker != f"REEFRUN_ANDROID_AD_MODE={android_mode}":
+        fail(f"ANDROID_OUTPUT_MARKER is {android_marker!r}.")
+    packed = ios_mode if platform == "ios" else android_mode
+    marker = ios_marker if platform == "ios" else android_marker
+    if platform == "ios" and android_mode != "test":
         fail(
-            "This workflow was started in test mode, but scripts/ads/ad_build_mode.gd says "
-            f"{packed!r}. Refusing to build so production ads are not shipped by accident. "
-            "Set the workflow Ad mode input to production only for an approved public release."
+            "This iOS export requires ANDROID_MODE to stay \"test\". "
+            f"It is {android_mode!r}, so the same source would request live Android ads."
         )
-    if mode == "production" and packed != "production":
+    if mode != packed:
         fail(
-            "A production ad build was requested, but scripts/ads/ad_build_mode.gd says "
-            f"{packed!r}. Refusing to build a public release that would request Google's test rewarded units."
+            f"The {platform} workflow was started in {mode!r}, but "
+            f"scripts/ads/ad_build_mode.gd says {packed!r}. Refusing to build."
         )
+    if "const MODE :=" in build:
+        fail("Remove the old shared MODE. Ads are selected per platform.")
     selector = ads.split("static func rewarded_unit_for", 1)[-1].split("static func rewarded_unit_id", 1)[0]
     if 'normalize_mode(mode) != "production"' not in selector or "return test_unit" not in selector:
         fail("Test mode must return the Google test rewarded unit.")
     if "is_google_test_rewarded_unit(production)" not in selector:
         fail("Production mode must refuse a Google sample rewarded unit.")
+    if "mode_for_platform" not in ads:
+        fail("ad_config.gd must select the rewarded unit from the platform mode.")
     for required in (
         ANDROID_TEST_UNIT,
         IOS_TEST_UNIT,
@@ -70,7 +80,17 @@ def check_source(mode: str) -> str:
         fail("project.godot is missing the production Android AdMob app id.")
     if f'general/ios/app_id="{IOS_APP_ID}"' not in project:
         fail("project.godot is missing the production iOS AdMob app id.")
-    print(f"Ad source mode is {packed}. Requested build mode is {mode}.")
+    selected = IOS_LIVE_UNIT if platform == "ios" and packed == "production" else ""
+    if platform == "ios" and packed == "test":
+        selected = IOS_TEST_UNIT
+    if platform == "android" and packed == "test":
+        selected = ANDROID_TEST_UNIT
+    if platform == "android" and packed == "production":
+        selected = ANDROID_LIVE_UNIT
+    print(
+        f"{platform} ad mode is {packed}. Android mode is {android_mode}. "
+        f"iOS mode is {ios_mode}. Selected rewarded unit is {selected}."
+    )
     return marker
 
 
@@ -99,7 +119,12 @@ def package_files(path: pathlib.Path) -> list[pathlib.Path]:
 
 
 def check_packages(paths: list[str], marker: str) -> None:
-    wrong = "REEFRUN_AD_MODE=production" if marker.endswith("=test") else "REEFRUN_AD_MODE=test"
+    if marker.startswith("REEFRUN_IOS_AD_MODE="):
+        wrong = "REEFRUN_IOS_AD_MODE=production" if marker.endswith("=test") else "REEFRUN_IOS_AD_MODE=test"
+    elif marker.startswith("REEFRUN_ANDROID_AD_MODE="):
+        wrong = "REEFRUN_ANDROID_AD_MODE=production" if marker.endswith("=test") else "REEFRUN_ANDROID_AD_MODE=test"
+    else:
+        fail(f"Unrecognized ad-mode marker {marker!r}.")
     marker_bytes = marker.encode("utf-8")
     wrong_bytes = wrong.encode("utf-8")
     saw_marker = False
@@ -120,6 +145,7 @@ def check_packages(paths: list[str], marker: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--platform", required=True, choices=("ios", "android"))
     parser.add_argument("--mode", default="test")
     parser.add_argument("--manifest", action="append", default=[])
     parser.add_argument("--manifest-file", action="append", default=[])
@@ -128,7 +154,7 @@ def main() -> None:
     mode = (args.mode or "test").strip().lower()
     if mode == "":
         mode = "test"
-    marker = check_source(mode)
+    marker = check_source(args.platform, mode)
     for manifest in args.manifest:
         check_manifest(manifest)
     for manifest_path in args.manifest_file:
