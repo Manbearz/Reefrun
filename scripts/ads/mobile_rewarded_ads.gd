@@ -4,6 +4,7 @@ extends RewardedAdProvider
 signal privacy_options_changed(required: bool)
 
 const AdCfg := preload("res://scripts/ads/ad_config.gd")
+const TrackingPolicy := preload("res://scripts/ads/att_authorization.gd")
 
 var _ad: RewardedAd
 var _loader: RewardedAdLoader
@@ -16,6 +17,9 @@ var _sdk_started := false
 var _ads_request_allowed := false
 var _privacy_options_required := false
 var _load_failures := 0
+var _consent_busy := false
+var _ump_form_presented := false
+var _tracking_status := TrackingPolicy.Status.UNAVAILABLE
 # RewardedItem has no ad id. Each show stamps its own session, and a repeat
 # of that same session is ignored. Entries are not cleared when a new show
 # starts, so a late callback cannot be counted as the new show's reward.
@@ -26,6 +30,14 @@ func _ready() -> void:
 	if not _native_mobile():
 		return
 	_log("provider ready. mode=%s app_id=%s" % [AdCfg.monetization_mode(), AdCfg.app_id()])
+	_request_consent()
+
+
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_APPLICATION_RESUMED:
+		return
+	if not _native_mobile() or _consent_busy or _showing:
+		return
 	_request_consent()
 
 
@@ -79,10 +91,14 @@ static func consent_status_allows(status: int) -> bool:
 
 
 func _request_consent() -> void:
+	if _consent_busy:
+		return
 	if not Engine.has_singleton("PoingGodotAdMobConsentInformation"):
 		_log("consent plugin is missing. Ads will not be requested.")
+		_tracking_status = TrackingPolicy.Status.UNAVAILABLE
 		_apply_consent_gate()
 		return
+	_consent_busy = true
 	_log("requesting consent info")
 	var request := ConsentRequestParameters.new()
 	request.tag_for_under_age_of_consent = false
@@ -91,43 +107,58 @@ func _request_consent() -> void:
 
 func _on_consent_success() -> void:
 	var info := UserMessagingPlatform.consent_information
-	_log("consent updated. status=%s form_available=%s" % [info.get_consent_status(), info.get_is_consent_form_available()])
-	var required := info.get_consent_status() == info.ConsentStatus.REQUIRED
-	if required and info.get_is_consent_form_available():
+	var form_available := info.get_is_consent_form_available()
+	_log("consent updated. status=%s form_available=%s tracking=%s" % [info.get_consent_status(), form_available, TrackingPolicy.status_name(_tracking_status)])
+	# UMP 3.1.0 calls Apple's tracking request only while presenting a published
+	# IDFA explainer, and only while the system status is not determined. A
+	# GDPR form, the privacy-options form, or a missing explainer is not that
+	# request. Players outside GDPR can still have a form available while
+	# consent status is not required, so availability is the signal. Limiting
+	# this to REQUIRED can skip the explainer and request ads first.
+	if TrackingPolicy.should_present_ump_form(form_available, _ump_form_presented):
 		UserMessagingPlatform.load_consent_form(_on_consent_form_loaded, _on_consent_form_failed)
 		return
+	_consent_busy = false
 	_apply_consent_gate()
 
 
 func _on_consent_failure(error: FormError) -> void:
+	_consent_busy = false
 	var message := error.message if error != null else "unknown"
 	_log("consent update failed: %s" % message)
 	# A previous session can still leave status as obtained or not required.
-	# The error itself does not grant permission.
+	# The error itself does not grant consent or tracking permission.
+	_tracking_status = TrackingPolicy.Status.UNAVAILABLE
 	_apply_consent_gate()
 
 
 func _on_consent_form_loaded(form: ConsentForm) -> void:
-	var info := UserMessagingPlatform.consent_information
-	if info.get_consent_status() == info.ConsentStatus.REQUIRED:
-		_log("showing consent form")
-		form.show(_on_consent_form_dismissed)
+	if not TrackingPolicy.should_present_ump_form(true, _ump_form_presented):
+		_consent_busy = false
+		_apply_consent_gate()
 		return
-	_log("consent form loaded but not required")
-	_apply_consent_gate()
+	_ump_form_presented = true
+	_log("showing consent form")
+	form.show(_on_consent_form_dismissed)
 
 
 func _on_consent_form_failed(error: FormError) -> void:
+	_consent_busy = false
 	var message := error.message if error != null else "unknown"
 	_log("consent form failed to load: %s" % message)
+	_tracking_status = TrackingPolicy.Status.UNAVAILABLE
 	_apply_consent_gate()
 
 
 func _on_consent_form_dismissed(error: FormError) -> void:
+	_consent_busy = false
 	if error != null:
 		_log("consent form dismissed with error: %s" % error.message)
+		_tracking_status = TrackingPolicy.Status.UNAVAILABLE
 	else:
 		_log("consent form dismissed. status=%s" % UserMessagingPlatform.consent_information.get_consent_status())
+		# The form result is UMP consent, not Apple's tracking decision.
+		_tracking_status = TrackingPolicy.Status.UNAVAILABLE
 	_apply_consent_gate()
 
 
@@ -160,8 +191,11 @@ func _refresh_privacy_options() -> void:
 
 func _apply_consent_gate() -> void:
 	_refresh_privacy_options()
-	if _consent_allows_request():
+	var consent_allows := _consent_allows_request()
+	if TrackingPolicy.ads_allowed(consent_allows, _tracking_status):
 		_ads_request_allowed = true
+		if OS.has_feature("ios") and not TrackingPolicy.idfa_allowed(_tracking_status):
+			_log("this process did not confirm IDFA access. Mobile Ads includes it only after Apple authorizes tracking.")
 		_start_sdk()
 		return
 	_ads_request_allowed = false

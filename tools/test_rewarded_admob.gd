@@ -454,8 +454,29 @@ func _test_platforms() -> void:
 	var mobile_source := FileAccess.get_file_as_string("res://scripts/ads/mobile_rewarded_ads.gd")
 	_check("consent_missing_plugin_blocks", mobile_source.contains("consent plugin is missing. Ads will not be requested."))
 	_check("privacy_options_api", mobile_source.contains("func show_privacy_options") and mobile_source.contains("PrivacyOptionsRequirementStatus.REQUIRED"))
+	_test_att_policy(mobile_source)
 	_warn("iOS and Android use one GDScript provider. The native PoingGodotAdMob singletons are not in this Windows run, so load, show, consent forms, and real callbacks were not executed. No ad request was made. The packed iOS mode selects the live iOS unit. The packed Android mode stays on Google's test unit.")
 	_warn("Headless mode cannot confirm the offer artwork's spacing. The Yes and No hotspots, the failure note, and the post-run buttons were exercised. A phone screenshot is still needed for alignment.")
+
+
+func _test_att_policy(mobile_source: String) -> void:
+	var Att := preload("res://scripts/ads/att_authorization.gd")
+	_check("att_first_launch_presents_form", Att.next_step(true, false, false, Att.Status.NOT_DETERMINED) == "present_form" and not Att.idfa_allowed(Att.Status.NOT_DETERMINED))
+	_check("att_allow_requests_ad_with_idfa", Att.next_step(false, true, true, Att.Status.AUTHORIZED) == "request_ad" and Att.idfa_allowed(Att.Status.AUTHORIZED))
+	_check("att_deny_still_requests_nontracking_ad", Att.next_step(false, true, true, Att.Status.DENIED) == "request_ad" and not Att.idfa_allowed(Att.Status.DENIED) and Att.ads_allowed(true, Att.Status.RESTRICTED))
+	_check("att_already_determined_does_not_repeat", Att.next_step(false, false, true, Att.Status.DENIED) == "request_ad" and Att.next_step(true, true, true, Att.Status.AUTHORIZED) == "request_ad")
+	_check("ump_required_presents_form_before_ads", Att.next_step(true, false, false, Att.Status.NOT_DETERMINED) == "present_form")
+	_check("ump_not_required_requests_ad", Att.next_step(false, false, true, Att.Status.UNAVAILABLE) == "request_ad" and not Att.idfa_allowed(Att.Status.UNAVAILABLE))
+	_check("ump_denied_holds_ads", Att.next_step(false, false, false, Att.Status.DENIED) == "hold_ads" and Att.next_step(false, true, false, Att.Status.AUTHORIZED) == "hold_ads")
+	_check("consent_update_failure_is_not_authorization", Att.next_step(false, false, false, Att.Status.UNAVAILABLE) == "hold_ads" and not Att.idfa_allowed(Att.Status.UNAVAILABLE) and Att.next_step(false, false, true, Att.Status.UNAVAILABLE) == "request_ad")
+	_check("resume_does_not_repeat_form", Att.next_step(true, true, true, Att.Status.NOT_DETERMINED) == "request_ad")
+	_check("att_status_names", Att.status_name(Att.Status.NOT_DETERMINED) == "not_determined" and Att.status_name(Att.Status.AUTHORIZED) == "authorized" and Att.status_name(Att.Status.DENIED) == "denied" and Att.status_name(Att.Status.RESTRICTED) == "restricted" and Att.status_name(99) == "unavailable")
+	var loaded := mobile_source.substr(mobile_source.find("func _on_consent_form_loaded"), 420)
+	_check("ump_form_is_not_limited_to_gdpr_required", mobile_source.contains("should_present_ump_form") and mobile_source.contains("NOTIFICATION_APPLICATION_RESUMED") and not loaded.contains("ConsentStatus.REQUIRED"))
+	_check("ump_form_does_not_grant_att", not mobile_source.contains("Status.AUTHORIZED") and mobile_source.contains("The form result is UMP consent, not Apple's tracking decision.") and not Att.idfa_allowed(Att.Status.UNAVAILABLE) and not Att.idfa_allowed(Att.Status.NOT_DETERMINED))
+	var preset := FileAccess.get_file_as_string("res://export_presets.cfg")
+	var ios_plugin := FileAccess.get_file_as_string("res://addons/admob/ios/bin/ads/poing_godot_admob_ads.gd")
+	_check("ios_tracking_declaration_present", preset.contains("NSUserTrackingUsageDescription") and preset.contains("privacy/tracking_enabled=true") and preset.contains("privacy/collected_data/device_id/used_for_tracking=true") and preset.contains("privacy/collected_data/advertising_data/used_for_tracking=true") and ios_plugin.contains("AppTrackingTransparency.framework") and ios_plugin.contains("SKAdNetworkItems"))
 
 
 func _test_ui_notes(ads: Node) -> void:
