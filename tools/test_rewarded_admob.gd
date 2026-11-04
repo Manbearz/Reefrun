@@ -408,9 +408,10 @@ func _test_mobile_guards() -> void:
 	_check("mobile_dismiss_closes_without_second_reward", int(closes[0]) == 1 and int(rewards[0]) == 2)
 	mobile._on_ad_failed_to_show(null, 4)
 	_check("mobile_show_failure_signal", int(fails[0]) == 1 and int(rewards[0]) == 2)
+	mobile._ads_request_allowed = true
 	mobile._on_ad_failed_to_load(null)
 	mobile._on_ad_failed_to_load(null)
-	_check("mobile_load_retries_once", int(mobile._load_failures) == 2 and int(rewards[0]) == 2)
+	_check("mobile_load_keeps_retrying", int(mobile._load_failures) == 2 and mobile._retry_pending and int(rewards[0]) == 2)
 	if not Engine.has_singleton("PoingGodotAdMob"):
 		mobile._start_sdk()
 	else:
@@ -481,7 +482,14 @@ func _test_att_policy(mobile_source: String) -> void:
 	_check("offer_when_ump_not_required_and_waiting", Mobile.classify_offer(true, true, false, true, false, true, false, 0, true) == "loading")
 	_check("offer_when_form_unavailable_and_blocked", Mobile.classify_offer(true, true, false, true, false, false, false, 0, true) == "unavailable")
 	_check("offer_when_rewarded_load_failed", Mobile.classify_offer(true, true, false, true, false, true, false, 2, true) == "unavailable")
+	_check("offer_retries_after_no_fill", Mobile.classify_offer(true, true, false, true, false, true, false, 2, true, true) == "loading")
+	_check("offer_retries_after_network_error", Mobile.classify_offer(true, true, false, true, false, true, false, 1, true, true) == "loading")
+	_check("offer_att_denied_still_loads", Mobile.classify_offer(true, true, false, true, false, true, true, 0, true) == "loading")
 	_check("offer_hidden_without_mobile_unit", Mobile.classify_offer(false, false, false, true, false, false, false, 0, false) == "hidden")
+	_check("no_fill_error_is_not_personal", Mobile.describe_load_error(_load_error_stub()).contains("code=3") and Mobile.describe_load_error(_load_error_stub()).contains("kind=no_fill") and not Mobile.describe_load_error(_load_error_stub()).contains("idfa-secret"))
+	_check("network_error_kind", Mobile.load_failure_kind(2) == "network" and Mobile.load_failure_kind(1) == "invalid_request" and Mobile.load_failure_kind(0) == "internal")
+	_check("retry_backoff_is_bounded", Mobile.retry_delay_for_failure(1) == 8.0 and Mobile.retry_delay_for_failure(2) == 16.0 and Mobile.retry_delay_for_failure(8) == 30.0)
+	_check("consent_error_keeps_code", Mobile.describe_form_error(null).contains("code=unknown"))
 	var game_source := FileAccess.get_file_as_string("res://scenes/game/game.gd")
 	_check("wiped_out_keeps_offer_while_loading", game_source.contains("offer_phase() != \"hidden\"") and game_source.contains("AD LOADING") and game_source.contains("NO AD AVAILABLE"))
 	var preset := FileAccess.get_file_as_string("res://export_presets.cfg")
@@ -535,3 +543,18 @@ class DeadNet:
 
 	func request_json_independent(method: String, url: String, headers: PackedStringArray, body: String = "") -> Dictionary:
 		return request_json(method, url, headers, body)
+
+
+func _load_error_stub() -> Dictionary:
+	return {
+		"code": 3,
+		"domain": "com.google.admob",
+		"message": "No ad to show.",
+		"cause": null,
+		"response_info": {
+			"response_id": "response-1",
+			"mediation_adapter_class_name": "GADMAdapterGoogleAdMobAds",
+			"adapter_responses": [],
+			"response_extras": {"advertising_id": "idfa-secret"},
+		},
+	}

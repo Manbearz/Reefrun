@@ -42,6 +42,17 @@ func offer_phase() -> String:
 	return "hidden"
 
 
+func offer_failure_code() -> String:
+	if _provider != null and _provider.has_method("offer_failure_code"):
+		return str(_provider.offer_failure_code())
+	return ""
+
+
+func nudge_offer_load() -> void:
+	if _provider != null and _provider.has_method("nudge_offer_load"):
+		_provider.nudge_offer_load()
+
+
 func is_show_active() -> bool:
 	return _provider != null and _provider.is_show_active()
 

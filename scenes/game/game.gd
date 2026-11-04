@@ -1128,6 +1128,7 @@ func _show_coin_ad() -> void:
 	_coin_ad_note.position = Vector2(24, RR.VIEW_H - 70)
 	_coin_ad_note.configure("", 16, Vector2(RR.VIEW_W - 48, 28), HORIZONTAL_ALIGNMENT_CENTER)
 	overlay.add_child(_coin_ad_note)
+	RewardedAds.nudge_offer_load()
 	_apply_offer_phase()
 	_set_mission_presentation("aside")
 
@@ -1244,9 +1245,16 @@ func _apply_offer_phase() -> void:
 	if _coin_ad_watch:
 		_coin_ad_watch.disabled = true
 	if phase == "loading":
-		_set_coin_ad_note("AD LOADING")
+		_set_coin_ad_note(_offer_status_note("AD LOADING"))
 		return
-	_set_coin_ad_note("NO AD AVAILABLE")
+	_set_coin_ad_note(_offer_status_note("NO AD AVAILABLE"))
+
+
+func _offer_status_note(label: String) -> String:
+	var code := RewardedAds.offer_failure_code()
+	if code.is_empty():
+		return label
+	return "%s %s" % [label, code]
 
 
 func _on_reward_availability_changed() -> void:

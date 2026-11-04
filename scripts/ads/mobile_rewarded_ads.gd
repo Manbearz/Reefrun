@@ -18,11 +18,16 @@ var _sdk_started := false
 var _ads_request_allowed := false
 var _privacy_options_required := false
 var _load_failures := 0
+var _retry_pending := false
+var _retry_token := 0
+var _last_error_code := -1
+var _block_reason := ""
 var _consent_busy := false
 var _consent_resolved := false
 var _ump_form_presented := false
 var _tracking_status := TrackingPolicy.Status.UNAVAILABLE
 var _offer_phase := ""
+const _RETRY_DELAYS: Array[float] = [8.0, 16.0, 30.0]
 # RewardedItem has no ad id. Each show stamps its own session, and a repeat
 # of that same session is ignored. Entries are not cleared when a new show
 # starts, so a late callback cannot be counted as the new show's reward.
@@ -96,16 +101,97 @@ static func ump_status_name(status: int) -> String:
 			return "unknown"
 
 
-static func classify_offer(native_mobile: bool, unit_ready: bool, ad_ready: bool, consent_resolved: bool, consent_busy: bool, ads_allowed: bool, loading: bool, load_failures: int, sdk_present: bool) -> String:
+static func classify_offer(native_mobile: bool, unit_ready: bool, ad_ready: bool, consent_resolved: bool, consent_busy: bool, ads_allowed: bool, loading: bool, load_failures: int, sdk_present: bool, retry_pending: bool = false, blocked: bool = false) -> String:
 	if ad_ready:
 		return "ready"
 	if not native_mobile or not unit_ready:
 		return "hidden"
-	if not consent_resolved or consent_busy or loading:
+	if not consent_resolved or consent_busy:
 		return "loading"
-	if not ads_allowed or not sdk_present or load_failures > 1:
+	if not ads_allowed or not sdk_present or blocked:
 		return "unavailable"
-	return "loading"
+	# A failed response stays in the loading state while another request is
+	# queued. Two failures do not retire the placement for the rest of the session.
+	if loading or retry_pending or load_failures == 0:
+		return "loading"
+	return "unavailable"
+
+
+static func load_failure_kind(code: int) -> String:
+	match code:
+		0:
+			return "internal"
+		1:
+			return "invalid_request"
+		2:
+			return "network"
+		3:
+			return "no_fill"
+		_:
+			return "other"
+
+
+static func retry_delay_for_failure(load_failures: int) -> float:
+	var index := maxi(load_failures - 1, 0)
+	if index >= _RETRY_DELAYS.size():
+		index = _RETRY_DELAYS.size() - 1
+	return _RETRY_DELAYS[index]
+
+
+static func _field(source, key: String):
+	if source == null:
+		return null
+	if source is Dictionary:
+		return source.get(key, null)
+	return source.get(key)
+
+
+static func describe_load_error(error) -> String:
+	if error == null:
+		return "code=unknown domain= message=unknown kind=unknown response_id= adapter="
+	var code_value = _field(error, "code")
+	if code_value == null:
+		code_value = "unknown"
+	var code := int(code_value) if str(code_value).is_valid_int() else -1
+	var domain_value = _field(error, "domain")
+	var message_value = _field(error, "message")
+	var domain := "" if domain_value == null else str(domain_value)
+	var message := "" if message_value == null else str(message_value)
+	var cause := ""
+	var cause_value = _field(error, "cause")
+	if cause_value != null:
+		cause = " cause_code=%s cause_message=%s" % [_field(cause_value, "code"), _field(cause_value, "message")]
+	var response_id := ""
+	var adapter := ""
+	var adapter_errors := ""
+	var info = _field(error, "response_info")
+	if info != null:
+		var response_value = _field(info, "response_id")
+		var adapter_value = _field(info, "mediation_adapter_class_name")
+		response_id = "" if response_value == null else str(response_value)
+		adapter = "" if adapter_value == null else str(adapter_value)
+		var responses = _field(info, "adapter_responses")
+		if responses != null:
+			for item in responses:
+				if item == null:
+					continue
+				var item_error = _field(item, "ad_error")
+				var item_code := "" if item_error == null else str(_field(item_error, "code"))
+				var item_message := "" if item_error == null else str(_field(item_error, "message"))
+				adapter_errors += " source=%s adapter=%s code=%s message=%s" % [str(_field(item, "ad_source_name")), str(_field(item, "adapter_class_name")), item_code, item_message]
+	return "code=%s domain=%s message=%s kind=%s response_id=%s adapter=%s%s%s" % [code_value, domain, message, load_failure_kind(code), response_id, adapter, cause, adapter_errors]
+
+
+static func describe_form_error(error) -> String:
+	if error == null:
+		return "code=unknown message=unknown"
+	var code = _field(error, "error_code")
+	var message = _field(error, "message")
+	if code == null:
+		code = "unknown"
+	if message == null:
+		message = ""
+	return "code=%s message=%s" % [code, message]
 
 
 static func consent_status_allows(status: int) -> bool:
@@ -164,8 +250,7 @@ func _on_consent_success() -> void:
 
 func _on_consent_failure(error: FormError) -> void:
 	_consent_busy = false
-	var message := error.message if error != null else "unknown"
-	_log("consent update failed: %s" % message)
+	_log("consent update failed: %s" % describe_form_error(error))
 	# A previous session can still leave status as obtained or not required.
 	# The error itself does not grant consent or tracking permission.
 	_tracking_status = TrackingPolicy.Status.UNAVAILABLE
@@ -185,8 +270,7 @@ func _on_consent_form_loaded(form: ConsentForm) -> void:
 
 func _on_consent_form_failed(error: FormError) -> void:
 	_consent_busy = false
-	var message := error.message if error != null else "unknown"
-	_log("consent form failed to load: %s" % message)
+	_log("consent form failed to load: %s" % describe_form_error(error))
 	_tracking_status = TrackingPolicy.Status.UNAVAILABLE
 	_apply_consent_gate()
 
@@ -194,7 +278,7 @@ func _on_consent_form_failed(error: FormError) -> void:
 func _on_consent_form_dismissed(error: FormError) -> void:
 	_consent_busy = false
 	if error != null:
-		_log("consent form dismissed with error: %s" % error.message)
+		_log("consent form dismissed with error: %s" % describe_form_error(error))
 		_tracking_status = TrackingPolicy.Status.UNAVAILABLE
 	else:
 		_log("consent form dismissed. status=%s" % UserMessagingPlatform.consent_information.get_consent_status())
@@ -233,14 +317,16 @@ func _refresh_privacy_options() -> void:
 func offer_phase() -> String:
 	return classify_offer(
 		_native_mobile(),
-		not AdCfg.rewarded_unit_id().is_empty(),
+		not AdCfg.rewarded_unit_id().is_empty() and _block_reason != "unit",
 		is_available(),
 		_consent_resolved,
 		_consent_busy,
 		_ads_request_allowed,
 		_loading,
 		_load_failures,
-		Engine.has_singleton("PoingGodotAdMob")
+		Engine.has_singleton("PoingGodotAdMob") and _block_reason != "plugin",
+		_retry_pending,
+		_block_reason != ""
 	)
 
 
@@ -253,11 +339,37 @@ func _note_offer_phase() -> void:
 	availability_changed.emit()
 
 
+func offer_failure_code() -> String:
+	var phase := offer_phase()
+	if phase == "ready" or phase == "hidden":
+		return ""
+	if _block_reason == "plugin":
+		return "plugin"
+	if _consent_resolved and not _consent_busy and not _ads_request_allowed:
+		return "consent"
+	if _last_error_code >= 0:
+		return str(_last_error_code)
+	return ""
+
+
+func nudge_offer_load() -> void:
+	# The wiped-out card is on screen. If consent already allows a request and
+	# nothing is in flight, ask again instead of waiting out the backoff.
+	if not _ads_request_allowed or not _native_mobile() or _showing or _loading or _ad != null:
+		return
+	_cancel_rewarded_retry()
+	if not _sdk_started:
+		_start_sdk()
+		return
+	_load_rewarded()
+
+
 func _apply_consent_gate() -> void:
 	_consent_resolved = true
 	_refresh_privacy_options()
 	var consent_allows := _consent_allows_request()
 	if TrackingPolicy.ads_allowed(consent_allows, _tracking_status):
+		_block_reason = ""
 		_ads_request_allowed = true
 		if OS.has_feature("ios") and not TrackingPolicy.idfa_allowed(_tracking_status):
 			_log("this process did not confirm IDFA access. Mobile Ads includes it only after Apple authorizes tracking.")
@@ -265,7 +377,9 @@ func _apply_consent_gate() -> void:
 		_note_offer_phase()
 		return
 	_ads_request_allowed = false
+	_block_reason = "consent"
 	_loading = false
+	_cancel_rewarded_retry()
 	if _showing:
 		_log("consent no longer allows a new ad. The ad already on screen can finish.")
 		return
@@ -282,9 +396,11 @@ func _start_sdk() -> void:
 			_load_rewarded()
 		return
 	if not Engine.has_singleton("PoingGodotAdMob"):
+		_block_reason = "plugin"
 		_log("Mobile Ads native plugin is missing. Rewarded ads stay unavailable.")
 		_note_offer_phase()
 		return
+	_block_reason = ""
 	_sdk_started = true
 	var unit := AdCfg.rewarded_unit_id()
 	_log("initializing Mobile Ads SDK. mode=%s unit=%s" % [AdCfg.monetization_mode(), unit])
@@ -294,8 +410,16 @@ func _start_sdk() -> void:
 	MobileAds.initialize(listener)
 
 
-func _on_sdk_initialized(_status: InitializationStatus) -> void:
-	_log("Mobile Ads SDK initialized")
+func _on_sdk_initialized(status: InitializationStatus) -> void:
+	var adapters := PackedStringArray()
+	if status != null:
+		for key in status.adapter_status_map.keys():
+			var adapter = status.adapter_status_map[key]
+			var state := -1
+			if adapter != null:
+				state = int(adapter.initialization_state)
+			adapters.append("%s:%s" % [str(key), state])
+	_log("Mobile Ads SDK initialized. adapters=%s" % ",".join(adapters))
 	_load_rewarded()
 
 
@@ -304,18 +428,28 @@ func _load_rewarded() -> void:
 		return
 	var unit := AdCfg.rewarded_unit_id()
 	if unit.is_empty():
+		_block_reason = "unit"
 		_log("rewarded load skipped because no unit id is allowed")
+		_note_offer_phase()
 		return
 	if not Engine.has_singleton("PoingGodotAdMobRewardedAd"):
+		_block_reason = "plugin"
 		_log("rewarded ad plugin is missing. Rewarded ads stay unavailable.")
+		_note_offer_phase()
 		return
 	if not AdCfg.is_production_ads() and not AdCfg.is_google_test_rewarded_unit(unit):
+		_block_reason = "unit"
 		_log("blocked a non-test unit while test ads are required")
+		_note_offer_phase()
 		return
 	if AdCfg.is_production_ads() and AdCfg.is_google_test_rewarded_unit(unit):
+		_block_reason = "unit"
 		_log("blocked a Google test unit while production ads are required")
+		_note_offer_phase()
 		return
+	_block_reason = ""
 	_loading = true
+	_retry_pending = false
 	_log("rewarded request started. unit=%s" % unit)
 	_note_offer_phase()
 	_load_callback = RewardedAdLoadCallback.new()
@@ -328,6 +462,8 @@ func _load_rewarded() -> void:
 func _on_ad_loaded(ad: RewardedAd) -> void:
 	_loading = false
 	_load_failures = 0
+	_last_error_code = -1
+	_cancel_rewarded_retry()
 	_ad = ad
 	_fullscreen = FullScreenContentCallback.new()
 	_fullscreen.on_ad_showed_full_screen_content = func() -> void: _log("rewarded ad showed")
@@ -348,13 +484,33 @@ func _on_ad_loaded(ad: RewardedAd) -> void:
 func _on_ad_failed_to_load(error: LoadAdError) -> void:
 	_loading = false
 	_load_failures += 1
-	var message := error.message if error != null else "unknown"
-	_log("rewarded load failed: %s" % message)
+	if error != null and str(_field(error, "code")).is_valid_int():
+		_last_error_code = int(_field(error, "code"))
+	_log("rewarded load failed: %s" % describe_load_error(error))
+	_schedule_rewarded_retry()
 	_note_offer_phase()
-	if _load_failures > 1 or not is_inside_tree():
+
+
+func _cancel_rewarded_retry() -> void:
+	_retry_token += 1
+	_retry_pending = false
+
+
+func _schedule_rewarded_retry() -> void:
+	if not is_inside_tree() or not _ads_request_allowed:
+		_retry_pending = false
 		return
-	_log("retrying rewarded load once")
-	get_tree().create_timer(8.0).timeout.connect(_load_rewarded)
+	_retry_pending = true
+	_retry_token += 1
+	var token := _retry_token
+	var delay := retry_delay_for_failure(_load_failures)
+	_log("retrying rewarded load in %.0fs. failures=%d" % [delay, _load_failures])
+	get_tree().create_timer(delay).timeout.connect(func() -> void:
+		if not is_instance_valid(self) or token != _retry_token:
+			return
+		_retry_pending = false
+		_load_rewarded()
+	)
 
 
 func _on_user_earned_reward(item: RewardedItem, session_id: int) -> void:
