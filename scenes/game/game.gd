@@ -1047,11 +1047,13 @@ func _after_death(rank: int, remaining: int) -> void:
 	if GameSession.practice_daily:
 		_run_coins = 0
 		_show_over(rank, remaining)
-	elif _run_coins > 0 and RewardedAds.is_rewarded_ad_available():
+	elif _run_coins > 0 and RewardedAds.offer_phase() != "hidden":
+		print("[ReefRun ads] double-coin offer phase=%s" % RewardedAds.offer_phase())
 		_show_coin_ad()
 	else:
-		# Coins picked up during the swim stay in the wallet. The extra ad
-		# payout is only offered when a real rewarded ad can be completed.
+		# Coins picked up during the swim stay in the wallet. The extra payout
+		# still requires the rewarded completion callback.
+		print("[ReefRun ads] double-coin offer hidden. phase=%s coins=%d" % [RewardedAds.offer_phase(), _run_coins])
 		_show_over(rank, remaining)
 
 
@@ -1060,6 +1062,8 @@ func _bind_rewarded_ads() -> void:
 	RewardedAds.ad_closed.connect(_on_rewarded_ad_closed)
 	RewardedAds.ad_failed.connect(_on_rewarded_ad_failed)
 	RewardedAds.ad_unavailable.connect(_on_rewarded_ad_unavailable)
+	if not RewardedAds.availability_changed.is_connected(_on_reward_availability_changed):
+		RewardedAds.availability_changed.connect(_on_reward_availability_changed)
 	tree_exiting.connect(_unbind_rewarded_ads)
 
 
@@ -1072,6 +1076,8 @@ func _unbind_rewarded_ads() -> void:
 		RewardedAds.ad_failed.disconnect(_on_rewarded_ad_failed)
 	if RewardedAds.ad_unavailable.is_connected(_on_rewarded_ad_unavailable):
 		RewardedAds.ad_unavailable.disconnect(_on_rewarded_ad_unavailable)
+	if RewardedAds.availability_changed.is_connected(_on_reward_availability_changed):
+		RewardedAds.availability_changed.disconnect(_on_reward_availability_changed)
 
 
 func _clear_overlay() -> void:
@@ -1122,6 +1128,7 @@ func _show_coin_ad() -> void:
 	_coin_ad_note.position = Vector2(24, RR.VIEW_H - 70)
 	_coin_ad_note.configure("", 16, Vector2(RR.VIEW_W - 48, 28), HORIZONTAL_ALIGNMENT_CENTER)
 	overlay.add_child(_coin_ad_note)
+	_apply_offer_phase()
 	_set_mission_presentation("aside")
 
 
@@ -1167,6 +1174,12 @@ func _watch_coin_ad() -> void:
 		_coin_ad_watch.disabled = true
 	_set_coin_ad_note("")
 	if not RewardedAds.is_rewarded_ad_available():
+		if RewardedAds.offer_phase() == "loading":
+			_reward_request_active = false
+			if _coin_ad_watch:
+				_coin_ad_watch.disabled = true
+			_set_coin_ad_note("AD LOADING")
+			return
 		_on_rewarded_ad_unavailable(0)
 		return
 	# Store the id before show so a callback that returns immediately still
@@ -1216,6 +1229,28 @@ func _restore_coin_ad(message: String) -> void:
 	if _coin_ad_watch:
 		_coin_ad_watch.disabled = still_showing
 	_set_coin_ad_note(message)
+
+
+func _apply_offer_phase() -> void:
+	if not _coin_offer_open or _coin_reward_claimed or _reward_request_active:
+		return
+	var phase := RewardedAds.offer_phase()
+	print("[ReefRun ads] double-coin offer visibility=%s" % phase)
+	if phase == "ready":
+		if _coin_ad_watch:
+			_coin_ad_watch.disabled = false
+		_set_coin_ad_note("")
+		return
+	if _coin_ad_watch:
+		_coin_ad_watch.disabled = true
+	if phase == "loading":
+		_set_coin_ad_note("AD LOADING")
+		return
+	_set_coin_ad_note("NO AD AVAILABLE")
+
+
+func _on_reward_availability_changed() -> void:
+	_apply_offer_phase()
 
 
 func _set_coin_ad_note(message: String) -> void:

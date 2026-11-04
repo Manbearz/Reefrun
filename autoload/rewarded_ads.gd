@@ -5,6 +5,7 @@ signal ad_closed(session_id: int)
 signal ad_failed(reason: String, session_id: int)
 signal ad_unavailable(session_id: int)
 signal privacy_options_changed(required: bool)
+signal availability_changed
 
 const AdCfg := preload("res://scripts/ads/ad_config.gd")
 const MockScript := preload("res://scripts/ads/mock_rewarded_ads.gd")
@@ -25,10 +26,20 @@ func _ready() -> void:
 	_provider.ad_unavailable.connect(func(session_id: int): ad_unavailable.emit(session_id))
 	if _provider.has_signal("privacy_options_changed"):
 		_provider.privacy_options_changed.connect(func(required: bool): privacy_options_changed.emit(required))
+	if _provider.has_signal("availability_changed"):
+		_provider.availability_changed.connect(func(): availability_changed.emit())
 
 
 func is_rewarded_ad_available() -> bool:
 	return _provider != null and _provider.is_available()
+
+
+func offer_phase() -> String:
+	if _provider != null and _provider.has_method("offer_phase"):
+		return str(_provider.offer_phase())
+	if is_rewarded_ad_available():
+		return "ready"
+	return "hidden"
 
 
 func is_show_active() -> bool:

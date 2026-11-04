@@ -2,6 +2,7 @@ class_name MobileRewardedAds
 extends RewardedAdProvider
 
 signal privacy_options_changed(required: bool)
+signal availability_changed
 
 const AdCfg := preload("res://scripts/ads/ad_config.gd")
 const TrackingPolicy := preload("res://scripts/ads/att_authorization.gd")
@@ -18,8 +19,10 @@ var _ads_request_allowed := false
 var _privacy_options_required := false
 var _load_failures := 0
 var _consent_busy := false
+var _consent_resolved := false
 var _ump_form_presented := false
 var _tracking_status := TrackingPolicy.Status.UNAVAILABLE
+var _offer_phase := ""
 # RewardedItem has no ad id. Each show stamps its own session, and a repeat
 # of that same session is ignored. Entries are not cleared when a new show
 # starts, so a late callback cannot be counted as the new show's reward.
@@ -81,6 +84,30 @@ func _native_mobile() -> bool:
 	return OS.has_feature("ios") or OS.has_feature("android")
 
 
+static func ump_status_name(status: int) -> String:
+	match status:
+		ConsentInformation.ConsentStatus.NOT_REQUIRED:
+			return "not_required"
+		ConsentInformation.ConsentStatus.REQUIRED:
+			return "required"
+		ConsentInformation.ConsentStatus.OBTAINED:
+			return "obtained"
+		_:
+			return "unknown"
+
+
+static func classify_offer(native_mobile: bool, unit_ready: bool, ad_ready: bool, consent_resolved: bool, consent_busy: bool, ads_allowed: bool, loading: bool, load_failures: int, sdk_present: bool) -> String:
+	if ad_ready:
+		return "ready"
+	if not native_mobile or not unit_ready:
+		return "hidden"
+	if not consent_resolved or consent_busy or loading:
+		return "loading"
+	if not ads_allowed or not sdk_present or load_failures > 1:
+		return "unavailable"
+	return "loading"
+
+
 static func consent_status_allows(status: int) -> bool:
 	# Matches UMP canRequestAds: only a finished "not required" or "obtained"
 	# state may request ads. Unknown, required, and an error are not permission.
@@ -108,15 +135,28 @@ func _request_consent() -> void:
 func _on_consent_success() -> void:
 	var info := UserMessagingPlatform.consent_information
 	var form_available := info.get_is_consent_form_available()
-	_log("consent updated. status=%s form_available=%s tracking=%s" % [info.get_consent_status(), form_available, TrackingPolicy.status_name(_tracking_status)])
+	var status := int(info.get_consent_status())
+	var present_form := TrackingPolicy.should_present_ump_form(form_available, _ump_form_presented)
+	_log("consent updated. ump_status=%s idfa_form_available=%s form_presented=%s tracking=%s" % [ump_status_name(status), form_available, _ump_form_presented, TrackingPolicy.status_name(_tracking_status)])
 	# UMP 3.1.0 calls Apple's tracking request only while presenting a published
 	# IDFA explainer, and only while the system status is not determined. A
 	# GDPR form, the privacy-options form, or a missing explainer is not that
 	# request. Players outside GDPR can still have a form available while
-	# consent status is not required, so availability is the signal. Limiting
-	# this to REQUIRED can skip the explainer and request ads first.
-	if TrackingPolicy.should_present_ump_form(form_available, _ump_form_presented):
+	# consent status is not required.
+	if present_form:
+		_log("loading consent form before the rewarded request")
 		UserMessagingPlatform.load_consent_form(_on_consent_form_loaded, _on_consent_form_failed)
+	# A published IDFA form must not hold the rewarded load forever. When UMP
+	# already allows a request, start a non-tracking load while that form is open.
+	if consent_status_allows(status):
+		if present_form:
+			_log("UMP allows a non-tracking rewarded load while the form is open")
+		else:
+			_consent_busy = false
+		_apply_consent_gate()
+		return
+	if present_form:
+		_note_offer_phase()
 		return
 	_consent_busy = false
 	_apply_consent_gate()
@@ -138,7 +178,8 @@ func _on_consent_form_loaded(form: ConsentForm) -> void:
 		_apply_consent_gate()
 		return
 	_ump_form_presented = true
-	_log("showing consent form")
+	_log("consent form presented. idfa_form_available=true")
+	_note_offer_phase()
 	form.show(_on_consent_form_dismissed)
 
 
@@ -189,7 +230,31 @@ func _refresh_privacy_options() -> void:
 	privacy_options_changed.emit(required)
 
 
+func offer_phase() -> String:
+	return classify_offer(
+		_native_mobile(),
+		not AdCfg.rewarded_unit_id().is_empty(),
+		is_available(),
+		_consent_resolved,
+		_consent_busy,
+		_ads_request_allowed,
+		_loading,
+		_load_failures,
+		Engine.has_singleton("PoingGodotAdMob")
+	)
+
+
+func _note_offer_phase() -> void:
+	var phase := offer_phase()
+	if phase == _offer_phase:
+		return
+	_offer_phase = phase
+	_log("rewarded readiness=%s" % phase)
+	availability_changed.emit()
+
+
 func _apply_consent_gate() -> void:
+	_consent_resolved = true
 	_refresh_privacy_options()
 	var consent_allows := _consent_allows_request()
 	if TrackingPolicy.ads_allowed(consent_allows, _tracking_status):
@@ -197,6 +262,7 @@ func _apply_consent_gate() -> void:
 		if OS.has_feature("ios") and not TrackingPolicy.idfa_allowed(_tracking_status):
 			_log("this process did not confirm IDFA access. Mobile Ads includes it only after Apple authorizes tracking.")
 		_start_sdk()
+		_note_offer_phase()
 		return
 	_ads_request_allowed = false
 	_loading = false
@@ -205,6 +271,7 @@ func _apply_consent_gate() -> void:
 		return
 	_release_ad()
 	_log("ads will not be requested until consent allows them")
+	_note_offer_phase()
 
 
 func _start_sdk() -> void:
@@ -216,6 +283,7 @@ func _start_sdk() -> void:
 		return
 	if not Engine.has_singleton("PoingGodotAdMob"):
 		_log("Mobile Ads native plugin is missing. Rewarded ads stay unavailable.")
+		_note_offer_phase()
 		return
 	_sdk_started = true
 	var unit := AdCfg.rewarded_unit_id()
@@ -248,7 +316,8 @@ func _load_rewarded() -> void:
 		_log("blocked a Google test unit while production ads are required")
 		return
 	_loading = true
-	_log("loading rewarded ad %s" % unit)
+	_log("rewarded request started. unit=%s" % unit)
+	_note_offer_phase()
 	_load_callback = RewardedAdLoadCallback.new()
 	_load_callback.on_ad_loaded = _on_ad_loaded
 	_load_callback.on_ad_failed_to_load = _on_ad_failed_to_load
@@ -273,6 +342,7 @@ func _on_ad_loaded(ad: RewardedAd) -> void:
 		_log("rewarded ad failed before show: %s" % message)
 	_ad.full_screen_content_callback = _fullscreen
 	_log("rewarded ad loaded")
+	_note_offer_phase()
 
 
 func _on_ad_failed_to_load(error: LoadAdError) -> void:
@@ -280,6 +350,7 @@ func _on_ad_failed_to_load(error: LoadAdError) -> void:
 	_load_failures += 1
 	var message := error.message if error != null else "unknown"
 	_log("rewarded load failed: %s" % message)
+	_note_offer_phase()
 	if _load_failures > 1 or not is_inside_tree():
 		return
 	_log("retrying rewarded load once")
