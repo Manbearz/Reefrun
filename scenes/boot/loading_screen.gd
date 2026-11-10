@@ -315,6 +315,9 @@ func _finish_handoff(menu: Node) -> void:
 	if menu is Control:
 		(menu as Control).set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	tree.current_scene = menu
+	var sprites := tree.root.get_node_or_null("Sprites")
+	if sprites and sprites.has_method("start_gameplay"):
+		sprites.start_gameplay()
 	queue_free()
 
 

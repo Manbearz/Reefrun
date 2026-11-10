@@ -52,7 +52,9 @@ func _ready() -> void:
 	_coin_icon.size = Vector2(30, 30)
 	_coin_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_coin_icon)
-	_coin_text = _line("0", 22, Vector2(RR.VIEW_W - 74, 16), Vector2(62, 30), HORIZONTAL_ALIGNMENT_LEFT, true)
+	var coin_x := RR.VIEW_W - 74.0
+	_coin_text = _line("0", 22, Vector2(coin_x, 16), Vector2(RR.VIEW_W - coin_x - 6.0, 30), HORIZONTAL_ALIGNMENT_LEFT, true)
+	_coin_text.configure("0", 22, Vector2(RR.VIEW_W - coin_x - 6.0, 30), HORIZONTAL_ALIGNMENT_LEFT, true, true)
 	_track_top(alive_text)
 	_track_top(swimming_text)
 	_track_top(score_text)

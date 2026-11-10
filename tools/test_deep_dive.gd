@@ -24,7 +24,7 @@ func _run() -> void:
 	ok = _check("later_unlocks", _test_later()) and ok
 	ok = _check("pipe_count", _test_pipe_count()) and ok
 	ok = _check("coins_untouched", _test_coins()) and ok
-	ok = _check("daily_unchanged", _test_daily()) and ok
+	ok = _check("daily_shares_rules", _test_daily()) and ok
 	ok = _check("harpoon_lanes", await _test_harpoon_pattern()) and ok
 	ok = _check("whoosh", _test_whoosh()) and ok
 	ok = _check("fixed_speed", _test_fixed_speed()) and ok
@@ -440,7 +440,9 @@ func _test_harpoon_pattern() -> bool:
 
 
 func _test_daily() -> bool:
-	if GameplayEvents.applies_to("daily", false):
+	if not GameplayEvents.applies_to("daily", false):
+		return false
+	if GameplayEvents.applies_to("daily", true):
 		return false
 	if GameplayEvents.applies_to("unlimited", true):
 		return false
@@ -450,7 +452,20 @@ func _test_daily() -> bool:
 	var lanes: PackedInt32Array = built["harpoon_lanes"]
 	var volleys := maxi(1, 80 / RR.HARPOON_EVERY) + 2
 	var source := FileAccess.get_file_as_string("res://scenes/game/game.gd")
-	return lanes.size() == volleys * RR.HARPOON_SHOTS and source.find("_pipes_until_harpoon = RR.HARPOON_EVERY") >= 0
+	var course := CourseBuilder.course_events(11, 80)
+	var again := CourseBuilder.course_events(11, 80)
+	var saw_dive := false
+	for event in course:
+		if str(event.get("id", "")).begins_with("dive:"):
+			saw_dive = true
+			break
+	return (
+		lanes.size() == volleys * RR.HARPOON_SHOTS
+		and source.find("_pipes_until_harpoon = RR.HARPOON_EVERY") >= 0
+		and source.find("CourseBuilderScript.dive_seed") >= 0
+		and course == again
+		and saw_dive
+	)
 
 
 func _test_restart() -> bool:

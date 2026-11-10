@@ -17,6 +17,7 @@ var _decor_y: PackedFloat32Array = PackedFloat32Array()
 var _decor_speed: PackedFloat32Array = PackedFloat32Array()
 var _wash: Polygon2D
 var _prepared := false
+var _decor_ready := false
 var _hit := false
 var _debug_fish := Vector2.ZERO
 var _debug_lane := 0
@@ -34,7 +35,7 @@ func _ready() -> void:
 func prepare() -> void:
 	if _prepared:
 		return
-	DiveAssets.preload_all()
+	DiveAssets.begin_preload()
 	var packed := preload("res://scenes/deep_dive/dive_obstacle.tscn")
 	for i in POOL:
 		var obs := packed.instantiate() as DiveObstacle
@@ -55,7 +56,6 @@ func prepare() -> void:
 		var spr := Sprite2D.new()
 		spr.centered = true
 		spr.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-		spr.texture = DiveAssets.tex(DiveAssets.decor_id(i))
 		spr.scale = Vector2.ONE * (0.85 if i % 2 == 0 else 0.7)
 		spr.modulate = Color(1, 1, 1, 0.55)
 		spr.z_index = -1
@@ -66,15 +66,37 @@ func prepare() -> void:
 		_decor_y.append(spr.position.y)
 		_decor_speed.append(0.35 + float(i % 3) * 0.08)
 	_prepared = true
+	set_process(true)
+
+
+func _process(_delta: float) -> void:
+	_bind_decor()
+
+
+func _bind_decor() -> void:
+	if _decor_ready:
+		set_process(false)
+		return
+	DiveAssets.pump()
+	if not DiveAssets.idle():
+		return
+	for i in _decor.size():
+		_decor[i].texture = DiveAssets.tex(DiveAssets.decor_id(i))
+	_decor_ready = true
+	set_process(false)
 
 
 func begin_ambient() -> void:
 	prepare()
+	DiveAssets.finish()
+	_bind_decor()
 	visible = true
 
 
 func start(dive_number: int, seed: int) -> void:
 	prepare()
+	DiveAssets.finish()
+	_bind_decor()
 	_release_all()
 	_specs = DiveCourse.generate(dive_number, seed)
 	_cursor = 0

@@ -42,8 +42,8 @@ const PHYSICS_VERSION := 1
 const COURSE_VERSION := 1
 # VIEW_W+lead(80) + cull(120) + PLAYER_X + pipe width, divided by spacing (PIPE_SPEED*INTERVAL=300), plus spare.
 const PIPE_POOL_SIZE := 12
-# Daily Challenge still starts a volley every this many spawned pipes.
-# Unlimited mode uses DeepDiveConfig for harpoons and Deep Dives.
+# Pipe counter used only when GameplayEvents is off. Ranked Daily and
+# Unlimited arm harpoons and Deep Dives from DeepDiveConfig.
 const HARPOON_EVERY := 20
 const HARPOON_WARN := 2.0
 const HARPOON_SHOTS := 3
@@ -59,8 +59,8 @@ const FISH_COUNT := 70
 const RARITY_COMMON := 0
 const RARITY_RARE := 1
 const RARITY_LEGENDARY := 2
-const HAT_TIER_PRICE: PackedInt32Array = [250, 500, 1000]
-const FISH_TIER_PRICE: PackedInt32Array = [500, 1000, 2000]
+const HAT_TIER_PRICE: PackedInt32Array = [100, 300, 1000]
+const FISH_TIER_PRICE: PackedInt32Array = [100, 300, 1000]
 # Index matches FISH_IDS. The first FREE_FISH entries stay free regardless of tier.
 const FISH_RARITY: PackedInt32Array = [
 	0, 0, 0, 0, 0, 0, 0, 0, 1, 1,

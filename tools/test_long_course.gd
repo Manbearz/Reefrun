@@ -48,7 +48,7 @@ func _run() -> void:
 		var daily = _boot("daily", run_seed)
 		var daily_run: Dictionary = _fast_forward(daily, false, DAILY_MARKS, DAILY_TARGET, run_seed, run_name)
 		var run_ok := bool(daily_run["ok"]) and _matches_grown(daily, run_seed)
-		run_ok = run_ok and daily._events == null and not GameplayEvents.applies_to("daily", false)
+		run_ok = run_ok and daily._events == null and GameplayEvents.applies_to("daily", false) and not GameplayEvents.applies_to("daily", true)
 		if i == 0:
 			run_ok = run_ok and _test_harpoon_stall(daily)
 		if not run_ok:

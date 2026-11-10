@@ -21,6 +21,7 @@ func _run() -> void:
 	ok = _check("game content", _features()) and ok
 	ok = _check("scripts parse", _parse()) and ok
 	ok = _check("mode cover", _mode_cover()) and ok
+	ok = _check("mission counters", _mission_counters()) and ok
 	print("[screen-fit] ok=%s" % ok)
 	quit(0 if ok else 1)
 
@@ -128,7 +129,7 @@ func _preset() -> bool:
 	return (
 		mode.contains('const ANDROID_MODE := "test"')
 		and mode.contains('const ANDROID_OUTPUT_MARKER := "REEFRUN_ANDROID_AD_MODE=test"')
-		and mode.contains('const IOS_MODE := "production"')
+		and mode.contains('const IOS_MODE := "test"')
 		and ads.contains('normalize_mode(mode) != "production"')
 		and ads.contains("ca-app-pub-3940256099942544/5224354917")
 		and workflow.contains("default: test")
@@ -197,6 +198,19 @@ func _mode_cover() -> bool:
 			if not bounds.encloses(button.grow(-1.0)):
 				push_error("[screen-fit] mode button %s left %s" % [button, screen])
 				return false
+		var unlimited := Rect2(cover.position + menu.MODE_UNLIMITED.position * scale, menu.MODE_UNLIMITED.size * scale)
+		var note := Rect2(cover.position + menu.MODE_NOTE.position * scale, menu.MODE_NOTE.size * scale)
+		var missions := Rect2(cover.position + menu.MODE_MISSIONS.position * scale, menu.MODE_MISSIONS.size * scale)
+		for fish in menu.daily_fish_screen_rects(cover):
+			if not bounds.encloses(fish.grow(-0.5)):
+				push_error("[screen-fit] daily fish %s left %s" % [fish, screen])
+				return false
+			if absf(fish.size.x - fish.size.y) > 0.01:
+				push_error("[screen-fit] daily fish stretched %s" % fish)
+				return false
+			if fish.intersects(unlimited) or fish.intersects(note) or fish.intersects(missions):
+				push_error("[screen-fit] daily fish overlaps another control %s" % fish)
+				return false
 		var score: Rect2 = RR.fullscreen_plate(Vector2(menu.SCORE_W, menu.SCORE_H), screen, menu.SCORE_KEEP, Vector2(0.5, 0.5))
 		if score.position.x > 0.05 or score.end.x < screen.x - 0.05 or score.end.y < screen.y - 0.05:
 			push_error("[screen-fit] leaderboard does not cover %s with %s" % [screen, score])
@@ -217,6 +231,126 @@ func _parse() -> bool:
 		if load(path) == null:
 			push_error("[screen-fit] could not load %s" % path)
 			return false
+	return true
+
+
+func _mission_counters() -> bool:
+	var Overlay = load("res://scripts/daily_missions_overlay.gd")
+	var capsule_right: Array[float] = [516.0, 514.0, 506.0]
+	var plate_left: Array[float] = [664.0, 653.0, 653.0]
+	var capsule_mid: Array[float] = [780.5, 940.0, 1097.5]
+	var samples: PackedStringArray = PackedStringArray([
+		"0/2", "1/2", "2/2", "0/10", "9/10", "10/10", "90/90", "40/100", "200/200", "500/500",
+	])
+	var overlay = Overlay.new()
+	overlay.use_screen_board()
+	root.add_child(overlay)
+	var board := {
+		"ok": true,
+		"slots": [
+			{"slot": "easy", "mission_id": 50, "description": "Enter 2 dives.", "goal": 2, "progress": 0, "reward": 5, "complete": false, "claimed": false},
+			{"slot": "medium", "mission_id": 1, "description": "Pass 10 pipes.", "goal": 10, "progress": 0, "reward": 10, "complete": false, "claimed": false},
+			{"slot": "hard", "mission_id": 32, "description": "Pass 200 pipes.", "goal": 200, "progress": 0, "reward": 20, "complete": false, "claimed": false},
+		],
+		"bonus": {"reward": 25, "unlocked": false, "claimed": false},
+	}
+	overlay.present("board", true)
+	overlay.show_board(board, "")
+	var counters: Array = overlay.get("_counters")
+	if counters.size() != 3:
+		push_error("[screen-fit] expected 3 mission counters")
+		overlay.free()
+		return false
+	var homes: Array[Rect2] = []
+	var glyph_h := -1.0
+	for i in counters.size():
+		var counter: Control = counters[i]
+		var box := Rect2(counter.position, counter.size)
+		homes.append(box)
+		if counter.clip_contents:
+			push_error("[screen-fit] counter %d clips its digits" % i)
+			overlay.free()
+			return false
+		if box.size.x < 110.0 or box.size.y < 24.0:
+			push_error("[screen-fit] counter %d box is too small %s" % [i, box])
+			overlay.free()
+			return false
+		if box.position.x < capsule_right[i] + 6.0 or box.end.x > plate_left[i] - 6.0:
+			push_error("[screen-fit] counter %d leaves the gap %s" % [i, box])
+			overlay.free()
+			return false
+		if absf(box.position.y + box.size.y * 0.5 - capsule_mid[i]) > 1.5:
+			push_error("[screen-fit] counter %d is not centered on its bar" % i)
+			overlay.free()
+			return false
+		if box.intersects(Overlay.SCREEN_TRACK[i]) or box.intersects(Overlay.SCREEN_DESC[i]) or box.intersects(Overlay.SCREEN_REWARD[i]):
+			push_error("[screen-fit] counter %d overlaps the row art" % i)
+			overlay.free()
+			return false
+		var height := float(counter.get("_glyph_h"))
+		if glyph_h < 0.0:
+			glyph_h = height
+		elif absf(height - glyph_h) > 0.1:
+			push_error("[screen-fit] counter sizes differ")
+			overlay.free()
+			return false
+	for sample in samples:
+		for i in counters.size():
+			var counter: Control = counters[i]
+			counter.set_value(sample)
+			if str(counter.get("_text")) != sample:
+				push_error("[screen-fit] counter %d shows %s" % [i, counter.get("_text")])
+				overlay.free()
+				return false
+			if not Rect2(counter.position, counter.size).is_equal_approx(homes[i]):
+				push_error("[screen-fit] counter %d moved for %s" % [i, sample])
+				overlay.free()
+				return false
+			if counter.get_child_count() < 3:
+				push_error("[screen-fit] counter %d drew no digits for %s" % [i, sample])
+				overlay.free()
+				return false
+			for child in counter.get_children():
+				var glyph := child as Control
+				if glyph.position.x < 3.0 or glyph.position.y < 3.0:
+					push_error("[screen-fit] %s row %d glyph starts at %s" % [sample, i, glyph.position])
+					overlay.free()
+					return false
+				if glyph.position.x + glyph.size.x > counter.size.x - 3.0 or glyph.position.y + glyph.size.y > counter.size.y - 3.0:
+					push_error("[screen-fit] %s row %d glyph ends at %s in %s" % [sample, i, glyph.position + glyph.size, counter.size])
+					overlay.free()
+					return false
+	overlay.present("hidden", true)
+	overlay.present("board", true)
+	for i in counters.size():
+		var counter: Control = counters[i]
+		if not Rect2(counter.position, counter.size).is_equal_approx(homes[i]):
+			push_error("[screen-fit] counter %d moved after reopen" % i)
+			overlay.free()
+			return false
+	var phones := [
+		{"screen": Vector2(390, 844), "margins": Vector4(0, 47, 0, 34)},
+		{"screen": Vector2(360, 780), "margins": Vector4(0, 44, 0, 30)},
+		{"screen": Vector2(540, 960), "margins": Vector4(0, 0, 0, 0)},
+		{"screen": Vector2(540, 1080), "margins": Vector4(0, 0, 0, 0)},
+		{"screen": Vector2(540, 1170), "margins": Vector4(0, 0, 0, 0)},
+		{"screen": Vector2(540, 1260), "margins": Vector4(0, 0, 0, 0)},
+	]
+	for phone in phones:
+		var screen: Vector2 = phone.screen
+		var placed: Rect2 = Overlay.screen_board_rect(screen, phone.margins)
+		var fit: float = placed.size.x / Overlay.SCREEN_SIZE.x
+		for i in homes.size():
+			var on_screen := Rect2(placed.position + homes[i].position * fit, homes[i].size * fit)
+			if not placed.encloses(on_screen):
+				push_error("[screen-fit] counter %d leaves %s at %s" % [i, screen, on_screen])
+				overlay.free()
+				return false
+			if on_screen.size.y * (glyph_h / homes[i].size.y) < 8.0:
+				push_error("[screen-fit] counter %d is unreadably small on %s" % [i, screen])
+				overlay.free()
+				return false
+	overlay.free()
 	return true
 
 

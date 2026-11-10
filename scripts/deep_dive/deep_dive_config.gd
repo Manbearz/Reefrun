@@ -1,8 +1,9 @@
 class_name DeepDiveConfig
 extends RefCounted
 
-# Unlimited-mode schedule. A harpoon stage is one existing 3-shot volley,
-# not a five-pipe sequence. Daily Challenge keeps RR.HARPOON_EVERY.
+# Shared schedule for ranked Daily and Unlimited. A harpoon stage is one
+# existing 3-shot volley, not a five-pipe sequence. Practice runs that leave
+# the event system off still count pipes with RR.HARPOON_EVERY.
 const HARPOON_FIRST_PIPE := 15
 const HARPOON_PIPE_STRIDE := 30
 const DIVE_FIRST_PIPE := 30

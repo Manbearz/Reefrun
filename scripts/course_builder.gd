@@ -108,6 +108,163 @@ static func placed_specs(layout: Array, extra: Array) -> Array:
 	return placed
 
 
+# One event list for a seed: pipes, coins, the shared harpoon schedule, and
+# each Deep Dive's environment and obstacles. Times are distance / speed, so
+# the render frame rate does not appear in them. A dive still waits for a
+# clear corridor; that wait uses the same rule in both modes.
+static func course_events(seed: int, pipe_count: int = RR.PIPE_COUNT) -> Array:
+	var built := generate(seed, pipe_count)
+	var layout: Array = built["layout"]
+	var lanes: PackedInt32Array = built["harpoon_lanes"]
+	var events: Array = []
+	var lane_i := 0
+	var harpoon_n := 0
+	var dive_n := 0
+	for i in layout.size():
+		var spec: Dictionary = layout[i]
+		var course_t := float(spec["x"]) / RR.PIPE_SPEED
+		events.append({
+			"id": "pipe:%d" % i,
+			"t": course_t,
+			"x": float(spec["x"]),
+			"gap_y": float(spec["gap_y"]),
+			"gap_h": float(spec["gap_h"]),
+			"style": str(spec["style"]),
+		})
+		if (i + 1) % RR.COIN_EVERY == 0 and i + 1 < layout.size():
+			var nxt: Dictionary = layout[i + 1]
+			events.append({
+				"id": "coin:%d" % i,
+				"t": course_t,
+				"x": (float(spec["x"]) + float(nxt["x"])) * 0.5,
+				"y": (float(spec["gap_y"]) + float(nxt["gap_y"])) * 0.5,
+			})
+		var passed := i + 1
+		if passed == DeepDiveConfig.harpoon_pipe(harpoon_n):
+			for shot in RR.HARPOON_SHOTS:
+				if lane_i >= lanes.size():
+					break
+				var shot_t := course_t + RR.HARPOON_WARN + float(shot) * _harpoon_cycle()
+				events.append({
+					"id": "harpoon:%d" % lane_i,
+					"t": shot_t,
+					"lane": int(lanes[lane_i]),
+					"pipe": passed,
+				})
+				lane_i += 1
+			harpoon_n += 1
+		if passed == DeepDiveConfig.dive_pipe(dive_n):
+			dive_n += 1
+			_append_dive(events, seed, dive_n, course_t, passed)
+	return events
+
+
+# Same formula the swim uses when a dive begins. Dive 1, 2, 3 stay fixed
+# for a course seed, and a new daily seed moves every dive.
+static func dive_seed(course_seed: int, dive_number: int) -> int:
+	var base := course_seed if course_seed != 0 else 1
+	return base + maxi(dive_number, 1) * 997
+
+
+static func _append_dive(events: Array, course_seed: int, dive_number: int, course_t: float, pipe: int) -> void:
+	var profile := DeepDiveConfig.profile(dive_number)
+	var kinds: PackedStringArray = profile["kinds"]
+	var names := ""
+	for kind in kinds:
+		if names != "":
+			names += ","
+		names += str(kind)
+	events.append({
+		"id": "dive:%d" % dive_number,
+		"t": course_t,
+		"pipe": pipe,
+		"kinds": names,
+		"duration": float(profile["duration"]),
+	})
+	var specs: Array[Dictionary] = DiveCourse.generate(dive_number, dive_seed(course_seed, dive_number))
+	var scroll: float = profile["scroll"]
+	for n in specs.size():
+		var spec: Dictionary = specs[n]
+		events.append({
+			"id": "dive:%d:obs:%d" % [dive_number, n],
+			"t": course_t + float(spec["travel"]) / scroll,
+			"kind": str(spec["kind"]),
+			"travel": float(spec["travel"]),
+			"lane": int(spec["lane"]),
+			"span": int(spec["span"]),
+			"gap_x": float(spec["gap_x"]),
+			"gap_w": float(spec["gap_w"]),
+			"variant": int(spec["variant"]),
+			"side": int(spec["side"]),
+			"drift": float(spec["drift"]),
+		})
+	events.append({
+		"id": "dive:%d:exit" % dive_number,
+		"t": course_t + DeepDiveConfig.intro_total() + float(profile["duration"]),
+		"pipe": pipe,
+	})
+
+
+static func _harpoon_cycle() -> float:
+	# Animation starts on frame 1 and runs to the last frame, then holds,
+	# then the next warning begins.
+	return 9.0 * RR.HARPOON_FRAME + RR.HARPOON_HOLD + RR.HARPOON_WARN
+
+
+# Pipe ids in the order a fixed step would spawn them. Positions stay on the
+# seeded layout; only the step changes.
+static func spawn_ids(seed: int, step: float, seconds: float = 20.0) -> PackedStringArray:
+	var layout: Array = generate(seed, RR.PIPE_COUNT)["layout"]
+	var ids := PackedStringArray()
+	var scroll := 0.0
+	var t := 0.0
+	var index := 0
+	var lead := RR.VIEW_W + 80.0
+	while t < seconds and index < layout.size():
+		scroll += RR.PIPE_SPEED * step
+		t += step
+		while index < layout.size() and float(layout[index]["x"]) <= scroll + lead:
+			ids.append("pipe:%d" % index)
+			index += 1
+	return ids
+
+
+# Obstacle ids a dive would spawn while scrolling at a fixed step. The course
+# itself comes from dive_seed; the step only decides when each one crosses
+# the spawn line.
+static func dive_spawn_ids(course_seed: int, dive_number: int, step: float, seconds: float = 8.0) -> PackedStringArray:
+	var specs: Array[Dictionary] = DiveCourse.generate(dive_number, dive_seed(course_seed, dive_number))
+	var ids := PackedStringArray()
+	var scroll := 0.0
+	var t := 0.0
+	var cursor := 0
+	var speed := DeepDiveConfig.DEEP_DIVE_SPEED
+	var limit := RR.screen_bottom() + 180.0
+	while t < seconds and cursor < specs.size():
+		scroll += speed * step
+		t += step
+		while cursor < specs.size():
+			var spec: Dictionary = specs[cursor]
+			var screen_y := DeepDiveConfig.FISH_Y + float(spec["travel"]) - scroll
+			if screen_y > limit:
+				break
+			ids.append("%s:%d:%d" % [str(spec["kind"]), int(spec["lane"]), cursor])
+			cursor += 1
+	return ids
+
+
+static func warning_fire_time(step: float) -> float:
+	var warn := RR.HARPOON_WARN
+	var t := 0.0
+	var guard := 0
+	while warn > 0.0001 and guard < 10000:
+		var dt := minf(step, warn)
+		warn -= dt
+		t += dt
+		guard += 1
+	return t
+
+
 static func specs_equal(a: Dictionary, b: Dictionary) -> bool:
 	return (
 		is_equal_approx(float(a.get("x", 0.0)), float(b.get("x", 0.0)))

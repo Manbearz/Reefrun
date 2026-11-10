@@ -101,12 +101,23 @@ func fire() -> void:
 
 
 func tick(delta: float) -> void:
-	if armed and not flying:
-		_pulse_t += delta
-		var wave := 0.5 + 0.5 * sin(_pulse_t * TAU * 3.2)
-		_warn.modulate.a = 0.45 + 0.55 * wave
-		_warn.scale = Vector2.ONE * (0.88 + 0.18 * wave)
+	tick_warn(delta)
+	tick_flight(delta)
+
+
+# Warning pulse is cosmetic. It does not choose a lane or end the attack.
+func tick_warn(delta: float) -> void:
+	if not armed or flying:
 		return
+	_pulse_t += delta
+	var wave := 0.5 + 0.5 * sin(_pulse_t * TAU * 3.2)
+	_warn.modulate.a = 0.45 + 0.55 * wave
+	_warn.scale = Vector2.ONE * (0.88 + 0.18 * wave)
+
+
+# Flight and the hold that ends it follow the physics step, so 60 FPS and
+# 120 FPS keep the same attack window.
+func tick_flight(delta: float) -> void:
 	if not flying:
 		return
 	if _done:

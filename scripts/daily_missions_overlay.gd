@@ -92,13 +92,17 @@ const SCREEN_DESC := [
 const SCREEN_TRACK := [
 	Rect2(254, 768, 260, 26),
 	Rect2(254, 928, 260, 26),
-	Rect2(254, 1086, 260, 26),
+	# The bottom capsule ends sooner than the two above it.
+	Rect2(254, 1086, 248, 26),
 ]
+# Gap between the painted progress capsule and the reward plate, inset 8px
+# from both. One height on every row so a longer value does not jump or clip.
 const SCREEN_COUNT := [
-	Rect2(528, 764, 108, 32),
-	Rect2(528, 924, 108, 32),
-	Rect2(528, 1082, 108, 32),
+	Rect2(524, 767, 132, 28),
+	Rect2(522, 926, 123, 28),
+	Rect2(514, 1084, 131, 28),
 ]
+const SCREEN_COUNT_H := 19.0
 # Number, then the coin. One size for +5, +10, +20, and the +25 bonus.
 const REWARD_TEXT_H := 42.0
 const REWARD_COIN_H := 34.0
@@ -819,7 +823,13 @@ func _build_row(index: int) -> void:
 	pill.visible = false
 	_host.add_child(pill)
 	var counter := SpriteTextScript.new()
-	counter.configure("0/0", _count[index].size.y * 0.78, _count[index].size, HORIZONTAL_ALIGNMENT_CENTER, false, true)
+	var count_box: Rect2 = _count[index]
+	var count_h: float = count_box.size.y * 0.78
+	var clip_count := true
+	if _screen:
+		count_h = SCREEN_COUNT_H
+		clip_count = false
+	counter.configure("0/0", count_h, count_box.size, HORIZONTAL_ALIGNMENT_CENTER, false, clip_count)
 	counter.position = _count[index].position
 	_host.add_child(counter)
 	_counters.append(counter)

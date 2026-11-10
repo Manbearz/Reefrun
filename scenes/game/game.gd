@@ -121,6 +121,7 @@ var _wipe_new_best := false
 var _coin_reward_claimed := false
 var _reward_request_active := false
 var _coin_offer_open := false
+var _offer_nudge_token := 0
 # 0 means this offer is not eligible for a reward. A new show replaces it.
 # Close keeps the id so the same show can still pay. Abandon, failure, a new
 # offer, and a completed grant clear it.
@@ -790,11 +791,9 @@ func _process(delta: float) -> void:
 		world_scroll += RR.PIPE_SPEED * delta
 	if started and not finished and not paused and not dive_hold:
 		visual_scroll += RR.PIPE_SPEED * delta
-		if _harpoon_beat >= 2:
+		if _harpoon_beat == 2:
 			for spear in _harpoons:
-				spear.tick(delta)
-			if _harpoon_beat == 2:
-				_warn_t -= delta
+				spear.tick_warn(delta)
 	if paused:
 		return
 	course_draw.position.x = -visual_scroll
@@ -1025,6 +1024,7 @@ func _on_player_died() -> void:
 		_synced_state = _events.state
 		_halt_dive()
 	Sfx.play_death(-10.0)
+	RewardedAds.mark_timing("death")
 	if not _freeze_player_rank():
 		return
 	var rank := _final_rank
@@ -1040,6 +1040,7 @@ func _on_player_died() -> void:
 
 
 func _after_death(rank: int, remaining: int) -> void:
+	RewardedAds.mark_timing("death_animation_done")
 	if overlay and is_instance_valid(overlay):
 		return
 	_over_rank = rank
@@ -1091,6 +1092,7 @@ func _clear_overlay() -> void:
 
 
 func _show_coin_ad() -> void:
+	RewardedAds.mark_timing("offer_requested")
 	finished = true
 	_invalidate_reward_session()
 	_coin_offer_open = true
@@ -1128,9 +1130,23 @@ func _show_coin_ad() -> void:
 	_coin_ad_note.position = Vector2(24, RR.VIEW_H - 70)
 	_coin_ad_note.configure("", 16, Vector2(RR.VIEW_W - 48, 28), HORIZONTAL_ALIGNMENT_CENTER)
 	overlay.add_child(_coin_ad_note)
-	RewardedAds.nudge_offer_load()
 	_apply_offer_phase()
 	_set_mission_presentation("aside")
+	RewardedAds.mark_timing("offer_visible")
+	_schedule_offer_load()
+
+
+func _schedule_offer_load() -> void:
+	# The card is already in the tree. Start any new ad request on the next
+	# frame so the Mobile Ads call cannot stall the first painted overlay.
+	_offer_nudge_token += 1
+	var token := _offer_nudge_token
+	get_tree().process_frame.connect(func() -> void:
+		if not is_instance_valid(self) or token != _offer_nudge_token or not _coin_offer_open:
+			return
+		RewardedAds.mark_timing("offer_load_nudge")
+		RewardedAds.nudge_offer_load()
+	, CONNECT_ONE_SHOT)
 
 
 func _coin_ad_hotspot(origin: Vector2, scale: float, src: Rect2, pressed: Callable) -> Button:
@@ -1196,6 +1212,7 @@ func _watch_coin_ad() -> void:
 func _finish_coin_ad() -> void:
 	if _coin_reward_claimed:
 		return
+	_offer_nudge_token += 1
 	_coin_reward_claimed = true
 	_reward_request_active = false
 	_coin_offer_open = false
@@ -1211,6 +1228,7 @@ func _finish_coin_ad() -> void:
 
 
 func _abandon_coin_offer() -> void:
+	_offer_nudge_token += 1
 	_coin_offer_open = false
 	_reward_request_active = false
 	_invalidate_reward_session()
@@ -1241,20 +1259,14 @@ func _apply_offer_phase() -> void:
 		if _coin_ad_watch:
 			_coin_ad_watch.disabled = false
 		_set_coin_ad_note("")
+		RewardedAds.mark_timing("checkmark_enabled")
 		return
 	if _coin_ad_watch:
 		_coin_ad_watch.disabled = true
-	if phase == "loading":
-		_set_coin_ad_note(_offer_status_note("AD LOADING"))
-		return
-	_set_coin_ad_note(_offer_status_note("NO AD AVAILABLE"))
-
-
-func _offer_status_note(label: String) -> String:
-	var code := RewardedAds.offer_failure_code()
-	if code.is_empty():
-		return label
-	return "%s %s" % [label, code]
+	var notice := RewardedAds.offer_status_text()
+	if notice.is_empty():
+		notice = "AD LOADING" if phase == "loading" else "NO AD AVAILABLE"
+	_set_coin_ad_note(notice)
 
 
 func _on_reward_availability_changed() -> void:
@@ -2022,7 +2034,14 @@ func _pipes_ahead() -> bool:
 	return false
 
 
-func _tick_harpoons(_delta: float) -> void:
+func _tick_harpoons(delta: float) -> void:
+	# Warning and flight use this physics step. The render frame only pulses
+	# the warning graphic, so a faster frame rate cannot fire an earlier shot.
+	if _harpoon_beat == 2:
+		_warn_t = maxf(_warn_t - delta, 0.0)
+	elif _harpoon_beat >= 3:
+		for spear in _harpoons:
+			spear.tick_flight(delta)
 	if _harpoon_beat == 1:
 		if not _pipes_ahead():
 			_harpoon_round = 0
@@ -2276,7 +2295,9 @@ func _events_on() -> bool:
 
 
 func _setup_deep_dive() -> void:
-	# Unlimited only. Daily Challenge keeps RR.HARPOON_EVERY and does not dive.
+	# Ranked Daily and Unlimited share harpoons, Deep Dives, and this field.
+	# The dive textures start loading here and finish in the background before
+	# the first dive. Practice runs leave the event system off.
 	if not GameplayEvents.applies_to(GameSession.match_mode, GameSession.practice_daily):
 		return
 	_events = GameplayEvents.new()
@@ -2490,10 +2511,8 @@ func _enter_dive_play() -> void:
 		_motion.reset(player.position.x)
 		player.hold_dive(1.0)
 	if _dive_field:
-		var seed := GameSession.course_seed
-		if seed == 0:
-			seed = 1
-		_dive_field.start(maxi(_events.dive_number, 1), seed + _events.dive_number * 997)
+		var dive_n := maxi(_events.dive_number, 1)
+		_dive_field.start(dive_n, CourseBuilderScript.dive_seed(GameSession.course_seed, dive_n))
 	if _mission_track:
 		_mission_dives_entered += 1
 

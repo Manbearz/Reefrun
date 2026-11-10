@@ -157,8 +157,10 @@ func _attempt_survives_clock() -> bool:
 	var chosen := DailyChallengeScript.choose_for_new_match(challenge, as_of, as_of, _anchor(as_of, 0))
 	return (
 		bool(first.get("claimed", false))
-		and bool(again.get("already_used", false))
-		and int(again.get("attempt_count", 0)) == 1
+		and bool(again.get("claimed", false))
+		and str(again.get("challenge_id", "")) == str(first.get("challenge_id", ""))
+		and int(again.get("attempts_used", -1)) == 1
+		and int(again.get("attempt_count", 0)) == 2
 		and DailyChallengeScript.may_submit(chosen)
 		and str(chosen.get("challenge_date", "")) == "2026-10-20"
 	)
@@ -194,9 +196,9 @@ func _same_identity() -> bool:
 	var other: Dictionary = DailyAttemptScript.claim(store, "other-player", "key-9", challenge, "")
 	return (
 		bool(first.get("claimed", false))
-		and bool(replay.get("already_used", false))
-		and not bool(replay.get("claimed", false))
-		and int(replay.get("attempt_count", 0)) == 1
+		and bool(replay.get("claimed", false))
+		and int(replay.get("attempts_used", -1)) == 1
+		and int(replay.get("attempt_count", 0)) == 2
 		and bool(other.get("claimed", false))
 	)
 
@@ -260,7 +262,8 @@ func _simultaneous_attempts() -> bool:
 	var repeat: Dictionary = DailyAttemptScript.start(store, "player-a", str(first.get("attempt_id", "")))
 	return (
 		bool(first.get("claimed", false))
-		and bool(second.get("already_used", false))
+		and bool(second.get("claimed", false))
+		and str(second.get("attempt_id", "")) == str(first.get("attempt_id", ""))
 		and int(second.get("attempt_count", 0)) == 1
 		and bool(started.get("started", false))
 		and bool(repeat.get("already_started", false))

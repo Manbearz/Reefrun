@@ -1,6 +1,8 @@
 class_name MockRewardedAdProvider
 extends RewardedAdProvider
 
+signal availability_changed
+
 enum Outcome {
 	SUCCESS,
 	CLOSED_NO_REWARD,
@@ -21,6 +23,8 @@ var _scripted := false
 var _settled := false
 var _panel: CanvasLayer
 var _live_session := 0
+var _forced_phase := ""
+var _forced_status := ""
 
 
 func is_available() -> bool:
@@ -29,6 +33,24 @@ func is_available() -> bool:
 
 func is_show_active() -> bool:
 	return show_active
+
+
+func offer_phase() -> String:
+	if not _forced_phase.is_empty():
+		return _forced_phase
+	if is_available():
+		return "ready"
+	return "hidden"
+
+
+func offer_status_text() -> String:
+	return _forced_status
+
+
+func set_offer_state(phase: String, status: String) -> void:
+	_forced_phase = phase
+	_forced_status = status
+	availability_changed.emit()
 
 
 func prepare_interactive() -> void:

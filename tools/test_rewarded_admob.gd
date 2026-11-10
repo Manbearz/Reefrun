@@ -52,6 +52,7 @@ func _run() -> void:
 	_test_mobile_guards()
 	_test_platforms()
 	await _test_ui_notes(ads)
+	await _test_offer_enables_after_load(ads)
 	_check("network_blocked", _live_http == 0, "live_completions=%d blocked_calls=%d" % [_live_http, _dead.calls if _dead != null else -1])
 	print("[admob-test] scenarios=%d passed=%d failed=%d warnings=%d" % [_passed + _failed, _passed, _failed, _warnings.size()])
 	for warning in _warnings:
@@ -438,9 +439,9 @@ func _test_platforms() -> void:
 	var project := FileAccess.get_file_as_string("res://project.godot")
 	_check("platforms_share_mobile_provider", ios.contains("extends MobileRewardedAds") and android.contains("extends MobileRewardedAds"))
 	_check("desktop_stays_on_test", AdCfg.monetization_mode() == "test" and not AdCfg.is_production_ads())
-	_check("packed_ios_mode_is_production", AdCfg.mode_for_platform("ios") == "production")
+	_check("packed_ios_mode_is_test", AdCfg.mode_for_platform("ios") == "test")
 	_check("packed_android_mode_is_test", AdCfg.mode_for_platform("android") == "test")
-	_check("packed_ios_unit_is_live", AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios")) == AdCfg.IOS_REWARDED_UNIT_ID)
+	_check("packed_ios_unit_is_google_test", AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios")) == AdCfg.IOS_TEST_REWARDED_UNIT_ID and AdCfg.is_google_test_rewarded_unit(AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios"))) and AdCfg.IOS_REWARDED_UNIT_ID != AdCfg.IOS_TEST_REWARDED_UNIT_ID)
 	_check("packed_android_unit_is_google_test", AdCfg.rewarded_unit_for("android", AdCfg.mode_for_platform("android")) == AdCfg.ANDROID_TEST_REWARDED_UNIT_ID and AdCfg.is_google_test_rewarded_unit(AdCfg.rewarded_unit_for("android", AdCfg.mode_for_platform("android"))))
 	_check("android_test_unit", AdCfg.rewarded_unit_for("android", "test") == AdCfg.ANDROID_TEST_REWARDED_UNIT_ID)
 	_check("ios_test_unit", AdCfg.rewarded_unit_for("ios", "test") == AdCfg.IOS_TEST_REWARDED_UNIT_ID)
@@ -456,7 +457,7 @@ func _test_platforms() -> void:
 	_check("consent_missing_plugin_blocks", mobile_source.contains("consent plugin is missing. Ads will not be requested."))
 	_check("privacy_options_api", mobile_source.contains("func show_privacy_options") and mobile_source.contains("PrivacyOptionsRequirementStatus.REQUIRED"))
 	_test_att_policy(mobile_source)
-	_warn("iOS and Android use one GDScript provider. The native PoingGodotAdMob singletons are not in this Windows run, so load, show, consent forms, and real callbacks were not executed. No ad request was made. The packed iOS mode selects the live iOS unit. The packed Android mode stays on Google's test unit.")
+	_warn("iOS and Android use one GDScript provider. The native PoingGodotAdMob singletons are not in this Windows run, so load, show, consent forms, and real callbacks were not executed. No ad request was made. The packed iOS mode selects Google's iOS test rewarded unit. The production iOS unit is unchanged and is not requested. The packed Android mode stays on Google's test unit.")
 	_warn("Headless mode cannot confirm the offer artwork's spacing. The Yes and No hotspots, the failure note, and the post-run buttons were exercised. A phone screenshot is still needed for alignment.")
 
 
@@ -486,11 +487,17 @@ func _test_att_policy(mobile_source: String) -> void:
 	_check("offer_retries_after_network_error", Mobile.classify_offer(true, true, false, true, false, true, false, 1, true, true) == "loading")
 	_check("offer_att_denied_still_loads", Mobile.classify_offer(true, true, false, true, false, true, true, 0, true) == "loading")
 	_check("offer_hidden_without_mobile_unit", Mobile.classify_offer(false, false, false, true, false, false, false, 0, false) == "hidden")
-	_check("no_fill_error_is_not_personal", Mobile.describe_load_error(_load_error_stub()).contains("code=3") and Mobile.describe_load_error(_load_error_stub()).contains("kind=no_fill") and not Mobile.describe_load_error(_load_error_stub()).contains("idfa-secret"))
-	_check("network_error_kind", Mobile.load_failure_kind(2) == "network" and Mobile.load_failure_kind(1) == "invalid_request" and Mobile.load_failure_kind(0) == "internal")
+	_check("no_fill_error_is_not_personal", Mobile.describe_load_error(_load_error_stub()).contains("code=1") and Mobile.describe_load_error(_load_error_stub()).contains("kind=no_fill") and not Mobile.describe_load_error(_load_error_stub()).contains("idfa-secret"))
+	_check("ios_error_map", Mobile.load_failure_kind(0, "com.google.admob") == "invalid_request" and Mobile.load_failure_kind(1, "com.google.admob") == "no_fill" and Mobile.load_failure_kind(2, "com.google.admob") == "network" and Mobile.load_failure_kind(3, "com.google.admob") == "server")
+	_check("other_domain_keeps_ios_map_unused", Mobile.load_failure_kind(1, "com.google.android.gms.ads") == "other" and Mobile.load_failure_kind(0, "") == "other")
+	_check("no_fill_note_is_not_loaded", Mobile.status_text("loading", "no_fill", false) == "NO FILL" and Mobile.status_text("loading", "no_fill", true) == "AD LOADING" and Mobile.status_text("ready", "no_fill", false) == "")
 	_check("retry_backoff_is_bounded", Mobile.retry_delay_for_failure(1) == 8.0 and Mobile.retry_delay_for_failure(2) == 16.0 and Mobile.retry_delay_for_failure(8) == 30.0)
+	var AdsScript = load("res://autoload/rewarded_ads.gd")
+	_check("timing_elapsed_is_monotonic", AdsScript.elapsed_usec(1000, 1600) == 600 and AdsScript.elapsed_usec(1600, 1000) == 0)
 	_check("consent_error_keeps_code", Mobile.describe_form_error(null).contains("code=unknown"))
 	var game_source := FileAccess.get_file_as_string("res://scenes/game/game.gd")
+	var show := game_source.substr(game_source.find("func _show_coin_ad"), 4000)
+	_check("offer_paints_before_ad_request", show.find("offer_visible") != -1 and show.find("offer_visible") < show.find("nudge_offer_load") and game_source.contains("create_timer(0.85)"))
 	_check("wiped_out_keeps_offer_while_loading", game_source.contains("offer_phase() != \"hidden\"") and game_source.contains("AD LOADING") and game_source.contains("NO AD AVAILABLE"))
 	var preset := FileAccess.get_file_as_string("res://export_presets.cfg")
 	var ios_plugin := FileAccess.get_file_as_string("res://addons/admob/ios/bin/ads/poing_godot_admob_ads.gd")
@@ -514,6 +521,34 @@ func _test_ui_notes(ads: Node) -> void:
 	_check("ui_failure_restores_yes", game.overlay.visible and not game._coin_ad_watch.disabled and _note(game) == "NO AD AVAILABLE")
 	game._coin_ad_watch.pressed.emit()
 	_check("ui_retry_after_failure_keeps_base", ads.mock_show_count() == 2 and int(session.coins) == 1, "shows=%d wallet=%d" % [ads.mock_show_count(), int(session.coins)])
+	await _drop(game)
+	session.coins = 0
+	session._save()
+
+
+func _test_offer_enables_after_load(ads: Node) -> void:
+	var session = _session()
+	session.coins = 0
+	session.add_coins(4)
+	var game := _boot()
+	ads.set_mock_outcome(Mock.Outcome.SUCCESS, false, 0.0)
+	ads.set_mock_offer_state("loading", "NO FILL")
+	_offer(game, 4)
+	_check("visible_offer_shows_no_fill", game._coin_offer_open and game._coin_ad_watch.disabled and _note(game) == "NO FILL", _note(game))
+	var card: Node = game.overlay
+	var started := Time.get_ticks_usec()
+	ads.set_mock_offer_state("loading", "AD LOADING")
+	await process_frame
+	_check("visible_offer_stays_loading", game.overlay == card and game._coin_ad_watch.disabled and _note(game) == "AD LOADING" and Time.get_ticks_usec() - started < 200000, _note(game))
+	var before := int(session.coins)
+	ads.set_mock_offer_state("ready", "")
+	await process_frame
+	_check("late_load_enables_checkmark", not game._coin_ad_watch.disabled and _note(game) == "" and int(session.coins) == before, _note(game))
+	game._coin_ad_watch.pressed.emit()
+	await process_frame
+	await process_frame
+	_check("late_load_show_pays_once", ads.mock_show_count() == 1 and int(session.coins) == 8 and game._coin_reward_claimed, "wallet=%d shows=%d" % [int(session.coins), ads.mock_show_count()])
+	ads.set_mock_offer_state("", "")
 	await _drop(game)
 	session.coins = 0
 	session._save()
@@ -547,7 +582,7 @@ class DeadNet:
 
 func _load_error_stub() -> Dictionary:
 	return {
-		"code": 3,
+		"code": 1,
 		"domain": "com.google.admob",
 		"message": "No ad to show.",
 		"cause": null,

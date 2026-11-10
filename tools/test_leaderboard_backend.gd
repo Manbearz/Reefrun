@@ -674,16 +674,17 @@ func _test_attempts(backend) -> void:
 		str(backend.daily_submit_error) == ""
 		and _joined(_shown(backend, "daily")) == "REEF 15"
 		and mock.finalized_count(PLAYER_A) == 1
-		and bool(bypass.get("already_used", false))
-		and not bool(bypass.get("ok", true))
-		and mock.attempt_count(PLAYER_A) == 1,
+		and mock.started_count(PLAYER_A) == 1
+		and bool(bypass.get("ok", false))
+		and int(bypass.get("attempts_remaining", -1)) == 2
+		and mock.attempt_count(PLAYER_A) == 2,
 		"bypass=%s attempts=%d shown=%s error=%s" % [bypass, mock.attempt_count(PLAYER_A), _shown(backend, "daily"), backend.daily_submit_error]
 	)
 	_install(backend, TOKEN_B, PLAYER_B)
 	var other: Dictionary = await backend.claim_daily_attempt()
 	_check(
 		"attempt_other_player_independent",
-		bool(other.get("ok", false)) and mock.attempt_count(PLAYER_B) == 1 and mock.attempt_count(PLAYER_A) == 1,
+		bool(other.get("ok", false)) and mock.attempt_count(PLAYER_B) == 1 and mock.attempt_count(PLAYER_A) == 2,
 		str(other)
 	)
 	_install(backend, TOKEN_A, PLAYER_A)
@@ -693,7 +694,7 @@ func _test_attempts(backend) -> void:
 		"attempt_available_next_eastern_day",
 		bool(tomorrow.get("ok", false))
 		and str(tomorrow.get("challenge", {}).get("challenge_date", "")) == "2026-10-13"
-		and mock.attempt_count(PLAYER_A) == 2,
+		and mock.attempt_count(PLAYER_A) == 3,
 		str(tomorrow.get("challenge", {}))
 	)
 	await _reset(backend)
@@ -1340,6 +1341,13 @@ class MockServer extends RefCounted:
 				n += 1
 		return n
 
+	func started_count(uid: String) -> int:
+		var n := 0
+		for row in attempts:
+			if str(row.get("player_id", "")) == uid and bool(row.get("started", false)):
+				n += 1
+		return n
+
 	func attempt_count(uid: String) -> int:
 		var n := 0
 		for row in attempts:
@@ -1477,36 +1485,49 @@ class MockServer extends RefCounted:
 			return _err(400, "missing idempotency key")
 		var today := _publish()
 		var cid := str(today.get("challenge_id", ""))
-		var existing := _find_player_challenge(uid, cid)
+		var mine := _rows_for(uid, cid)
+		var used := _started_rows(mine)
+		var remaining := maxi(0, 3 - used)
+		var same := _find_key(mine, key)
 		var owned := false
 		var replay := false
 		var finalized := false
 		var attempt_id := ""
-		if existing.is_empty():
-			attempt_id = "00000000-0000-4000-8000-%012d" % attempts.size()
-			attempts.append({
-				"attempt_id": attempt_id,
-				"player_id": uid,
-				"challenge_id": cid,
-				"idempotency_key": key,
-				"score": null,
-				"started": false,
-				"finalized": false,
-			})
-			owned = true
-		else:
-			replay = str(existing.get("idempotency_key", "")) == key
-			finalized = bool(existing.get("finalized", false))
-			var started := bool(existing.get("started", false))
-			owned = replay and not started and not finalized
+		if not same.is_empty():
+			replay = true
+			finalized = bool(same.get("finalized", false))
+			owned = not bool(same.get("started", false)) and not finalized
 			if owned:
-				attempt_id = str(existing.get("attempt_id", ""))
+				attempt_id = str(same.get("attempt_id", ""))
+		elif used >= 3:
+			owned = false
+		else:
+			var pending := _pending_row(mine)
+			if not pending.is_empty():
+				pending["idempotency_key"] = key
+				owned = true
+				attempt_id = str(pending.get("attempt_id", ""))
+			else:
+				attempt_id = "00000000-0000-4000-8000-%012d" % attempts.size()
+				attempts.append({
+					"attempt_id": attempt_id,
+					"player_id": uid,
+					"challenge_id": cid,
+					"idempotency_key": key,
+					"score": null,
+					"started": false,
+					"finalized": false,
+				})
+				owned = true
 		var row := today.duplicate(true)
 		row["attempt_id"] = attempt_id if owned else null
 		row["claimed"] = owned
 		row["already_used"] = not owned
 		row["idempotent_replay"] = replay
 		row["finalized"] = finalized
+		row["attempts_used"] = used
+		row["attempts_remaining"] = remaining
+		row["best_score"] = _daily_best(uid, cid)
 		return _ok([row])
 
 	func _status(uid: String, key: String) -> Dictionary:
@@ -1514,17 +1535,21 @@ class MockServer extends RefCounted:
 			return _err(401, "not authenticated")
 		var today := _publish()
 		var cid := str(today.get("challenge_id", ""))
-		var existing := _find_player_challenge(uid, cid)
+		var mine := _rows_for(uid, cid)
+		var used := _started_rows(mine)
+		var pending := _pending_row(mine)
 		var recoverable: bool = (
-			not existing.is_empty()
+			not pending.is_empty()
 			and key != ""
-			and str(existing.get("idempotency_key", "")) == key
-			and not bool(existing.get("started", false))
-			and not bool(existing.get("finalized", false))
+			and str(pending.get("idempotency_key", "")) == key
 		)
+		var remaining := maxi(0, 3 - used)
 		var row := today.duplicate(true)
-		row["attempted"] = not existing.is_empty() and not recoverable
+		row["attempted"] = used >= 1 and not recoverable
 		row["recoverable"] = recoverable
+		row["attempts_used"] = used
+		row["attempts_remaining"] = remaining
+		row["best_score"] = _daily_best(uid, cid)
 		return _ok([row])
 
 	func _start(uid: String, attempt_id: String) -> Dictionary:
@@ -1535,10 +1560,33 @@ class MockServer extends RefCounted:
 		var row := _find_attempt(uid, attempt_id)
 		if row.is_empty():
 			return _err(400, "attempt not found")
+		var mine := _rows_for(uid, str(row.get("challenge_id", "")))
+		var used := _started_rows(mine)
 		if bool(row.get("started", false)) or bool(row.get("finalized", false)):
-			return _ok([{"attempt_id": attempt_id, "started": false, "already_started": true}])
+			return _ok([{
+				"attempt_id": attempt_id,
+				"started": false,
+				"already_started": true,
+				"attempts_used": used,
+				"attempts_remaining": maxi(0, 3 - used),
+			}])
+		if used >= 3:
+			return _ok([{
+				"attempt_id": attempt_id,
+				"started": false,
+				"already_started": false,
+				"attempts_used": used,
+				"attempts_remaining": 0,
+			}])
 		row["started"] = true
-		return _ok([{"attempt_id": attempt_id, "started": true, "already_started": false}])
+		used += 1
+		return _ok([{
+			"attempt_id": attempt_id,
+			"started": true,
+			"already_started": false,
+			"attempts_used": used,
+			"attempts_remaining": maxi(0, 3 - used),
+		}])
 
 	func _finalize(uid: String, attempt_id: String, score: int, display_name: String) -> Dictionary:
 		if uid == "":
@@ -1564,7 +1612,14 @@ class MockServer extends RefCounted:
 		if score > 0:
 			var challenge_id := str(row.get("challenge_id", ""))
 			_upsert(uid, _clean(display_name), score, "daily", _date_of_challenge(challenge_id), challenge_id)
-		return _ok([{"attempt_id": attempt_id, "score": score, "accepted": true, "duplicate": false}])
+		var best := _daily_best(uid, str(row.get("challenge_id", "")))
+		return _ok([{
+			"attempt_id": attempt_id,
+			"score": score,
+			"accepted": true,
+			"duplicate": false,
+			"best_score": best,
+		}])
 
 	func _submit(uid: String, score: int, display_name: String) -> Dictionary:
 		if uid == "":
@@ -1692,6 +1747,43 @@ class MockServer extends RefCounted:
 			"created_at": tick,
 		})
 		tick += 1
+
+	func _rows_for(uid: String, challenge_id: String) -> Array:
+		var found: Array = []
+		for row in attempts:
+			if str(row.get("player_id", "")) == uid and str(row.get("challenge_id", "")) == challenge_id:
+				found.append(row)
+		return found
+
+	func _started_rows(rows: Array) -> int:
+		var n := 0
+		for row in rows:
+			if bool(row.get("started", false)):
+				n += 1
+		return n
+
+	func _pending_row(rows: Array) -> Dictionary:
+		for row in rows:
+			if not bool(row.get("started", false)) and not bool(row.get("finalized", false)):
+				return row
+		return {}
+
+	func _find_key(rows: Array, key: String) -> Dictionary:
+		for row in rows:
+			if str(row.get("idempotency_key", "")) == key:
+				return row
+		return {}
+
+	func _daily_best(uid: String, challenge_id: String) -> int:
+		var day := _date_of_challenge(challenge_id)
+		var best := 0
+		for row in scores:
+			if str(row.get("player_id", "")) != uid or str(row.get("period", "")) != "daily":
+				continue
+			if str(row.get("period_key", "")) != day or str(row.get("challenge_id", "")) == "":
+				continue
+			best = maxi(best, int(row.get("score", 0)))
+		return best
 
 	func _find_player_challenge(uid: String, challenge_id: String) -> Dictionary:
 		for row in attempts:

@@ -21,6 +21,8 @@ var _load_failures := 0
 var _retry_pending := false
 var _retry_token := 0
 var _last_error_code := -1
+var _last_failure_kind := ""
+var _offer_notice := ""
 var _block_reason := ""
 var _consent_busy := false
 var _consent_resolved := false
@@ -28,6 +30,7 @@ var _ump_form_presented := false
 var _tracking_status := TrackingPolicy.Status.UNAVAILABLE
 var _offer_phase := ""
 const _RETRY_DELAYS: Array[float] = [8.0, 16.0, 30.0]
+const IOS_LOAD_ERROR_DOMAIN := "com.google.admob"
 # RewardedItem has no ad id. Each show stamps its own session, and a repeat
 # of that same session is ignored. Entries are not cleared when a new show
 # starts, so a late callback cannot be counted as the new show's reward.
@@ -117,18 +120,42 @@ static func classify_offer(native_mobile: bool, unit_ready: bool, ad_ready: bool
 	return "unavailable"
 
 
-static func load_failure_kind(code: int) -> String:
+static func load_failure_kind(code: int, domain: String = "") -> String:
+	# iOS GADErrorCode values belong only to com.google.admob. Android uses
+	# different numbers in a different domain, so an unknown domain stays unlabeled.
+	if domain.strip_edges() != IOS_LOAD_ERROR_DOMAIN:
+		return "other"
 	match code:
 		0:
-			return "internal"
-		1:
 			return "invalid_request"
+		1:
+			return "no_fill"
 		2:
 			return "network"
 		3:
-			return "no_fill"
+			return "server"
 		_:
 			return "other"
+
+
+static func status_text(phase: String, failure_kind: String, request_in_flight: bool) -> String:
+	if phase == "ready" or phase == "hidden":
+		return ""
+	if request_in_flight:
+		return "AD LOADING"
+	match failure_kind:
+		"no_fill":
+			return "NO FILL"
+		"network":
+			return "NO NETWORK"
+		"invalid_request":
+			return "INVALID REQUEST"
+		"server":
+			return "SERVER ERROR"
+		_:
+			if phase == "loading":
+				return "AD LOADING"
+			return "NO AD AVAILABLE"
 
 
 static func retry_delay_for_failure(load_failures: int) -> float:
@@ -179,7 +206,7 @@ static func describe_load_error(error) -> String:
 				var item_code := "" if item_error == null else str(_field(item_error, "code"))
 				var item_message := "" if item_error == null else str(_field(item_error, "message"))
 				adapter_errors += " source=%s adapter=%s code=%s message=%s" % [str(_field(item, "ad_source_name")), str(_field(item, "adapter_class_name")), item_code, item_message]
-	return "code=%s domain=%s message=%s kind=%s response_id=%s adapter=%s%s%s" % [code_value, domain, message, load_failure_kind(code), response_id, adapter, cause, adapter_errors]
+	return "code=%s domain=%s message=%s kind=%s response_id=%s adapter=%s%s%s" % [code_value, domain, message, load_failure_kind(code, domain), response_id, adapter, cause, adapter_errors]
 
 
 static func describe_form_error(error) -> String:
@@ -330,12 +357,18 @@ func offer_phase() -> String:
 	)
 
 
+func offer_status_text() -> String:
+	return status_text(offer_phase(), _last_failure_kind, _loading)
+
+
 func _note_offer_phase() -> void:
 	var phase := offer_phase()
-	if phase == _offer_phase:
+	var notice := offer_status_text()
+	if phase == _offer_phase and notice == _offer_notice:
 		return
 	_offer_phase = phase
-	_log("rewarded readiness=%s" % phase)
+	_offer_notice = notice
+	_log("rewarded readiness=%s notice=%s" % [phase, notice])
 	availability_changed.emit()
 
 
@@ -370,6 +403,8 @@ func _apply_consent_gate() -> void:
 	var consent_allows := _consent_allows_request()
 	if TrackingPolicy.ads_allowed(consent_allows, _tracking_status):
 		_block_reason = ""
+		if _last_failure_kind == "consent":
+			_last_failure_kind = ""
 		_ads_request_allowed = true
 		if OS.has_feature("ios") and not TrackingPolicy.idfa_allowed(_tracking_status):
 			_log("this process did not confirm IDFA access. Mobile Ads includes it only after Apple authorizes tracking.")
@@ -378,6 +413,7 @@ func _apply_consent_gate() -> void:
 		return
 	_ads_request_allowed = false
 	_block_reason = "consent"
+	_last_failure_kind = "consent"
 	_loading = false
 	_cancel_rewarded_retry()
 	if _showing:
@@ -397,6 +433,7 @@ func _start_sdk() -> void:
 		return
 	if not Engine.has_singleton("PoingGodotAdMob"):
 		_block_reason = "plugin"
+		_last_failure_kind = "plugin"
 		_log("Mobile Ads native plugin is missing. Rewarded ads stay unavailable.")
 		_note_offer_phase()
 		return
@@ -434,6 +471,7 @@ func _load_rewarded() -> void:
 		return
 	if not Engine.has_singleton("PoingGodotAdMobRewardedAd"):
 		_block_reason = "plugin"
+		_last_failure_kind = "plugin"
 		_log("rewarded ad plugin is missing. Rewarded ads stay unavailable.")
 		_note_offer_phase()
 		return
@@ -451,6 +489,7 @@ func _load_rewarded() -> void:
 	_loading = true
 	_retry_pending = false
 	_log("rewarded request started. unit=%s" % unit)
+	_mark_timing("ad_request_started")
 	_note_offer_phase()
 	_load_callback = RewardedAdLoadCallback.new()
 	_load_callback.on_ad_loaded = _on_ad_loaded
@@ -463,6 +502,7 @@ func _on_ad_loaded(ad: RewardedAd) -> void:
 	_loading = false
 	_load_failures = 0
 	_last_error_code = -1
+	_last_failure_kind = ""
 	_cancel_rewarded_retry()
 	_ad = ad
 	_fullscreen = FullScreenContentCallback.new()
@@ -478,15 +518,21 @@ func _on_ad_loaded(ad: RewardedAd) -> void:
 		_log("rewarded ad failed before show: %s" % message)
 	_ad.full_screen_content_callback = _fullscreen
 	_log("rewarded ad loaded")
+	_mark_timing("ad_load_callback")
 	_note_offer_phase()
 
 
 func _on_ad_failed_to_load(error: LoadAdError) -> void:
 	_loading = false
 	_load_failures += 1
-	if error != null and str(_field(error, "code")).is_valid_int():
-		_last_error_code = int(_field(error, "code"))
+	var domain := ""
+	if error != null:
+		domain = str(_field(error, "domain"))
+		if str(_field(error, "code")).is_valid_int():
+			_last_error_code = int(_field(error, "code"))
+	_last_failure_kind = load_failure_kind(_last_error_code, domain)
 	_log("rewarded load failed: %s" % describe_load_error(error))
+	_mark_timing("ad_load_callback")
 	_schedule_rewarded_retry()
 	_note_offer_phase()
 
@@ -546,6 +592,12 @@ func _release_ad() -> void:
 		_ad = null
 	_fullscreen = null
 	_reward_listener = null
+
+
+func _mark_timing(event: String) -> void:
+	var host = get_parent()
+	if host != null and host.has_method("mark_timing"):
+		host.mark_timing(event)
 
 
 func _log(message: String) -> void:

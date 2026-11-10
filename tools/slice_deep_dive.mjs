@@ -7,7 +7,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const srcPath = path.join(root, "assets", "source", "asset-sheet-2.png")
 const outDir = path.join(root, "assets", "deep_dive")
 
-// Tight bounds from an alpha flood fill of asset-sheet-2.png (1536x1024, real transparency).
+// Majority-label bounds from an alpha flood of asset-sheet-2.png (1536x1024).
+// count_* also keeps the detached shine bubbles beside that label and adds padding.
 const CROPS = [
 	["banner_deep_dive", 49, 18, 452, 192],
 	["banner_seconds", 555, 27, 419, 181],
@@ -58,6 +59,7 @@ const png = PNG.sync.read(fs.readFileSync(srcPath))
 fs.mkdirSync(outDir, { recursive: true })
 
 const labels = new Int32Array(png.width * png.height)
+const bounds = new Map()
 let nextLabel = 1
 
 function alphaAt(x, y) {
@@ -67,8 +69,15 @@ function alphaAt(x, y) {
 function flood(sx, sy, label) {
 	const stack = [[sx, sy]]
 	labels[sy * png.width + sx] = label
+	const box = { n: 0, minX: sx, minY: sy, maxX: sx, maxY: sy }
+	bounds.set(label, box)
 	while (stack.length) {
 		const [x, y] = stack.pop()
+		box.n++
+		if (x < box.minX) box.minX = x
+		if (y < box.minY) box.minY = y
+		if (x > box.maxX) box.maxX = x
+		if (y > box.maxY) box.maxY = y
 		const nbs = [
 			[x - 1, y],
 			[x + 1, y],
@@ -112,6 +121,7 @@ function cropOf(rect) {
 		}
 	}
 	if (!best) throw new Error(`empty crop ${name}`)
+	const keep = new Set([best])
 	let minX = png.width
 	let minY = png.height
 	let maxX = 0
@@ -125,16 +135,36 @@ function cropOf(rect) {
 			if (sy > maxY) maxY = sy
 		}
 	}
-	const tw = maxX - minX + 1
-	const th = maxY - minY + 1
+	// The countdown badges have detached shine bubbles. A one-label crop
+	// keeps the orb and drops those bubbles where a transparent gap splits them.
+	if (name.startsWith("count_")) {
+		for (const [label, box] of bounds) {
+			if (label === best) continue
+			const tall = box.maxY - box.minY > 40
+			const near =
+				box.maxX >= minX - 10 &&
+				box.minX <= maxX + 10 &&
+				box.maxY >= minY - 10 &&
+				box.minY <= maxY + 10
+			if (box.n < 20 || box.n > 900 || tall || !near) continue
+			keep.add(label)
+			if (box.minX < minX) minX = box.minX
+			if (box.minY < minY) minY = box.minY
+			if (box.maxX > maxX) maxX = box.maxX
+			if (box.maxY > maxY) maxY = box.maxY
+		}
+	}
+	const border = name.startsWith("count_") ? 6 : 0
+	const tw = maxX - minX + 1 + border * 2
+	const th = maxY - minY + 1 + border * 2
 	const out = new PNG({ width: tw, height: th })
-	for (let yy = 0; yy < th; yy++) {
-		for (let xx = 0; xx < tw; xx++) {
+	for (let yy = 0; yy < th - border * 2; yy++) {
+		for (let xx = 0; xx < tw - border * 2; xx++) {
 			const sx = minX + xx
 			const sy = minY + yy
-			if (labels[sy * png.width + sx] !== best) continue
+			if (!keep.has(labels[sy * png.width + sx])) continue
 			const src = (sy * png.width + sx) * 4
-			const dst = (yy * tw + xx) * 4
+			const dst = ((yy + border) * tw + (xx + border)) * 4
 			out.data[dst] = png.data[src]
 			out.data[dst + 1] = png.data[src + 1]
 			out.data[dst + 2] = png.data[src + 2]

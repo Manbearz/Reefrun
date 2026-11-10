@@ -13,7 +13,19 @@ const WebScript := preload("res://scripts/ads/web_rewarded_ads.gd")
 const IosScript := preload("res://scripts/ads/ios_rewarded_ads.gd")
 const AndroidScript := preload("res://scripts/ads/android_rewarded_ads.gd")
 
+var _timing_origin_usec := 0
 var _provider: RewardedAdProvider
+
+
+static func elapsed_usec(origin_usec: int, now_usec: int) -> int:
+	return maxi(now_usec - origin_usec, 0)
+
+
+func mark_timing(event: String) -> void:
+	var now := Time.get_ticks_usec()
+	if _timing_origin_usec <= 0 or event == "death":
+		_timing_origin_usec = now
+	print("[ReefRun ads] timing %s +%d us" % [event, elapsed_usec(_timing_origin_usec, now)])
 
 
 func _ready() -> void:
@@ -46,6 +58,17 @@ func offer_failure_code() -> String:
 	if _provider != null and _provider.has_method("offer_failure_code"):
 		return str(_provider.offer_failure_code())
 	return ""
+
+
+func offer_status_text() -> String:
+	if _provider != null and _provider.has_method("offer_status_text"):
+		return str(_provider.offer_status_text())
+	return ""
+
+
+func set_mock_offer_state(phase: String, status: String) -> void:
+	if _provider != null and _provider.has_method("set_offer_state"):
+		_provider.set_offer_state(phase, status)
 
 
 func nudge_offer_load() -> void:

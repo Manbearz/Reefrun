@@ -11,28 +11,32 @@ func _run() -> void:
 	var ok := true
 	ok = _check(Rules.FISH_RARITY.size() == Rules.FISH_COUNT, "fish rarity count") and ok
 	ok = _check(Rules.HAT_RARITY.size() == Rules.HAT_COUNT, "hat rarity count") and ok
+	ok = _check(Rules.FISH_TIER_PRICE == PackedInt32Array([100, 300, 1000]), "fish tier prices") and ok
+	ok = _check(Rules.HAT_TIER_PRICE == PackedInt32Array([100, 300, 1000]), "hat tier prices") and ok
 	var fish_counts := [0, 0, 0]
 	var hat_counts := [0, 0, 0]
 	for i in Rules.FISH_COUNT:
 		var price := Rules.fish_price(i)
+		var rarity := Rules.FISH_RARITY[i]
 		if i < Rules.FREE_FISH:
 			ok = _check(price == 0, "free fish %d" % i) and ok
 		else:
-			var rarity := Rules.FISH_RARITY[i]
 			fish_counts[rarity] += 1
-			var expected: int = [500, 1000, 2000][rarity]
-			ok = _check(price == expected, "fish %d price" % i) and ok
+			ok = _check(price == Rules.FISH_TIER_PRICE[rarity], "fish %d price" % i) and ok
 	for i in Rules.HAT_COUNT:
 		var rarity := Rules.HAT_RARITY[i]
 		hat_counts[rarity] += 1
-		var expected: int = [250, 500, 1000][rarity]
-		ok = _check(Rules.hat_price(i) == expected, "hat %d price" % i) and ok
+		ok = _check(Rules.hat_price(i) == Rules.HAT_TIER_PRICE[rarity], "hat %d price" % i) and ok
 	ok = _check(_prices_rise(Rules.fish_shop_order(), Rules.fish_price), "fish shop price order") and ok
 	var hats := Rules.hat_shop_order()
 	ok = _check(hats.size() == Rules.HAT_COUNT + 1 and hats[0] == -1, "hat shop keeps off first") and ok
 	ok = _check(_prices_rise(hats.slice(1), Rules.hat_price), "hat shop price order") and ok
 	ok = _check(_unlocked_lead(), "unlocked cosmetics lead the row") and ok
-	print("[shop] fish common=%d rare=%d legendary=%d" % [fish_counts[0], fish_counts[1], fish_counts[2]])
+	var fish_all := [0, 0, 0]
+	for rarity in Rules.FISH_RARITY:
+		fish_all[rarity] += 1
+	print("[shop] fish paid common=%d rare=%d legendary=%d" % [fish_counts[0], fish_counts[1], fish_counts[2]])
+	print("[shop] fish rarity common=%d rare=%d legendary=%d free=%d" % [fish_all[0], fish_all[1], fish_all[2], Rules.FREE_FISH])
 	print("[shop] hats common=%d rare=%d legendary=%d" % [hat_counts[0], hat_counts[1], hat_counts[2]])
 	print("[shop] ok=%s" % ok)
 	quit(0 if ok else 1)
@@ -42,9 +46,9 @@ func _unlocked_lead() -> bool:
 	var legendary_hat := -1
 	var cheap_hat := -1
 	for i in Rules.HAT_COUNT:
-		if legendary_hat < 0 and Rules.hat_price(i) == 1000:
+		if legendary_hat < 0 and Rules.hat_price(i) == Rules.HAT_TIER_PRICE[Rules.RARITY_LEGENDARY]:
 			legendary_hat = i
-		if cheap_hat < 0 and Rules.hat_price(i) == 250:
+		if cheap_hat < 0 and Rules.hat_price(i) == Rules.HAT_TIER_PRICE[Rules.RARITY_COMMON]:
 			cheap_hat = i
 	if legendary_hat < 0 or cheap_hat < 0:
 		return false
@@ -55,7 +59,7 @@ func _unlocked_lead() -> bool:
 		return false
 	var legendary_fish := -1
 	for i in range(Rules.FREE_FISH, Rules.FISH_COUNT):
-		if Rules.fish_price(i) == 2000:
+		if Rules.fish_price(i) == Rules.FISH_TIER_PRICE[Rules.RARITY_LEGENDARY]:
 			legendary_fish = i
 			break
 	if legendary_fish < 0:

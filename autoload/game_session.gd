@@ -23,6 +23,9 @@ var pending_finalizes: Array = []
 var pending_unlimited_score: int = 0
 var pending_unlimited_name: String = ""
 var pending_claim_key: String = ""
+var daily_attempt_challenge: String = ""
+var daily_attempt_used: int = 0
+var daily_attempt_resets_unix: int = 0
 var pending_referral_code: String = ""
 var pending_first_run: bool = false
 var share_run_synced: bool = false
@@ -729,6 +732,9 @@ func _load() -> void:
 	pending_unlimited_score = int(cfg.get_value("pending", "unlimited_score", 0))
 	pending_unlimited_name = str(cfg.get_value("pending", "unlimited_name", ""))
 	pending_claim_key = str(cfg.get_value("pending", "claim_key", "")).strip_edges()
+	daily_attempt_challenge = str(cfg.get_value("pending", "daily_challenge", "")).strip_edges()
+	daily_attempt_used = clampi(int(cfg.get_value("pending", "daily_used", 0)), 0, DailyAttemptScript.ATTEMPT_LIMIT)
+	daily_attempt_resets_unix = int(cfg.get_value("pending", "daily_resets", 0))
 	pending_referral_code = ReferralRulesScript.normalize_code(str(cfg.get_value("share", "pending_code", "")))
 	pending_first_run = bool(cfg.get_value("share", "pending_run", false))
 	share_run_synced = bool(cfg.get_value("share", "run_synced", false))
@@ -776,6 +782,9 @@ func _save() -> void:
 	cfg.set_value("pending", "unlimited_score", pending_unlimited_score)
 	cfg.set_value("pending", "unlimited_name", pending_unlimited_name)
 	cfg.set_value("pending", "claim_key", pending_claim_key)
+	cfg.set_value("pending", "daily_challenge", daily_attempt_challenge)
+	cfg.set_value("pending", "daily_used", daily_attempt_used)
+	cfg.set_value("pending", "daily_resets", daily_attempt_resets_unix)
 	cfg.set_value("share", "pending_code", pending_referral_code)
 	cfg.set_value("share", "pending_run", pending_first_run)
 	cfg.set_value("share", "run_synced", share_run_synced)
@@ -883,6 +892,27 @@ func clear_claim_key() -> void:
 		return
 	pending_claim_key = ""
 	_save()
+
+
+# Confirmed starts for one server challenge. The same challenge never gets a
+# life back. A different challenge id replaces the day. Practice does not write.
+func note_ranked_attempts(challenge_id: String, used: int, resets_unix: int = -1) -> void:
+	if DailyTestModeScript.enabled():
+		return
+	var cid := challenge_id.strip_edges()
+	if cid == "":
+		return
+	var next := clampi(used, 0, DailyAttemptScript.ATTEMPT_LIMIT)
+	if cid == daily_attempt_challenge and next < daily_attempt_used:
+		next = daily_attempt_used
+	var changed := cid != daily_attempt_challenge or next != daily_attempt_used
+	daily_attempt_challenge = cid
+	daily_attempt_used = next
+	if resets_unix >= 0 and resets_unix != daily_attempt_resets_unix:
+		daily_attempt_resets_unix = resets_unix
+		changed = true
+	if changed:
+		_save()
 
 
 func has_pending_finalize() -> bool:

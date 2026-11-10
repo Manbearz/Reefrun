@@ -39,6 +39,9 @@ const MODE_MISSIONS := Rect2(16, 1316, 784, 220)
 const MODE_BACK := Rect2(130, 1632, 520, 198)
 const MODE_NOTE := Rect2(90, 1148, 660, 52)
 const MODE_RESET_LINE := Rect2(90, 1250, 660, 28)
+const DAILY_FISH_SIZE := 56.0
+const DAILY_FISH_GAP := 12.0
+const DAILY_FISH_SHADER := "shader_type canvas_item;\nvoid fragment() {\n\tvec4 c = texture(TEXTURE, UV);\n\tfloat g = dot(c.rgb, vec3(0.299, 0.587, 0.114));\n\tCOLOR = vec4(vec3(g), c.a);\n}\n"
 const SWIPE_MIN := 48.0
 const ARROW_BOX := 96.0
 const CAROUSEL_SLIDE_SEC := 0.22
@@ -147,12 +150,17 @@ var _missions: DailyMissionsOverlay
 var _modes_return := false
 var _mode_token := 0
 var _mode_busy := false
+var _launching := false
 var _daily_locked := false
 var _status_course: Dictionary = {}
 var _daily_checking := false
 var _status_busy := false
 var _status_again := false
 var _daily_resets_unix := 0
+var _daily_lives := -1
+var _status_gen := 0
+var _daily_fish: Array[TextureRect] = []
+var _daily_fish_gray: ShaderMaterial
 
 
 func _ready() -> void:
@@ -1798,6 +1806,8 @@ func _build_mode_overlay() -> void:
 		btn.focus_mode = Control.FOCUS_NONE
 		_modes.add_child(btn)
 	_daily_button = daily
+	_daily_button.disabled = true
+	_build_daily_fish()
 	_mode_note = SpriteTextScript.new()
 	_mode_note.modulate = Palette.GOLD
 	_mode_note.visible = false
@@ -1855,6 +1865,7 @@ func _layout_mode_overlay() -> void:
 	_place_hotspot(_daily_button, MODE_DAILY)
 	_place_hotspot(_mission_button, MODE_MISSIONS)
 	_place_hotspot(_mode_back, MODE_BACK)
+	_layout_daily_fish()
 	_layout_mode_status()
 
 
@@ -1863,6 +1874,84 @@ func _place_hotspot(btn: Button, src: Rect2) -> void:
 		return
 	btn.position = _mode_origin + src.position * _mode_scale
 	btn.size = src.size * _mode_scale
+
+
+func daily_fish_slots() -> Array[Rect2]:
+	var slots: Array[Rect2] = []
+	var span := DAILY_FISH_SIZE * float(DailyAttemptScript.ATTEMPT_LIMIT) + DAILY_FISH_GAP * float(DailyAttemptScript.ATTEMPT_LIMIT - 1)
+	var left := MODE_DAILY.position.x + (MODE_DAILY.size.x - span) * 0.5
+	var top := MODE_DAILY.position.y - DAILY_FISH_SIZE * 0.35
+	for i in DailyAttemptScript.ATTEMPT_LIMIT:
+		slots.append(Rect2(left + float(i) * (DAILY_FISH_SIZE + DAILY_FISH_GAP), top, DAILY_FISH_SIZE, DAILY_FISH_SIZE))
+	return slots
+
+
+# The mode card can be stretched to cover a short screen. Fish stay square
+# and sit on the center of their art slot so the sprite is not distorted.
+func daily_fish_screen_rects(cover: Rect2) -> Array[Rect2]:
+	var scale := Vector2(cover.size.x / MODE_W, cover.size.y / MODE_H)
+	var side := DAILY_FISH_SIZE * minf(scale.x, scale.y)
+	var placed: Array[Rect2] = []
+	for slot in daily_fish_slots():
+		var center := cover.position + (slot.position + slot.size * 0.5) * scale
+		placed.append(Rect2(center - Vector2(side, side) * 0.5, Vector2(side, side)))
+	return placed
+
+
+func _build_daily_fish() -> void:
+	if _modes == null:
+		return
+	var shader := Shader.new()
+	shader.code = DAILY_FISH_SHADER
+	_daily_fish_gray = ShaderMaterial.new()
+	_daily_fish_gray.shader = shader
+	for i in DailyAttemptScript.ATTEMPT_LIMIT:
+		var icon := TextureRect.new()
+		icon.name = "DailyAttemptFish%d" % i
+		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		icon.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+		icon.z_index = 4
+		_modes.add_child(icon)
+		_daily_fish.append(icon)
+	_apply_attempt_fish(-1)
+
+
+func _layout_daily_fish() -> void:
+	if _daily_fish.is_empty():
+		return
+	var tex: Texture2D = null
+	var sprites := get_node_or_null("/root/Sprites")
+	if sprites and sprites.has_method("tex"):
+		var fish_id := "fish_blue"
+		if GameSession and GameSession.has_method("selected_fish"):
+			var picked := str(GameSession.selected_fish())
+			if picked != "":
+				fish_id = picked
+		tex = sprites.tex(fish_id)
+		if tex == null:
+			tex = sprites.tex("fish_blue")
+	var plate := Rect2(_mode_origin, Vector2(MODE_W, MODE_H) * _mode_scale)
+	var placed := daily_fish_screen_rects(plate)
+	for i in _daily_fish.size():
+		var icon := _daily_fish[i]
+		icon.position = placed[i].position
+		icon.size = placed[i].size
+		if tex:
+			icon.texture = tex
+
+
+func _apply_attempt_fish(remaining: int) -> void:
+	_daily_lives = remaining
+	for i in _daily_fish.size():
+		var icon := _daily_fish[i]
+		if DailyAttemptScript.fish_lit(i, remaining):
+			icon.material = null
+			icon.modulate = Color.WHITE
+		else:
+			icon.material = _daily_fish_gray
+			icon.modulate = Color.WHITE
 
 
 func _mode_cover() -> Panel:
@@ -1898,6 +1987,9 @@ func _mode_shows_locked() -> bool:
 func _apply_mode_art() -> void:
 	if _mode_card == null:
 		return
+	# mode_locked and mode_unlocked are the same full sheet. The daily button
+	# is already drawn locked on one and open on the other, so the card texture
+	# is replaced. A second copy is not stacked on top.
 	var tex := Sprites.tex("mode_locked" if _mode_shows_locked() else "mode_unlocked")
 	if tex:
 		_mode_card.texture = tex
@@ -1908,13 +2000,26 @@ func _open_modes() -> void:
 		return
 	_mode_busy = false
 	_modes.visible = true
-	if _daily_locked:
-		_show_daily_completed(_daily_resets_unix)
+	if _daily_locked or _saved_attempts_spent():
+		var resets := _daily_resets_unix
+		if resets <= 0:
+			resets = int(GameSession.daily_attempt_resets_unix)
+		_show_daily_completed(resets)
 	else:
 		_set_mode_note("")
 		_set_mode_reset("")
+		_hold_daily_until_status()
 	_layout_mode_overlay()
 	_refresh_daily_status()
+
+
+func _saved_attempts_spent() -> bool:
+	if DailyTestModeScript.enabled():
+		return false
+	return (
+		GameSession.daily_attempt_challenge.strip_edges() != ""
+		and GameSession.daily_attempt_used >= DailyAttemptScript.ATTEMPT_LIMIT
+	)
 
 
 func _close_modes() -> void:
@@ -1986,7 +2091,9 @@ func _show_daily_completed(resets_unix: int) -> void:
 		return
 	if _daily_button:
 		_daily_button.disabled = true
-		_daily_button.modulate = Color(1, 1, 1, 0.45)
+		_daily_button.modulate = Color.WHITE
+	_apply_attempt_fish(0)
+	_apply_mode_art()
 	_set_mode_note(DailyAttemptScript.COMPLETED_LABEL)
 	_set_mode_reset(_daily_reset_text(resets_unix))
 
@@ -1998,11 +2105,29 @@ func _clear_daily_lock() -> void:
 	if _daily_button:
 		_daily_button.disabled = false
 		_daily_button.modulate = Color.WHITE
+	_apply_mode_art()
 	if _modes and _modes.visible and not _mode_busy:
 		_set_mode_note("")
 		_set_mode_reset("")
 	if DailyTestModeScript.enabled():
 		_apply_daily_test_override()
+
+
+func _keep_daily_unavailable() -> void:
+	if _saved_attempts_spent():
+		_show_daily_completed(GameSession.daily_attempt_resets_unix if _daily_resets_unix <= 0 else _daily_resets_unix)
+		return
+	_hold_daily_until_status()
+	if _modes and _modes.visible and _daily_button and not _daily_locked:
+		_set_mode_note("DAILY UNAVAILABLE")
+
+
+func _hold_daily_until_status() -> void:
+	if DailyTestModeScript.enabled():
+		return
+	_apply_attempt_fish(-1)
+	if _daily_button and not _daily_locked:
+		_daily_button.disabled = true
 
 
 func _refresh_daily_status() -> void:
@@ -2014,37 +2139,62 @@ func _refresh_daily_status() -> void:
 	var backend := get_node_or_null("/root/Backend")
 	if backend == null or not backend.has_method("fetch_daily_attempt_status"):
 		print("[daily] status_ui skipped error=no_backend")
+		_keep_daily_unavailable()
 		return
 	if not backend.has_method("has_session") or not backend.has_session():
 		print("[daily] status_ui skipped error=no_session button_disabled=%s" % str(_daily_button != null and _daily_button.disabled))
+		_keep_daily_unavailable()
 		return
 	_status_busy = true
 	_daily_checking = true
+	_status_gen += 1
+	var gen := _status_gen
 	if _daily_button and not _daily_locked and not DailyTestModeScript.enabled():
 		_daily_button.disabled = true
 	var token := _mode_token
 	var status: Dictionary = await backend.fetch_daily_attempt_status()
 	_status_busy = false
+	if gen != _status_gen:
+		_daily_checking = false
+		return
 	if _status_again:
 		_status_again = false
 		_daily_checking = false
 		_refresh_daily_status()
 		return
-	if not is_inside_tree() or token != _mode_token or _modes == null or not _modes.visible:
+	if not is_inside_tree():
+		_daily_checking = false
+		return
+	var merged: Dictionary = DailyAttemptScript.merge_lives(
+		GameSession.daily_attempt_challenge,
+		GameSession.daily_attempt_used,
+		status
+	)
+	if bool(merged.get("store", false)):
+		GameSession.note_ranked_attempts(
+			str(merged.get("challenge_id", "")),
+			int(merged.get("used", 0)),
+			int(status.get("resets_at_unix", -1))
+		)
+	if token != _mode_token or _modes == null or not _modes.visible:
 		_daily_checking = false
 		return
 	var course: Variant = status.get("course", {})
 	if typeof(course) == TYPE_DICTIONARY and int(course.get("course_seed", 0)) != 0:
 		_status_course = course
-	if status.get("attempted", false):
-		_show_daily_completed(int(status.get("resets_at_unix", 0)))
-	elif status.get("ok", false):
+	var lives := int(merged.get("lives", -1))
+	if lives == 0:
+		_show_daily_completed(int(status.get("resets_at_unix", GameSession.daily_attempt_resets_unix)))
+	elif lives > 0:
 		_clear_daily_lock()
+		_apply_attempt_fish(lives)
 	else:
 		_daily_checking = false
-		if _daily_button and not _daily_locked and not DailyTestModeScript.enabled():
-			_daily_button.disabled = false
-			if int(status.get("status", 0)) == 404:
+		if _saved_attempts_spent():
+			_show_daily_completed(GameSession.daily_attempt_resets_unix)
+		else:
+			_hold_daily_until_status()
+			if _daily_button and not _daily_locked:
 				_set_mode_note("DAILY UNAVAILABLE")
 	if DailyTestModeScript.enabled():
 		_apply_daily_test_override()
@@ -2078,6 +2228,7 @@ func _apply_daily_test_override() -> void:
 	if _daily_button:
 		_daily_button.disabled = false
 		_daily_button.modulate = Color.WHITE
+	_apply_attempt_fish(DailyAttemptScript.ATTEMPT_LIMIT)
 	_set_mode_note("")
 	_set_mode_reset("")
 
@@ -2103,7 +2254,7 @@ func _start_practice_daily() -> void:
 		_set_mode_note("PRACTICE COURSE UNAVAILABLE")
 		return
 	print("[daily] practice seed=%d id=%s" % [GameSession.course_seed, GameSession.current_challenge_id()])
-	get_tree().change_scene_to_file.call_deferred("res://scenes/game/game.tscn")
+	await _open_game()
 
 
 func _choose_unlimited() -> void:
@@ -2141,7 +2292,7 @@ func _choose_daily() -> void:
 	if backend:
 		claim = await backend.claim_daily_attempt()
 	if not is_inside_tree() or token != _mode_token or _modes == null or not _modes.visible:
-		if claim.get("already_used", false):
+		if claim.get("already_used", false) and DailyAttemptScript.lives_from_claim(claim) <= 0:
 			_daily_locked = true
 			_daily_resets_unix = int(claim.get("resets_at_unix", 0))
 		_mode_busy = false
@@ -2153,8 +2304,15 @@ func _choose_daily() -> void:
 			str(bool(claim.get("already_used", false))),
 			str(claim.get("error", "")),
 		])
-		if claim.get("already_used", false):
+		if claim.get("already_used", false) and DailyAttemptScript.lives_from_claim(claim) <= 0:
 			_show_daily_completed(int(claim.get("resets_at_unix", 0)))
+		elif claim.get("already_used", false):
+			_apply_attempt_fish(DailyAttemptScript.lives_from_claim(claim))
+			if GameSession.has_method("clear_claim_key"):
+				GameSession.clear_claim_key()
+			if _daily_button:
+				_daily_button.disabled = false
+			_set_mode_note("")
 		elif int(claim.get("status", 0)) == 404:
 			_set_mode_note("DAILY UNAVAILABLE")
 		else:
@@ -2181,8 +2339,13 @@ func _choose_daily() -> void:
 			str(bool(started.get("already_started", false))),
 			str(started.get("error", "")),
 		])
-		if bool(started.get("already_started", false)):
+		if bool(started.get("already_started", false)) and DailyAttemptScript.lives_from_claim(started) <= 0:
 			_show_daily_completed(int(claim.get("resets_at_unix", 0)))
+		elif bool(started.get("already_started", false)):
+			_apply_attempt_fish(DailyAttemptScript.lives_from_claim(started))
+			if _daily_button:
+				_daily_button.disabled = false
+			_set_mode_note("")
 		elif int(started.get("status", 0)) == 404:
 			_set_mode_note("DAILY UNAVAILABLE")
 		else:
@@ -2192,6 +2355,24 @@ func _choose_daily() -> void:
 		str(challenge.get("attempt_id", "")),
 		int(challenge.get("course_seed", 0)),
 	])
+	if bool(started.get("attempts_counted", false)):
+		var merged: Dictionary = DailyAttemptScript.merge_lives(
+			GameSession.daily_attempt_challenge,
+			GameSession.daily_attempt_used,
+			{
+				"ok": true,
+				"attempts_counted": true,
+				"attempts_remaining": int(started.get("attempts_remaining", 0)),
+				"challenge_id": str(challenge.get("challenge_id", "")),
+			}
+		)
+		if bool(merged.get("store", false)):
+			GameSession.note_ranked_attempts(
+				str(merged.get("challenge_id", "")),
+				int(merged.get("used", 0)),
+				int(claim.get("resets_at_unix", -1))
+			)
+		_apply_attempt_fish(int(merged.get("lives", 0)))
 	_begin_claimed_game(challenge)
 
 
@@ -2204,11 +2385,23 @@ func _begin_claimed_game(challenge: Dictionary) -> void:
 	if _name_edit:
 		_on_name_changed(_name_edit.text)
 	GameSession.begin_claimed_daily(challenge)
-	get_tree().change_scene_to_file.call_deferred("res://scenes/game/game.tscn")
+	await _open_game()
 
 
 func _begin_game(mode: String) -> void:
 	if _name_edit:
 		_on_name_changed(_name_edit.text)
 	GameSession.start_match(mode)
+	await _open_game()
+
+
+func _open_game() -> void:
+	if _launching:
+		return
+	_launching = true
+	var sprites := get_node_or_null("/root/Sprites")
+	if sprites and sprites.has_method("await_gameplay"):
+		await sprites.await_gameplay()
+	if not is_inside_tree():
+		return
 	get_tree().change_scene_to_file.call_deferred("res://scenes/game/game.tscn")

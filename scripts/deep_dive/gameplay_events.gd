@@ -3,7 +3,7 @@ extends RefCounted
 
 signal state_changed(previous: int, current: int)
 
-# One special event at a time. Unlimited mode only.
+# One special event at a time. Ranked Daily and Unlimited share this schedule.
 # A stage that never gets its start signal must not hold the pipes forever.
 const CORRIDOR_LIMIT := 12.0
 const HARPOON_LIMIT := 20.0
@@ -42,7 +42,9 @@ var _corridor := false
 
 
 static func applies_to(mode: String, practice: bool) -> bool:
-	return mode == "unlimited" and not practice
+	if practice:
+		return false
+	return mode == "unlimited" or mode == "daily"
 
 
 func reset() -> void:

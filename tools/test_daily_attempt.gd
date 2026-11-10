@@ -18,8 +18,8 @@ func _initialize() -> void:
 func _run() -> void:
 	var ok := true
 	ok = _check("claim_succeeds", _test_claim_succeeds()) and ok
-	ok = _check("same_player_denied", _test_same_player_denied()) and ok
-	ok = _check("other_device_denied", _test_other_device_denied()) and ok
+	ok = _check("pending_claim_is_shared", _test_same_player_denied()) and ok
+	ok = _check("other_device_shares_pending", _test_other_device_denied()) and ok
 	ok = _check("other_player_allowed", _test_other_player_allowed()) and ok
 	ok = _check("lost_response_recovers", _test_lost_response()) and ok
 	ok = _check("status_does_not_claim", _test_status_does_not_claim()) and ok
@@ -72,16 +72,26 @@ func _test_claim_succeeds() -> bool:
 
 func _test_same_player_denied() -> bool:
 	var store := DailyAttemptScript.empty_store()
-	DailyAttemptScript.claim(store, "player-a", "key-a", _today())
+	var first: Dictionary = DailyAttemptScript.claim(store, "player-a", "key-a", _today())
 	var again: Dictionary = DailyAttemptScript.claim(store, "player-a", "key-b", _today())
-	return bool(again.get("already_used", false)) and not bool(again.get("claimed", false)) and int(again.get("attempt_count", 0)) == 1
+	return (
+		bool(again.get("claimed", false))
+		and not bool(again.get("already_used", true))
+		and str(again.get("attempt_id", "")) == str(first.get("attempt_id", ""))
+		and int(again.get("attempt_count", 0)) == 1
+		and int(again.get("attempts_remaining", 0)) == 3
+	)
 
 
 func _test_other_device_denied() -> bool:
 	var store := DailyAttemptScript.empty_store()
-	DailyAttemptScript.claim(store, "player-a", "phone-key", _today())
+	var phone: Dictionary = DailyAttemptScript.claim(store, "player-a", "phone-key", _today())
 	var tablet: Dictionary = DailyAttemptScript.claim(store, "player-a", "tablet-key", _today())
-	return bool(tablet.get("already_used", false)) and int(tablet.get("attempt_count", 0)) == 1
+	return (
+		bool(tablet.get("claimed", false))
+		and str(tablet.get("attempt_id", "")) == str(phone.get("attempt_id", ""))
+		and int(tablet.get("attempt_count", 0)) == 1
+	)
 
 
 func _test_other_player_allowed() -> bool:
@@ -119,7 +129,9 @@ func _test_recover_unplayed_claim() -> bool:
 	return (
 		bool(open_screen.get("recoverable", false))
 		and not bool(open_screen.get("attempted", true))
-		and bool(other_device.get("attempted", false))
+		and not bool(other_device.get("attempted", true))
+		and not bool(other_device.get("recoverable", true))
+		and int(other_device.get("attempts_remaining", 0)) == 3
 		and bool(replay.get("claimed", false))
 		and int(open_screen.get("attempt_count", 0)) == 1
 	)
@@ -142,6 +154,8 @@ func _test_started_blocks_second_run() -> bool:
 		and not bool(replay.get("claimed", true))
 		and str(replay.get("attempt_id", "x")) == ""
 		and bool(status.get("attempted", false))
+		and int(status.get("attempts_used", 0)) == 1
+		and int(status.get("attempts_remaining", 0)) == 2
 		and not bool(status.get("recoverable", true))
 		and int(status.get("attempt_count", 0)) == 1
 	)
@@ -296,8 +310,9 @@ func _test_utc_evening_board() -> bool:
 		and monthly.is_empty()
 		and rolled.is_empty()
 		and not bool(empty_body.get("stored", true))
-		and bool(second.get("already_used", false))
-		and not bool(second.get("claimed", true))
+		and bool(second.get("claimed", false))
+		and int(second.get("attempts_remaining", 0)) == 2
+		and int(daily[0].get("score", 0)) == 18
 	)
 
 
@@ -328,10 +343,15 @@ func _test_unlimited() -> bool:
 
 func _test_next_day() -> bool:
 	var store := DailyAttemptScript.empty_store()
-	DailyAttemptScript.claim(store, "player-a", "day-1", _today())
+	var first: Dictionary = DailyAttemptScript.claim(store, "player-a", "day-1", _today())
 	var next: Dictionary = DailyAttemptScript.claim(store, "player-a", "day-2", _tomorrow())
-	var denied: Dictionary = DailyAttemptScript.claim(store, "player-a", "day-1b", _today())
-	return bool(next.get("claimed", false)) and bool(denied.get("already_used", false)) and int(next.get("attempt_count", 0)) == 2
+	var again: Dictionary = DailyAttemptScript.claim(store, "player-a", "day-1b", _today())
+	return (
+		bool(next.get("claimed", false))
+		and bool(again.get("claimed", false))
+		and str(again.get("attempt_id", "")) == str(first.get("attempt_id", ""))
+		and int(next.get("attempt_count", 0)) == 2
+	)
 
 
 func _test_retry_same_attempt() -> bool:
@@ -343,7 +363,12 @@ func _test_retry_same_attempt() -> bool:
 	DailyAttemptScript.start(store, "player-a", attempt_id)
 	var first: Dictionary = DailyAttemptScript.finalize(store, book, "player-a", attempt_id, 40, "REEF", _unix())
 	var count_after := int(DailyAttemptScript.status_of(store, "player-a", _today()).get("attempt_count", 0))
-	return bool(blocked.get("already_used", false)) and bool(first.get("accepted", false)) and count_after == 1
+	return (
+		bool(blocked.get("claimed", false))
+		and str(blocked.get("attempt_id", "")) == attempt_id
+		and bool(first.get("accepted", false))
+		and count_after == 1
+	)
 
 
 func _test_duplicate_finalize() -> bool:

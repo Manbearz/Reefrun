@@ -14,22 +14,96 @@ const IDS: PackedStringArray = [
 ]
 
 static var _cache: Dictionary = {}
+static var _pending: Dictionary = {}
 
 
 static func tex(id: String) -> Texture2D:
 	if _cache.has(id):
 		return _cache[id] as Texture2D
 	var path := "res://assets/deep_dive/%s.png" % id
+	var status := ResourceLoader.load_threaded_get_status(path)
+	if status == ResourceLoader.THREAD_LOAD_IN_PROGRESS or status == ResourceLoader.THREAD_LOAD_LOADED:
+		var spins := 0
+		while status == ResourceLoader.THREAD_LOAD_IN_PROGRESS and spins < 200:
+			OS.delay_msec(1)
+			spins += 1
+			status = ResourceLoader.load_threaded_get_status(path)
+		if status == ResourceLoader.THREAD_LOAD_LOADED:
+			_take(id, path)
+			return _cache.get(id) as Texture2D
 	var loaded: Texture2D = null
 	if ResourceLoader.exists(path):
 		loaded = load(path) as Texture2D
 	_cache[id] = loaded
+	_pending.erase(id)
 	return loaded
+
+
+static func begin_preload() -> void:
+	for id in IDS:
+		if _cache.has(id):
+			continue
+		var path := "res://assets/deep_dive/%s.png" % id
+		if not ResourceLoader.exists(path):
+			_cache[id] = null
+			continue
+		var status := ResourceLoader.load_threaded_get_status(path)
+		if status == ResourceLoader.THREAD_LOAD_LOADED:
+			_take(id, path)
+			continue
+		if status != ResourceLoader.THREAD_LOAD_IN_PROGRESS:
+			ResourceLoader.load_threaded_request(path, "", false)
+		_pending[id] = path
+
+
+static func pump(budget: int = 1) -> void:
+	var taken := 0
+	var finished: Array[String] = []
+	for id in _pending.keys():
+		if taken >= budget:
+			break
+		var path := str(_pending[id])
+		var status := ResourceLoader.load_threaded_get_status(path)
+		if status == ResourceLoader.THREAD_LOAD_LOADED:
+			_take(id, path)
+			finished.append(id)
+			taken += 1
+		elif status == ResourceLoader.THREAD_LOAD_FAILED or status == ResourceLoader.THREAD_LOAD_INVALID_RESOURCE:
+			_cache[id] = load(path) as Texture2D
+			finished.append(id)
+			taken += 1
+	for id in finished:
+		_pending.erase(id)
+
+
+static func idle() -> bool:
+	return _pending.is_empty()
+
+
+static func finish() -> void:
+	var spins := 0
+	while not _pending.is_empty() and spins < 200:
+		pump(IDS.size())
+		if _pending.is_empty():
+			return
+		OS.delay_msec(1)
+		spins += 1
+	if not _pending.is_empty():
+		preload_all()
 
 
 static func preload_all() -> void:
 	for id in IDS:
 		tex(id)
+
+
+static func _take(id: String, path: String) -> void:
+	if _cache.has(id):
+		_pending.erase(id)
+		return
+	var resource := ResourceLoader.load_threaded_get(path)
+	_cache[id] = resource as Texture2D
+	_pending.erase(id)
 
 
 static func net_id(variant: int) -> String:
