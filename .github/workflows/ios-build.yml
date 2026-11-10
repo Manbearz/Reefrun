@@ -43,12 +43,48 @@ jobs:
       GODOT_MACOS_SHA256: c58a24e31d720be9d62f60cb5627c4e695fb72f21b0cfe1bc9ccaa9a3b3ba63e
       GODOT_TEMPLATES_SHA256: f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011
       AD_MODE: ${{ inputs.ad_mode }}
-      # Apple already accepted build 9. The preset build number must be higher.
-      # After a TestFlight upload is accepted, set this to that build before the next one.
-      LAST_UPLOADED_IOS_BUILD: "9"
+      # Apple already accepted build 10. This is the fallback floor when the
+      # workflow is not uploading. A TestFlight upload replaces it with the
+      # highest CFBundleVersion currently on App Store Connect.
+      LAST_UPLOADED_IOS_BUILD: "10"
     steps:
       - name: Check out the project
         uses: actions/checkout@v4
+
+      - name: Choose the next iOS build number
+        env:
+          UPLOAD_TESTFLIGHT: ${{ inputs.upload_testflight }}
+          APPSTORE_CONNECT_API_KEY_ID: ${{ secrets.APPSTORE_CONNECT_API_KEY_ID }}
+          APPSTORE_CONNECT_API_ISSUER_ID: ${{ secrets.APPSTORE_CONNECT_API_ISSUER_ID }}
+          APPSTORE_CONNECT_API_PRIVATE_KEY_BASE64: ${{ secrets.APPSTORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ "${UPLOAD_TESTFLIGHT}" = "true" ]; then
+            if [ -z "${APPSTORE_CONNECT_API_KEY_ID}" ] || [ -z "${APPSTORE_CONNECT_API_ISSUER_ID}" ] || [ -z "${APPSTORE_CONNECT_API_PRIVATE_KEY_BASE64}" ]; then
+              echo "TestFlight upload needs APPSTORE_CONNECT_API_KEY_ID, APPSTORE_CONNECT_API_ISSUER_ID, and APPSTORE_CONNECT_API_PRIVATE_KEY_BASE64."
+              exit 1
+            fi
+            KEY_DIR="$HOME/.appstoreconnect/private_keys"
+            KEY_PATH="${KEY_DIR}/AuthKey_${APPSTORE_CONNECT_API_KEY_ID}.p8"
+            mkdir -p "$KEY_DIR"
+            printf '%s' "$APPSTORE_CONNECT_API_PRIVATE_KEY_BASE64" | tr -d ' \n\r\t' | base64 --decode > "$KEY_PATH"
+            chmod 600 "$KEY_PATH"
+            unset APPSTORE_CONNECT_API_PRIVATE_KEY_BASE64
+            python3 tools/ios_build_number.py \
+              --preset export_presets.cfg \
+              --floor "${LAST_UPLOADED_IOS_BUILD}" \
+              --bundle-id "${BUNDLE_ID}" \
+              --key-id "${APPSTORE_CONNECT_API_KEY_ID}" \
+              --issuer-id "${APPSTORE_CONNECT_API_ISSUER_ID}" \
+              --private-key "$KEY_PATH" \
+              --require-app-store \
+              --github-env "$GITHUB_ENV"
+          else
+            python3 tools/ios_build_number.py \
+              --preset export_presets.cfg \
+              --floor "${LAST_UPLOADED_IOS_BUILD}" \
+              --github-env "$GITHUB_ENV"
+          fi
 
       - name: Check the rewarded ad mode
         run: python3 tools/check_ad_build_mode.py --platform ios --mode "${AD_MODE:-test}"
