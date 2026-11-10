@@ -17,6 +17,10 @@ const SHARE_CLOSE_RECT := Rect2(190, 798, 400, 165)
 const SHARE_SHARE_RECT := Rect2(575, 798, 500, 170)
 const SHARE_REWARD_RECT := Rect2(250, 762, 653, 32)
 const DEATH_SAND_BOTTOM := 1448.0
+# Long enough for the splash and the fish to tip. The old 0.85s hold was the
+# pause before the double-coins card, after the death frame had already stalled
+# on disk writes.
+const DEATH_CARD_DELAY := 0.22
 
 var world: ReefWorld
 var hud: GameHUD
@@ -116,6 +120,11 @@ var _mission_display_ready := false
 var _mission_wait := 0.0
 var _over_rank := 0
 var _over_remaining := 0
+var _death_mark_usec := 0
+var _death_watch_frames := 0
+var _death_persist_pending := false
+var _death_persist_rank := 0
+var _death_persist_remaining := 0
 # True only when this swim beat the saved personal best. Cleared when the next swim starts.
 var _wipe_new_best := false
 var _coin_reward_claimed := false
@@ -773,6 +782,11 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
+	if _death_watch_frames > 0:
+		var frame_ms := delta * 1000.0
+		if frame_ms >= 12.0:
+			print("[death] frame %.2f ms left=%d" % [frame_ms, _death_watch_frames])
+		_death_watch_frames -= 1
 	if PIPE_SPIKE_PROFILE and _dev_diag():
 		_sample_pipe_spike(delta)
 	if _warmup_frames > 0:
@@ -1019,28 +1033,56 @@ func _on_player_died() -> void:
 		return
 	if player.alive:
 		return
+	var death_usec := Time.get_ticks_usec()
+	_death_mark_usec = death_usec
+	_death_watch_frames = 30
 	if _events_on():
 		_events.notify_death()
 		_synced_state = _events.state
 		_halt_dive()
+	_death_log("halt", death_usec)
 	Sfx.play_death(-10.0)
 	RewardedAds.mark_timing("death")
+	_death_log("sound", death_usec)
 	if not _freeze_player_rank():
+		_death_log("rank_aborted", death_usec)
 		return
 	var rank := _final_rank
 	var remaining := _final_remaining
 	_note_personal_best()
+	# Score, coins, and the ghost are saved on the next idle frame. Doing that
+	# here blocked the death frame on disk before the tumble could draw.
 	if not GameSession.practice_daily:
-		_save_ghost_run()
-		if _mission_track:
-			GameSession.remember_mission_run(_mission_run_id, score, int(_mission_seconds), _run_coins, _mission_dive_facts())
-		GameSession.record_run(score, rank, remaining)
+		_death_persist_rank = rank
+		_death_persist_remaining = remaining
+		_death_persist_pending = true
+		call_deferred("_persist_death_result")
+	_death_log("scheduled", death_usec)
 	_log_perf()
-	get_tree().create_timer(0.85).timeout.connect(_after_death.bind(rank, remaining))
+	get_tree().create_timer(DEATH_CARD_DELAY).timeout.connect(_after_death.bind(rank, remaining), CONNECT_ONE_SHOT)
+
+
+func _persist_death_result() -> void:
+	if not _death_persist_pending:
+		return
+	_death_persist_pending = false
+	var started := Time.get_ticks_usec()
+	_save_ghost_run()
+	_death_log("ghost", started)
+	if _mission_track:
+		GameSession.remember_mission_run(_mission_run_id, score, int(_mission_seconds), _run_coins, _mission_dive_facts())
+	_death_log("missions", started)
+	GameSession.record_run(score, _death_persist_rank, _death_persist_remaining)
+	_death_log("record", started)
+
+
+func _death_log(stage: String, origin_usec: int) -> void:
+	print("[death] %s +%d us" % [stage, Time.get_ticks_usec() - origin_usec])
 
 
 func _after_death(rank: int, remaining: int) -> void:
 	RewardedAds.mark_timing("death_animation_done")
+	_death_log("card", _death_mark_usec)
 	if overlay and is_instance_valid(overlay):
 		return
 	_over_rank = rank
@@ -1108,7 +1150,7 @@ func _show_coin_ad() -> void:
 	dim.size = RR.screen_size()
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	overlay.add_child(dim)
-	var tex := Sprites.tex("coin_ad_overlay")
+	var tex := Sprites.peek("coin_ad_overlay")
 	var src := Vector2(1536, 1024)
 	if tex:
 		src = Vector2(tex.get_width(), tex.get_height())
@@ -1123,8 +1165,14 @@ func _show_coin_ad() -> void:
 	card.size = card_size
 	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	overlay.add_child(card)
-	overlay.add_child(_coin_ad_hotspot(card_pos, scale, Rect2(400, 720, 360, 220), _skip_coin_ad))
-	_coin_ad_watch = _coin_ad_hotspot(card_pos, scale, Rect2(780, 720, 420, 220), _watch_coin_ad)
+	if tex == null:
+		var card_ref := card
+		get_tree().process_frame.connect(func() -> void:
+			if is_instance_valid(card_ref):
+				card_ref.texture = Sprites.tex("coin_ad_overlay")
+		, CONNECT_ONE_SHOT)
+	overlay.add_child(_coin_ad_hotspot(card_pos, scale, Rect2(400, 720, 360, 220), _skip_coin_ad, tex))
+	_coin_ad_watch = _coin_ad_hotspot(card_pos, scale, Rect2(780, 720, 420, 220), _watch_coin_ad, tex)
 	overlay.add_child(_coin_ad_watch)
 	_coin_ad_note = SpriteTextScript.new()
 	_coin_ad_note.position = Vector2(24, RR.VIEW_H - 70)
@@ -1149,7 +1197,7 @@ func _schedule_offer_load() -> void:
 	, CONNECT_ONE_SHOT)
 
 
-func _coin_ad_hotspot(origin: Vector2, scale: float, src: Rect2, pressed: Callable) -> Button:
+func _coin_ad_hotspot(origin: Vector2, scale: float, src: Rect2, pressed: Callable, texture: Texture2D) -> Button:
 	var btn := Button.new()
 	btn.flat = true
 	btn.position = origin + src.position * scale
@@ -1157,7 +1205,7 @@ func _coin_ad_hotspot(origin: Vector2, scale: float, src: Rect2, pressed: Callab
 	btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	btn.pressed.connect(pressed)
 	var plate := Rect2(src.position + Vector2(30, 24), src.size - Vector2(60, 48))
-	ButtonFeedbackScript.use_plate(btn, Sprites.tex("coin_ad_overlay"), src, plate, 0.4)
+	ButtonFeedbackScript.use_plate(btn, texture, src, plate, 0.4)
 	return btn
 
 

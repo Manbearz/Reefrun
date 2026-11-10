@@ -46,7 +46,7 @@ jobs:
       # Apple already accepted build 10. This is the fallback floor when the
       # workflow is not uploading. A TestFlight upload replaces it with the
       # highest CFBundleVersion currently on App Store Connect.
-      LAST_UPLOADED_IOS_BUILD: "10"
+      LAST_UPLOADED_IOS_BUILD: "11"
     steps:
       - name: Check out the project
         uses: actions/checkout@v4

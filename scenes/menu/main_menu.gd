@@ -222,8 +222,6 @@ func _process(delta: float) -> void:
 	if _check_t < 1.0:
 		return
 	_check_t = 0.0
-	if _mode_shows_locked() and _modes and _modes.visible:
-		_set_mode_reset(_daily_reset_text(_daily_resets_unix))
 	var backend := get_node_or_null("/root/Backend")
 	if _mode_busy:
 		backend = null
@@ -2036,50 +2034,24 @@ func _close_modes() -> void:
 		backend.cancel_pre_match_requests()
 
 
-func _set_mode_note(text: String) -> void:
+func _set_mode_note(_text: String) -> void:
+	# The three fish and the locked artwork are the only status on this button.
 	if _mode_note == null:
 		return
-	# Locked art already paints the completed line. Errors stay on the open card.
-	var show := text != "" and not (_mode_shows_locked() and text == DailyAttemptScript.COMPLETED_LABEL)
-	_mode_note.visible = show
-	if show:
-		var note := _mode_view_rect(MODE_NOTE)
-		_mode_note.position = note.position
-		_mode_note.configure(text, 16.0, note.size, HORIZONTAL_ALIGNMENT_CENTER, false, true)
+	_mode_note.visible = false
 	_layout_mode_status()
 
 
-func _set_mode_reset(text: String) -> void:
+func _set_mode_reset(_text: String) -> void:
 	if _mode_reset == null:
 		return
-	var show := text != "" and _mode_shows_locked()
-	_mode_reset.visible = show
-	if show:
-		var line := _mode_view_rect(MODE_RESET_LINE)
-		_mode_reset.position = line.position
-		_mode_reset.configure(text, 14.0, line.size, HORIZONTAL_ALIGNMENT_CENTER, false, true)
+	_mode_reset.visible = false
 	_layout_mode_status()
 
 
 func _on_identity_ready() -> void:
 	if _modes and _modes.visible:
 		_refresh_daily_status()
-
-
-func _trusted_server_unix() -> int:
-	var backend := get_node_or_null("/root/Backend")
-	if backend and backend.has_method("estimated_server_unix"):
-		return int(backend.estimated_server_unix())
-	return 0
-
-
-func _daily_reset_text(resets_unix: int) -> String:
-	var now := _trusted_server_unix()
-	if resets_unix <= 0 or now <= 0:
-		return "RESETS AT MIDNIGHT"
-	if now >= resets_unix:
-		return DailyAttemptScript.WAITING_LABEL
-	return DailyAttemptScript.reset_label(resets_unix, now)
 
 
 func _show_daily_completed(resets_unix: int) -> void:
@@ -2094,8 +2066,8 @@ func _show_daily_completed(resets_unix: int) -> void:
 		_daily_button.modulate = Color.WHITE
 	_apply_attempt_fish(0)
 	_apply_mode_art()
-	_set_mode_note(DailyAttemptScript.COMPLETED_LABEL)
-	_set_mode_reset(_daily_reset_text(resets_unix))
+	_set_mode_note("")
+	_set_mode_reset("")
 
 
 func _clear_daily_lock() -> void:
@@ -2118,8 +2090,6 @@ func _keep_daily_unavailable() -> void:
 		_show_daily_completed(GameSession.daily_attempt_resets_unix if _daily_resets_unix <= 0 else _daily_resets_unix)
 		return
 	_hold_daily_until_status()
-	if _modes and _modes.visible and _daily_button and not _daily_locked:
-		_set_mode_note("DAILY UNAVAILABLE")
 
 
 func _hold_daily_until_status() -> void:
@@ -2194,8 +2164,6 @@ func _refresh_daily_status() -> void:
 			_show_daily_completed(GameSession.daily_attempt_resets_unix)
 		else:
 			_hold_daily_until_status()
-			if _daily_button and not _daily_locked:
-				_set_mode_note("DAILY UNAVAILABLE")
 	if DailyTestModeScript.enabled():
 		_apply_daily_test_override()
 	print("[daily] status_ui status=%d ok=%s attempted=%s error=%s button_disabled=%s test_mode=%s" % [
@@ -2251,7 +2219,9 @@ func _start_practice_daily() -> void:
 		return
 	if not GameSession.begin_practice_daily(course):
 		_mode_busy = false
-		_set_mode_note("PRACTICE COURSE UNAVAILABLE")
+		if _daily_button:
+			_daily_button.disabled = false
+		_set_mode_note("")
 		return
 	print("[daily] practice seed=%d id=%s" % [GameSession.course_seed, GameSession.current_challenge_id()])
 	await _open_game()
@@ -2280,12 +2250,14 @@ func _choose_daily() -> void:
 		return
 	if not _daily_backend_ready():
 		print("[daily] choose blocked error=backend_not_ready")
-		_set_mode_note("UNAVAILABLE UNTIL INTEGRATION IS COMPLETE")
+		_hold_daily_until_status()
 		return
 	_mode_busy = true
 	_mode_token += 1
 	var token := _mode_token
-	_set_mode_note("LOADING")
+	if _daily_button:
+		_daily_button.disabled = true
+	_set_mode_note("")
 	_set_mode_reset("")
 	var backend := get_node_or_null("/root/Backend")
 	var claim: Dictionary = {}
@@ -2313,13 +2285,12 @@ func _choose_daily() -> void:
 			if _daily_button:
 				_daily_button.disabled = false
 			_set_mode_note("")
-		elif int(claim.get("status", 0)) == 404:
-			_set_mode_note("DAILY UNAVAILABLE")
-		else:
-			_set_mode_note("COULD NOT START DAILY CHALLENGE")
+		elif _daily_button and not _daily_locked:
+			_daily_button.disabled = false
+		_set_mode_note("")
 		return
 	var challenge: Dictionary = claim.get("challenge", {})
-	_set_mode_note("LOADING")
+	_set_mode_note("")
 	if backend:
 		await backend.prepare_claimed_daily(challenge)
 	if not is_inside_tree() or token != _mode_token or _modes == null or not _modes.visible:
@@ -2346,10 +2317,9 @@ func _choose_daily() -> void:
 			if _daily_button:
 				_daily_button.disabled = false
 			_set_mode_note("")
-		elif int(started.get("status", 0)) == 404:
-			_set_mode_note("DAILY UNAVAILABLE")
-		else:
-			_set_mode_note("COULD NOT START DAILY CHALLENGE")
+		elif _daily_button and not _daily_locked:
+			_daily_button.disabled = false
+		_set_mode_note("")
 		return
 	print("[daily] choose enter_game attempt_id=%s seed=%d" % [
 		str(challenge.get("attempt_id", "")),
@@ -2380,7 +2350,9 @@ func _begin_claimed_game(challenge: Dictionary) -> void:
 	if str(challenge.get("attempt_id", "")).strip_edges() == "":
 		_mode_busy = false
 		print("[daily] choose enter_game error=missing_attempt")
-		_set_mode_note("COULD NOT START DAILY CHALLENGE")
+		if _daily_button and not _daily_locked:
+			_daily_button.disabled = false
+		_set_mode_note("")
 		return
 	if _name_edit:
 		_on_name_changed(_name_edit.text)

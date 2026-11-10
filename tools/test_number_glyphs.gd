@@ -3,7 +3,7 @@ extends SceneTree
 const SAMPLES: PackedStringArray = [
 	"0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
 	"00", "01", "10", "11", "22", "88", "99",
-	"100", "101", "111", "888", "999", "1000", "10000",
+	"100", "101", "111", "300", "888", "999", "1000", "8888", "9999", "10000",
 	"0/2", "1/2", "2/2", "0/10", "9/10", "10/10",
 	"-1",
 ]
@@ -75,16 +75,19 @@ func _padding() -> bool:
 			var top := ink.position.y
 			var right := image.get_width() - ink.end.x
 			var bottom := image.get_height() - ink.end.y
-			bottoms.append(bottom)
+			bottoms.append(image.get_height())
 			if left < 8 or top < 8 or right < 8 or bottom < 8:
 				push_error("[numbers] %s_%d padding L%d T%d R%d B%d" % [prefix, digit, left, top, right, bottom])
+				ok = false
+			if image.get_pixel(0, 0).a > 0.0 or image.get_pixel(image.get_width() - 1, image.get_height() - 1).a > 0.0:
+				push_error("[numbers] %s_%d touches the frame" % [prefix, digit])
 				ok = false
 			print("[numbers] %s_%d %dx%d ink %dx%d pad %d,%d,%d,%d" % [
 				prefix, digit, image.get_width(), image.get_height(), ink.size.x, ink.size.y, left, top, right, bottom,
 			])
 		for bottom in bottoms:
 			if bottom != bottoms[0]:
-				push_error("[numbers] %s bottom padding is uneven" % prefix)
+				push_error("[numbers] %s heights differ" % prefix)
 				ok = false
 				break
 	for symbol in ["alpha_slash", "alpha_hyphen", "alpha_plus", "alpha_colon"]:
@@ -213,7 +216,7 @@ func _sheet() -> bool:
 			var tw := maxi(1, int(image.get_width() * scale))
 			var th := maxi(1, int(image.get_height() * scale))
 			var sized := image.duplicate()
-			sized.resize(tw, th, Image.INTERPOLATE_LANCZOS)
+			sized.resize(tw, th, Image.INTERPOLATE_NEAREST)
 			var at := Vector2i(digit * cell + (cell - tw) / 2, row * cell + (cell - th) / 2)
 			sheet.blit_rect(sized, Rect2i(0, 0, tw, th), at)
 	var dest := "C:/Users/civis/AppData/Local/Temp/reefrun_number_glyphs.png"

@@ -347,10 +347,15 @@ func _button_art() -> bool:
 	var source := FileAccess.get_file_as_string("res://scenes/menu/main_menu.gd")
 	var locked_fn := source.substr(source.find("func _show_daily_completed"))
 	locked_fn = locked_fn.substr(0, locked_fn.find("\nfunc _clear_daily_lock"))
+	var note_fn := source.substr(source.find("func _set_mode_note"))
+	note_fn = note_fn.substr(0, note_fn.find("\nfunc "))
 	var fish_ignore: bool = (
 		source.find("icon.mouse_filter = Control.MOUSE_FILTER_IGNORE") >= 0
 		and locked_fn.find("_apply_mode_art()") >= 0
 		and locked_fn.find("0.45") < 0
+		and locked_fn.find("COMPLETED_LABEL") < 0
+		and note_fn.find("_mode_note.visible = false") >= 0
+		and source.find("_set_mode_reset(_daily_reset_text") < 0
 	)
 	menu.free()
 	card.free()
