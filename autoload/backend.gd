@@ -1426,6 +1426,10 @@ func mission_busy() -> bool:
 	return _mission_busy
 
 
+func inflight_label() -> String:
+	return "mission=%d finalize=%d boards=%d" % [1 if _mission_busy else 0, 1 if _finalize_running else 0, 1 if _lb_busy else 0]
+
+
 func refresh_daily_missions() -> void:
 	flush_daily_missions()
 

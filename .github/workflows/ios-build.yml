@@ -43,10 +43,10 @@ jobs:
       GODOT_MACOS_SHA256: c58a24e31d720be9d62f60cb5627c4e695fb72f21b0cfe1bc9ccaa9a3b3ba63e
       GODOT_TEMPLATES_SHA256: f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011
       AD_MODE: ${{ inputs.ad_mode }}
-      # Apple already accepted build 10. This is the fallback floor when the
+      # Apple already accepted build 12. This is the fallback floor when the
       # workflow is not uploading. A TestFlight upload replaces it with the
       # highest CFBundleVersion currently on App Store Connect.
-      LAST_UPLOADED_IOS_BUILD: "11"
+      LAST_UPLOADED_IOS_BUILD: "12"
     steps:
       - name: Check out the project
         uses: actions/checkout@v4

@@ -38,6 +38,8 @@ var share_reward_qualified: int = 0
 var last_score: int = 0
 var last_rank: int = 100
 var last_alive_at_death: int = 99
+var _save_batch := 0
+var _save_coalesced := false
 var best_score: int = 0
 var best_rank: int = 100
 var games_played: int = 0
@@ -748,7 +750,24 @@ func _load() -> void:
 		mission_board["fetched_ticks"] = Time.get_ticks_msec()
 
 
+func begin_save_batch() -> void:
+	_save_batch += 1
+
+
+func end_save_batch() -> void:
+	if _save_batch > 0:
+		_save_batch -= 1
+	if _save_batch == 0 and _save_coalesced:
+		_save_coalesced = false
+		_save()
+
+
 func _save() -> void:
+	# Death records the ghost, the mission, and the score together. One write
+	# replaces the three full saves that used to land on the same frame.
+	if _save_batch > 0:
+		_save_coalesced = true
+		return
 	var cfg := ConfigFile.new()
 	cfg.set_value("player", "fish", fish_index)
 	cfg.set_value("player", "owned_fish", owned_fish)

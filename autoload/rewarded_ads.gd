@@ -15,6 +15,7 @@ const AndroidScript := preload("res://scripts/ads/android_rewarded_ads.gd")
 
 var _timing_origin_usec := 0
 var _provider: RewardedAdProvider
+var _death_notes := PackedStringArray()
 
 
 static func elapsed_usec(origin_usec: int, now_usec: int) -> int:
@@ -74,6 +75,27 @@ func set_mock_offer_state(phase: String, status: String) -> void:
 func nudge_offer_load() -> void:
 	if _provider != null and _provider.has_method("nudge_offer_load"):
 		_provider.nudge_offer_load()
+
+
+func set_load_hold(hold: bool) -> void:
+	if _provider != null and _provider.has_method("set_load_hold"):
+		_provider.set_load_hold(hold)
+
+
+func note_death(what: String) -> void:
+	if what.is_empty():
+		return
+	_death_notes.append(what)
+	if _death_notes.size() > 24:
+		_death_notes.remove_at(0)
+
+
+func take_death_notes() -> String:
+	if _death_notes.is_empty():
+		return ""
+	var text := ",".join(_death_notes)
+	_death_notes = PackedStringArray()
+	return text
 
 
 func is_show_active() -> bool:

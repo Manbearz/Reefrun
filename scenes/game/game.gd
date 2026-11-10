@@ -121,10 +121,21 @@ var _mission_wait := 0.0
 var _over_rank := 0
 var _over_remaining := 0
 var _death_mark_usec := 0
-var _death_watch_frames := 0
+var _death_log_left := 0
+var _death_frame_i := 0
+var _death_longest_ms := 0.0
+var _death_longest_i := 0
+var _death_hold := false
+var _death_dive := ""
+var _mission_refresh_waiting := false
+var _offer_nudge_when_clear := false
+var _death_followup_armed := false
 var _death_persist_pending := false
 var _death_persist_rank := 0
 var _death_persist_remaining := 0
+static var _deaths := 0
+static var _reward_binds := 0
+static var _last_exit_nodes := -1
 # True only when this swim beat the saved personal best. Cleared when the next swim starts.
 var _wipe_new_best := false
 var _coin_reward_claimed := false
@@ -219,6 +230,7 @@ func _ready() -> void:
 	_setup_harpoons()
 	_prewarm_gameplay_draw()
 	_bind_rewarded_ads()
+	_log_scene_boundary("enter")
 	_configure_web_touch()
 	_share_service = ShareServiceScript.new()
 	add_child(_share_service)
@@ -648,6 +660,11 @@ func _ensure_mission_layer() -> void:
 
 
 func _on_daily_missions_changed() -> void:
+	if _death_hold:
+		_mission_refresh_waiting = true
+		if RewardedAds.has_method("note_death"):
+			RewardedAds.note_death("mission_ui")
+		return
 	if _mission_layer and is_instance_valid(_mission_layer) and _mission_layer.has_method("refresh_from_session"):
 		_mission_layer.refresh_from_session()
 
@@ -782,11 +799,40 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
-	if _death_watch_frames > 0:
+	if _death_log_left > 0:
+		_death_frame_i += 1
 		var frame_ms := delta * 1000.0
-		if frame_ms >= 12.0:
-			print("[death] frame %.2f ms left=%d" % [frame_ms, _death_watch_frames])
-		_death_watch_frames -= 1
+		if frame_ms > _death_longest_ms:
+			_death_longest_ms = frame_ms
+			_death_longest_i = _death_frame_i
+		var notes := ""
+		if RewardedAds.has_method("take_death_notes"):
+			notes = str(RewardedAds.take_death_notes())
+		print("[death] frame n=%d i=%d %.2f ms nodes=%d pipes=%d pool=%d ghosts=%d ad=%s inflight=%s pending=%d notes=%s" % [
+			_deaths,
+			_death_frame_i,
+			frame_ms,
+			_death_node_count(),
+			pipes.size(),
+			_pipe_pool.size(),
+			ghosts.size(),
+			_death_ad_label(),
+			_death_inflight(),
+			1 if _death_persist_pending else 0,
+			notes,
+		])
+		_death_log_left -= 1
+		if _death_log_left == 0:
+			print("[death] summary n=%d frames=%d longest=%.2f ms at=%d nodes=%d ad=%s dive=%s binds=%d" % [
+				_deaths,
+				_death_frame_i,
+				_death_longest_ms,
+				_death_longest_i,
+				_death_node_count(),
+				_death_ad_label(),
+				_death_dive,
+				_reward_binds,
+			])
 	if PIPE_SPIKE_PROFILE and _dev_diag():
 		_sample_pipe_spike(delta)
 	if _warmup_frames > 0:
@@ -1035,7 +1081,7 @@ func _on_player_died() -> void:
 		return
 	var death_usec := Time.get_ticks_usec()
 	_death_mark_usec = death_usec
-	_death_watch_frames = 30
+	_begin_death_watch()
 	if _events_on():
 		_events.notify_death()
 		_synced_state = _events.state
@@ -1046,17 +1092,18 @@ func _on_player_died() -> void:
 	_death_log("sound", death_usec)
 	if not _freeze_player_rank():
 		_death_log("rank_aborted", death_usec)
+		_end_death_hold()
 		return
 	var rank := _final_rank
 	var remaining := _final_remaining
 	_note_personal_best()
-	# Score, coins, and the ghost are saved on the next idle frame. Doing that
-	# here blocked the death frame on disk before the tumble could draw.
+	# Disk, mission refresh, and the next ad request stay out of the tumble.
+	# The card still appears after DEATH_CARD_DELAY. The save runs once the
+	# card has been drawn, so quitting on the menu button cannot skip it.
 	if not GameSession.practice_daily:
 		_death_persist_rank = rank
 		_death_persist_remaining = remaining
 		_death_persist_pending = true
-		call_deferred("_persist_death_result")
 	_death_log("scheduled", death_usec)
 	_log_perf()
 	get_tree().create_timer(DEATH_CARD_DELAY).timeout.connect(_after_death.bind(rank, remaining), CONNECT_ONE_SHOT)
@@ -1067,6 +1114,7 @@ func _persist_death_result() -> void:
 		return
 	_death_persist_pending = false
 	var started := Time.get_ticks_usec()
+	GameSession.begin_save_batch()
 	_save_ghost_run()
 	_death_log("ghost", started)
 	if _mission_track:
@@ -1074,16 +1122,101 @@ func _persist_death_result() -> void:
 	_death_log("missions", started)
 	GameSession.record_run(score, _death_persist_rank, _death_persist_remaining)
 	_death_log("record", started)
+	GameSession.end_save_batch()
+	_death_log("save", started)
+	if RewardedAds.has_method("note_death"):
+		RewardedAds.note_death("persist")
 
 
 func _death_log(stage: String, origin_usec: int) -> void:
 	print("[death] %s +%d us" % [stage, Time.get_ticks_usec() - origin_usec])
 
 
+func _begin_death_watch() -> void:
+	_deaths += 1
+	_death_log_left = 48
+	_death_frame_i = 0
+	_death_longest_ms = 0.0
+	_death_longest_i = 0
+	_death_hold = true
+	_death_dive = "none"
+	if _events_on():
+		_death_dive = str(_events.state)
+	var between := ""
+	if RewardedAds.has_method("take_death_notes"):
+		between = str(RewardedAds.take_death_notes())
+	if RewardedAds.has_method("set_load_hold"):
+		RewardedAds.set_load_hold(true)
+	print("[death] begin n=%d mode=%s dive=%s ad=%s nodes=%d pipes=%d pool=%d ghosts=%d binds=%d last_exit=%d between=%s" % [
+		_deaths,
+		GameSession.match_mode,
+		_death_dive,
+		_death_ad_label(),
+		_death_node_count(),
+		pipes.size(),
+		_pipe_pool.size(),
+		ghosts.size(),
+		_reward_binds,
+		_last_exit_nodes,
+		between,
+	])
+
+
+func _end_death_hold() -> void:
+	if not _death_hold:
+		return
+	_death_hold = false
+	if RewardedAds.has_method("set_load_hold"):
+		RewardedAds.set_load_hold(false)
+	if _mission_refresh_waiting:
+		_mission_refresh_waiting = false
+		_on_daily_missions_changed()
+
+
+func _death_ad_label() -> String:
+	var ready := 0
+	if RewardedAds.has_method("is_rewarded_ad_available") and RewardedAds.is_rewarded_ad_available():
+		ready = 1
+	var phase := "hidden"
+	if RewardedAds.has_method("offer_phase"):
+		phase = str(RewardedAds.offer_phase())
+	return "%s ready=%d" % [phase, ready]
+
+
+func _death_inflight() -> String:
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("inflight_label"):
+		return str(backend.inflight_label())
+	return "mission=0 finalize=0 boards=0"
+
+
+func _death_node_count() -> int:
+	return int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT))
+
+
+func _log_scene_boundary(kind: String) -> void:
+	var nodes := _death_node_count()
+	if kind == "exit":
+		_last_exit_nodes = nodes
+	print("[death] scene_%s nodes=%d last_exit=%d binds=%d" % [kind, nodes, _last_exit_nodes, _reward_binds])
+
+
+func _exit_tree() -> void:
+	# A menu tap on the first card frame is deferred until after this save.
+	if _death_persist_pending:
+		_persist_death_result()
+	if _death_hold:
+		_end_death_hold()
+	if debug_skip_ready:
+		return
+	_log_scene_boundary("exit")
+
+
 func _after_death(rank: int, remaining: int) -> void:
 	RewardedAds.mark_timing("death_animation_done")
 	_death_log("card", _death_mark_usec)
 	if overlay and is_instance_valid(overlay):
+		_schedule_death_persist()
 		return
 	_over_rank = rank
 	_over_remaining = remaining
@@ -1098,9 +1231,11 @@ func _after_death(rank: int, remaining: int) -> void:
 		# still requires the rewarded completion callback.
 		print("[ReefRun ads] double-coin offer hidden. phase=%s coins=%d" % [RewardedAds.offer_phase(), _run_coins])
 		_show_over(rank, remaining)
+	_schedule_death_persist()
 
 
 func _bind_rewarded_ads() -> void:
+	_reward_binds += 1
 	RewardedAds.reward_earned.connect(_on_rewarded_ad_earned)
 	RewardedAds.ad_closed.connect(_on_rewarded_ad_closed)
 	RewardedAds.ad_failed.connect(_on_rewarded_ad_failed)
@@ -1121,6 +1256,7 @@ func _unbind_rewarded_ads() -> void:
 		RewardedAds.ad_unavailable.disconnect(_on_rewarded_ad_unavailable)
 	if RewardedAds.availability_changed.is_connected(_on_reward_availability_changed):
 		RewardedAds.availability_changed.disconnect(_on_reward_availability_changed)
+	_reward_binds = maxi(0, _reward_binds - 1)
 
 
 func _clear_overlay() -> void:
@@ -1185,8 +1321,13 @@ func _show_coin_ad() -> void:
 
 
 func _schedule_offer_load() -> void:
-	# The card is already in the tree. Start any new ad request on the next
-	# frame so the Mobile Ads call cannot stall the first painted overlay.
+	# The card is already in the tree. During the death hold the nudge waits
+	# until the save has finished, so the tumble and the save do not also
+	# call into Mobile Ads. A direct offer outside that hold still requests
+	# on the next frame.
+	if _death_hold:
+		_offer_nudge_when_clear = true
+		return
 	_offer_nudge_token += 1
 	var token := _offer_nudge_token
 	get_tree().process_frame.connect(func() -> void:
@@ -1195,6 +1336,35 @@ func _schedule_offer_load() -> void:
 		RewardedAds.mark_timing("offer_load_nudge")
 		RewardedAds.nudge_offer_load()
 	, CONNECT_ONE_SHOT)
+
+
+func _schedule_death_persist() -> void:
+	if _death_followup_armed:
+		return
+	_death_followup_armed = true
+	if not is_inside_tree():
+		_persist_death_result()
+		_end_death_hold()
+		return
+	get_tree().process_frame.connect(_run_death_persist, CONNECT_ONE_SHOT)
+
+
+func _run_death_persist() -> void:
+	_persist_death_result()
+	if not is_inside_tree():
+		_end_death_hold()
+		return
+	get_tree().process_frame.connect(_release_death_and_nudge, CONNECT_ONE_SHOT)
+
+
+func _release_death_and_nudge() -> void:
+	var nudge := _offer_nudge_when_clear and _coin_offer_open
+	_offer_nudge_when_clear = false
+	_end_death_hold()
+	if not nudge or not is_instance_valid(self):
+		return
+	RewardedAds.mark_timing("offer_load_nudge")
+	RewardedAds.nudge_offer_load()
 
 
 func _coin_ad_hotspot(origin: Vector2, scale: float, src: Rect2, pressed: Callable, texture: Texture2D) -> Button:

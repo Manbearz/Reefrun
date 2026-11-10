@@ -20,6 +20,7 @@ func _run() -> void:
 	ok = _check("next_day_restores_three", _reset()) and ok
 	ok = _check("crossing_midnight_keeps_the_started_day", _midnight()) and ok
 	ok = _check("fish_states", _fish()) and ok
+	ok = _check("fish_textures_are_separate", _fish_textures()) and ok
 	ok = _check("unknown_status_is_not_three_lives", _unknown()) and ok
 	ok = _check("restart_cannot_restore_a_life", _restart_floor()) and ok
 	ok = _check("locked_button_replaces_open_art", _button_art()) and ok
@@ -229,6 +230,56 @@ func _fish() -> bool:
 	return shader.find("c.a") >= 0 and shader.find("COLOR = vec4(vec3(g), c.a)") >= 0
 
 
+func _fish_textures() -> bool:
+	var menu_script: GDScript = load("res://scenes/menu/main_menu.gd") as GDScript
+	if menu_script == null:
+		return false
+	var menu = menu_script.new()
+	var host := Control.new()
+	menu._modes = host
+	menu._build_daily_fish()
+	var img := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.12, 0.45, 0.92, 1.0))
+	var color_tex := ImageTexture.create_from_image(img)
+	menu._remember_fish_color(color_tex)
+	menu._apply_attempt_fish(3)
+	if not _fish_icons_match(menu, [true, true, true], color_tex):
+		host.free()
+		return false
+	menu._apply_attempt_fish(2)
+	if not _fish_icons_match(menu, [true, true, false], color_tex):
+		host.free()
+		return false
+	menu._apply_attempt_fish(1)
+	if not _fish_icons_match(menu, [true, false, false], color_tex):
+		host.free()
+		return false
+	menu._apply_attempt_fish(0)
+	if not _fish_icons_match(menu, [false, false, false], color_tex):
+		host.free()
+		return false
+	var separate: bool = menu._daily_fish_gray_tex != color_tex and menu._texture_has_color(color_tex) and not menu._texture_has_color(menu._daily_fish_gray_tex)
+	host.free()
+	return separate
+
+
+func _fish_icons_match(menu, lit: Array, color_tex: Texture2D) -> bool:
+	if menu._daily_fish.size() != 3:
+		return false
+	for i in 3:
+		var icon: TextureRect = menu._daily_fish[i]
+		if icon.material != null or icon.modulate != Color.WHITE or icon.self_modulate != Color.WHITE:
+			return false
+		if icon.use_parent_material:
+			return false
+		var want_color: bool = bool(lit[i])
+		if want_color and icon.texture != color_tex:
+			return false
+		if not want_color and icon.texture != menu._daily_fish_gray_tex:
+			return false
+	return true
+
+
 func _unknown() -> bool:
 	var missing: Dictionary = DailyAttemptScript.parse_status({"ok": false, "status": 0, "error": "offline"})
 	var old_open: Dictionary = DailyAttemptScript.parse_status({
@@ -293,6 +344,21 @@ func _restart_floor() -> bool:
 		and int(offline.get("lives", -1)) == 0
 		and int(legacy.get("lives", -1)) == 0
 		and not bool(legacy.get("store", true))
+		and int(DailyAttemptScript.merge_lives("", 0, DailyAttemptScript.parse_status({
+			"ok": true,
+			"status": 200,
+			"data": [{"attempted": false, "challenge_id": cid, "course_seed": 1}],
+		})).get("lives", -1)) == 1
+		and not bool(DailyAttemptScript.merge_lives("", 0, DailyAttemptScript.parse_status({
+			"ok": true,
+			"status": 200,
+			"data": [{"attempted": false, "challenge_id": cid, "course_seed": 1}],
+		})).get("store", true))
+		and int(DailyAttemptScript.merge_lives(cid, 1, DailyAttemptScript.parse_status({
+			"ok": true,
+			"status": 200,
+			"data": [{"attempted": false, "challenge_id": cid, "course_seed": 1}],
+		})).get("lives", -1)) == 0
 		and int(after_one.get("lives", -1)) == 2
 		and int(two_left.get("lives", -1)) == 2
 		and int(one_left.get("lives", -1)) == 1

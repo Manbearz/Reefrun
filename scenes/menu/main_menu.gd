@@ -160,7 +160,8 @@ var _daily_resets_unix := 0
 var _daily_lives := -1
 var _status_gen := 0
 var _daily_fish: Array[TextureRect] = []
-var _daily_fish_gray: ShaderMaterial
+var _daily_fish_color: Texture2D
+var _daily_fish_gray_tex: Texture2D
 
 
 func _ready() -> void:
@@ -1899,18 +1900,18 @@ func daily_fish_screen_rects(cover: Rect2) -> Array[Rect2]:
 func _build_daily_fish() -> void:
 	if _modes == null:
 		return
-	var shader := Shader.new()
-	shader.code = DAILY_FISH_SHADER
-	_daily_fish_gray = ShaderMaterial.new()
-	_daily_fish_gray.shader = shader
 	for i in DailyAttemptScript.ATTEMPT_LIMIT:
 		var icon := TextureRect.new()
 		icon.name = "DailyAttemptFish%d" % i
 		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		icon.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+		icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 		icon.z_index = 4
+		icon.use_parent_material = false
+		icon.material = null
+		icon.modulate = Color.WHITE
+		icon.self_modulate = Color.WHITE
 		_modes.add_child(icon)
 		_daily_fish.append(icon)
 	_apply_attempt_fish(-1)
@@ -1932,24 +1933,146 @@ func _layout_daily_fish() -> void:
 			tex = sprites.tex("fish_blue")
 	var plate := Rect2(_mode_origin, Vector2(MODE_W, MODE_H) * _mode_scale)
 	var placed := daily_fish_screen_rects(plate)
+	if tex:
+		_remember_fish_color(tex)
 	for i in _daily_fish.size():
 		var icon := _daily_fish[i]
 		icon.position = placed[i].position
 		icon.size = placed[i].size
-		if tex:
-			icon.texture = tex
+	_apply_attempt_fish(_daily_lives)
+
+
+func _remember_fish_color(tex: Texture2D) -> void:
+	if tex == null or tex == _daily_fish_color:
+		return
+	_daily_fish_color = tex
+	_daily_fish_gray_tex = _grayscale_copy(tex)
+
+
+func _grayscale_copy(tex: Texture2D) -> Texture2D:
+	var img := tex.get_image()
+	if img == null:
+		return null
+	img = img.duplicate()
+	if img.get_format() != Image.FORMAT_RGBA8:
+		img.convert(Image.FORMAT_RGBA8)
+	for y in img.get_height():
+		for x in img.get_width():
+			var px := img.get_pixel(x, y)
+			var g := px.r * 0.299 + px.g * 0.587 + px.b * 0.114
+			img.set_pixel(x, y, Color(g, g, g, px.a))
+	return ImageTexture.create_from_image(img)
+
+
+func _texture_has_color(tex: Texture2D) -> bool:
+	if tex == null:
+		return false
+	var img := tex.get_image()
+	if img == null:
+		return false
+	var step_x := maxi(1, int(img.get_width() / 8.0))
+	var step_y := maxi(1, int(img.get_height() / 8.0))
+	for y in range(0, img.get_height(), step_y):
+		for x in range(0, img.get_width(), step_x):
+			var px := img.get_pixel(x, y)
+			if px.a < 0.2:
+				continue
+			var hi := maxf(px.r, maxf(px.g, px.b))
+			var lo := minf(px.r, minf(px.g, px.b))
+			if hi - lo > 0.08:
+				return true
+	return false
 
 
 func _apply_attempt_fish(remaining: int) -> void:
 	_daily_lives = remaining
 	for i in _daily_fish.size():
 		var icon := _daily_fish[i]
-		if DailyAttemptScript.fish_lit(i, remaining):
-			icon.material = null
-			icon.modulate = Color.WHITE
+		var lit := DailyAttemptScript.fish_lit(i, remaining)
+		icon.use_parent_material = false
+		icon.material = null
+		icon.modulate = Color.WHITE
+		icon.self_modulate = Color.WHITE
+		if lit and _daily_fish_color != null:
+			icon.texture = _daily_fish_color
+		elif not lit and _daily_fish_gray_tex != null:
+			icon.texture = _daily_fish_gray_tex
+		elif _daily_fish_color != null:
+			icon.texture = _daily_fish_color
+		_log_fish_icon(i, remaining, lit, icon)
+
+
+func _log_fish_icon(index: int, remaining: int, lit: bool, icon: TextureRect) -> void:
+	var tex: Texture2D = icon.texture
+	var path := ""
+	if tex != null:
+		path = tex.resource_path
+		if path == "":
+			path = "runtime-grayscale" if tex == _daily_fish_gray_tex else "runtime-texture"
+	var parent_mod := Color.WHITE
+	var parent := icon.get_parent()
+	if parent is CanvasItem:
+		parent_mod = (parent as CanvasItem).modulate
+	var shader_name := ""
+	if icon.material is ShaderMaterial:
+		var mat := icon.material as ShaderMaterial
+		shader_name = mat.shader.resource_path if mat.shader != null else "shader"
+	print("[daily] fish index=%d expected=%s texture=%s modulate=%s self=%s parent=%s shader=%s grayscale=%s colored_pixels=%s" % [
+		index,
+		"available" if lit else "consumed",
+		path,
+		icon.modulate,
+		icon.self_modulate,
+		parent_mod,
+		shader_name if shader_name != "" else "none",
+		"yes" if _daily_fish_gray_tex != null and icon.texture == _daily_fish_gray_tex else "no",
+		"yes" if _texture_has_color(tex) else "no",
+	])
+
+
+func _redact_player_id(raw: String) -> String:
+	var clean := raw.strip_edges()
+	if clean.length() <= 8:
+		return "redacted" if clean != "" else ""
+	return "%s…%s" % [clean.substr(0, 4), clean.substr(clean.length() - 4, 4)]
+
+
+func _log_daily_menu(kind: String, status: Dictionary = {}, phase: String = "", lives: int = -999) -> void:
+	var shown_lives := _daily_lives if lives == -999 else lives
+	var shown_phase := phase
+	if shown_phase == "":
+		if _status_busy or _daily_checking:
+			shown_phase = "loading"
+		elif _daily_lives >= 0:
+			shown_phase = "confirmed"
 		else:
-			icon.material = _daily_fish_gray
-			icon.modulate = Color.WHITE
+			shown_phase = "unavailable"
+	var player := ""
+	if GameSession:
+		player = _redact_player_id(str(GameSession.player_id))
+	var period := str(status.get("challenge_id", ""))
+	var course: Variant = status.get("course", {})
+	if period == "" and typeof(course) == TYPE_DICTIONARY:
+		period = str(course.get("challenge_id", ""))
+	var used: Variant = status.get("attempts_used", "absent") if not status.is_empty() else "absent"
+	var response_remaining: Variant = status.get("attempts_remaining", "absent") if not status.is_empty() else "absent"
+	print("[daily] menu when=%s player=%s period=%s as_of=%s resets=%s fields=%s attempted=%s used=%s response_remaining=%s shown_lives=%s phase=%s button_enabled=%s locked=%s ok=%s error=%s" % [
+		kind,
+		player,
+		period,
+		str(status.get("as_of_unix", "")),
+		str(status.get("resets_at_unix", "")),
+		str(status.get("raw_fields", "")),
+		str(status.get("attempted", "")),
+		str(used),
+		str(response_remaining),
+		shown_lives,
+		shown_phase,
+		str(_daily_button != null and not _daily_button.disabled),
+		str(_mode_shows_locked()),
+		str(status.get("ok", "")),
+		str(status.get("error", "")),
+	])
 
 
 func _mode_cover() -> Panel:
@@ -2003,11 +2126,15 @@ func _open_modes() -> void:
 		if resets <= 0:
 			resets = int(GameSession.daily_attempt_resets_unix)
 		_show_daily_completed(resets)
+	elif _daily_lives > 0:
+		_clear_daily_lock()
+		_apply_attempt_fish(_daily_lives)
 	else:
 		_set_mode_note("")
 		_set_mode_reset("")
 		_hold_daily_until_status()
 	_layout_mode_overlay()
+	_log_daily_menu("open")
 	_refresh_daily_status()
 
 
@@ -2146,13 +2273,19 @@ func _refresh_daily_status() -> void:
 			int(merged.get("used", 0)),
 			int(status.get("resets_at_unix", -1))
 		)
-	if token != _mode_token or _modes == null or not _modes.visible:
+	var lives := int(merged.get("lives", -1))
+	var phase := "unavailable"
+	if bool(status.get("ok", false)) and lives >= 0:
+		phase = "confirmed"
+	elif str(status.get("error", "")) == "busy":
+		phase = "loading"
+	_log_daily_menu("status", status, phase, lives)
+	if token != _mode_token or not is_inside_tree() or _modes == null:
 		_daily_checking = false
 		return
 	var course: Variant = status.get("course", {})
 	if typeof(course) == TYPE_DICTIONARY and int(course.get("course_seed", 0)) != 0:
 		_status_course = course
-	var lives := int(merged.get("lives", -1))
 	if lives == 0:
 		_show_daily_completed(int(status.get("resets_at_unix", GameSession.daily_attempt_resets_unix)))
 	elif lives > 0:

@@ -14,6 +14,9 @@ var _fullscreen: FullScreenContentCallback
 var _reward_listener: OnUserEarnedRewardListener
 var _loading := false
 var _showing := false
+var _load_hold := false
+var _load_after_hold := false
+var _phase_after_hold := false
 var _sdk_started := false
 var _ads_request_allowed := false
 var _privacy_options_required := false
@@ -385,6 +388,24 @@ func offer_failure_code() -> String:
 	return ""
 
 
+func set_load_hold(hold: bool) -> void:
+	# The death tumble is a few tenths of a second. A retry or the reload
+	# started when the previous ad closed can call into AdMob on that exact
+	# frame. Keep the loaded ad, and start the next request once the card is up.
+	if _load_hold == hold:
+		return
+	_load_hold = hold
+	_note_death("load_hold_%s" % ("on" if hold else "off"))
+	if hold:
+		return
+	if _phase_after_hold:
+		_phase_after_hold = false
+		_note_offer_phase()
+	if _load_after_hold:
+		_load_after_hold = false
+		_load_rewarded()
+
+
 func nudge_offer_load() -> void:
 	# The wiped-out card is on screen. If consent already allows a request and
 	# nothing is in flight, ask again instead of waiting out the backoff.
@@ -461,6 +482,10 @@ func _on_sdk_initialized(status: InitializationStatus) -> void:
 
 
 func _load_rewarded() -> void:
+	if _load_hold:
+		_load_after_hold = true
+		_note_death("load_deferred")
+		return
 	if not _ads_request_allowed or not _native_mobile() or _loading or _showing or _ad != null:
 		return
 	var unit := AdCfg.rewarded_unit_id()
@@ -519,6 +544,10 @@ func _on_ad_loaded(ad: RewardedAd) -> void:
 	_ad.full_screen_content_callback = _fullscreen
 	_log("rewarded ad loaded")
 	_mark_timing("ad_load_callback")
+	_note_death("ad_loaded")
+	if _load_hold:
+		_phase_after_hold = true
+		return
 	_note_offer_phase()
 
 
@@ -533,7 +562,11 @@ func _on_ad_failed_to_load(error: LoadAdError) -> void:
 	_last_failure_kind = load_failure_kind(_last_error_code, domain)
 	_log("rewarded load failed: %s" % describe_load_error(error))
 	_mark_timing("ad_load_callback")
+	_note_death("ad_failed")
 	_schedule_rewarded_retry()
+	if _load_hold:
+		_phase_after_hold = true
+		return
 	_note_offer_phase()
 
 
@@ -592,6 +625,12 @@ func _release_ad() -> void:
 		_ad = null
 	_fullscreen = null
 	_reward_listener = null
+
+
+func _note_death(what: String) -> void:
+	var host = get_parent()
+	if host != null and host.has_method("note_death"):
+		host.note_death(what)
 
 
 func _mark_timing(event: String) -> void:

@@ -307,6 +307,10 @@ static func parse_status(result: Dictionary) -> Dictionary:
 	out.resets_at_unix = _unix(row, "resets_unix", "resets_at")
 	out.as_of_unix = _unix(row, "as_of_unix", "as_of")
 	_copy_attempt_counts(row, out)
+	var field_names: PackedStringArray = PackedStringArray()
+	for key in row.keys():
+		field_names.append(str(key))
+	out["raw_fields"] = ",".join(field_names)
 	if row.has("challenge_id"):
 		out["challenge_id"] = str(row.get("challenge_id", "")).strip_edges()
 	if not bool(out.get("attempts_counted", false)):
@@ -491,9 +495,16 @@ static func merge_lives(saved_challenge: String, saved_used: int, status: Dictio
 		if kept_challenge != "" and kept_used >= ATTEMPT_LIMIT and (cid == "" or cid == kept_challenge):
 			out["lives"] = 0
 			return out
-		out["lives"] = 0 if lives == 0 else -1
 		if cid != "":
 			out["challenge_id"] = cid
+		if lives == 0:
+			out["lives"] = 0
+			return out
+		# A live server that still omits the count is the original one-attempt
+		# rule. One unstarted day is one available life. The other two are not
+		# invented, and nothing is stored as already used.
+		out["lives"] = 1 if kept_used <= 0 else 0
+		out["store"] = false
 		return out
 	if cid == "":
 		if kept_used >= ATTEMPT_LIMIT:
