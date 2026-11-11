@@ -439,9 +439,9 @@ func _test_platforms() -> void:
 	var project := FileAccess.get_file_as_string("res://project.godot")
 	_check("platforms_share_mobile_provider", ios.contains("extends MobileRewardedAds") and android.contains("extends MobileRewardedAds"))
 	_check("desktop_stays_on_test", AdCfg.monetization_mode() == "test" and not AdCfg.is_production_ads())
-	_check("packed_ios_mode_is_test", AdCfg.mode_for_platform("ios") == "test")
+	_check("packed_ios_mode_is_production", AdCfg.mode_for_platform("ios") == "production")
 	_check("packed_android_mode_is_test", AdCfg.mode_for_platform("android") == "test")
-	_check("packed_ios_unit_is_google_test", AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios")) == AdCfg.IOS_TEST_REWARDED_UNIT_ID and AdCfg.is_google_test_rewarded_unit(AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios"))) and AdCfg.IOS_REWARDED_UNIT_ID != AdCfg.IOS_TEST_REWARDED_UNIT_ID)
+	_check("packed_ios_unit_is_production", AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios")) == "ca-app-pub-5190108736982657/2549031818" and AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios")) == AdCfg.IOS_REWARDED_UNIT_ID and not AdCfg.is_google_test_rewarded_unit(AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios"))))
 	_check("packed_android_unit_is_google_test", AdCfg.rewarded_unit_for("android", AdCfg.mode_for_platform("android")) == AdCfg.ANDROID_TEST_REWARDED_UNIT_ID and AdCfg.is_google_test_rewarded_unit(AdCfg.rewarded_unit_for("android", AdCfg.mode_for_platform("android"))))
 	_check("android_test_unit", AdCfg.rewarded_unit_for("android", "test") == AdCfg.ANDROID_TEST_REWARDED_UNIT_ID)
 	_check("ios_test_unit", AdCfg.rewarded_unit_for("ios", "test") == AdCfg.IOS_TEST_REWARDED_UNIT_ID)
@@ -457,7 +457,7 @@ func _test_platforms() -> void:
 	_check("consent_missing_plugin_blocks", mobile_source.contains("consent plugin is missing. Ads will not be requested."))
 	_check("privacy_options_api", mobile_source.contains("func show_privacy_options") and mobile_source.contains("PrivacyOptionsRequirementStatus.REQUIRED"))
 	_test_att_policy(mobile_source)
-	_warn("iOS and Android use one GDScript provider. The native PoingGodotAdMob singletons are not in this Windows run, so load, show, consent forms, and real callbacks were not executed. No ad request was made. The packed iOS mode selects Google's iOS test rewarded unit. The production iOS unit is unchanged and is not requested. The packed Android mode stays on Google's test unit.")
+	_warn("iOS and Android use one GDScript provider. The native PoingGodotAdMob singletons are not in this Windows run, so load, show, consent forms, and real callbacks were not executed. No ad request was made. The packed iOS mode selects the production iOS rewarded unit. Google's iOS test unit is still the test-mode unit. The packed Android mode stays on Google's test unit.")
 	_warn("Headless mode cannot confirm the offer artwork's spacing. The Yes and No hotspots, the failure note, and the post-run buttons were exercised. A phone screenshot is still needed for alignment.")
 
 

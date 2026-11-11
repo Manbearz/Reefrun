@@ -13,7 +13,7 @@ on:
         type: boolean
         default: false
       ad_mode:
-        description: iOS rewarded ads. test is the verification default and requests Google's official iOS rewarded test unit. Choose production only when IOS_MODE is production. That requests the live iOS unit and still requires an AdMob test device. Android stays on Google's test unit.
+        description: iOS rewarded ads. This source packs production, so this run must select production. production requests the live iOS rewarded unit and requires a registered AdMob test device. test requests Google's official iOS test unit and is refused while IOS_MODE is production. Android stays on Google's test unit.
         required: true
         type: choice
         default: test
@@ -43,10 +43,10 @@ jobs:
       GODOT_MACOS_SHA256: c58a24e31d720be9d62f60cb5627c4e695fb72f21b0cfe1bc9ccaa9a3b3ba63e
       GODOT_TEMPLATES_SHA256: f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011
       AD_MODE: ${{ inputs.ad_mode }}
-      # Apple already accepted build 12. This is the fallback floor when the
+      # Apple already accepted build 13. This is the fallback floor when the
       # workflow is not uploading. A TestFlight upload replaces it with the
       # highest CFBundleVersion currently on App Store Connect.
-      LAST_UPLOADED_IOS_BUILD: "12"
+      LAST_UPLOADED_IOS_BUILD: "13"
     steps:
       - name: Check out the project
         uses: actions/checkout@v4

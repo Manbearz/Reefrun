@@ -129,7 +129,7 @@ func _preset() -> bool:
 	return (
 		mode.contains('const ANDROID_MODE := "test"')
 		and mode.contains('const ANDROID_OUTPUT_MARKER := "REEFRUN_ANDROID_AD_MODE=test"')
-		and mode.contains('const IOS_MODE := "test"')
+		and mode.contains('const IOS_MODE := "production"')
 		and ads.contains('normalize_mode(mode) != "production"')
 		and ads.contains("ca-app-pub-3940256099942544/5224354917")
 		and workflow.contains("default: test")
