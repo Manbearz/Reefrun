@@ -121,10 +121,22 @@ var _mission_wait := 0.0
 var _over_rank := 0
 var _over_remaining := 0
 var _death_mark_usec := 0
-var _death_log_left := 0
+var _death_sampling := false
+var _death_sample_left := 0
+var _death_card_ms := 0.0
 var _death_frame_i := 0
 var _death_longest_ms := 0.0
 var _death_longest_i := 0
+var _death_tumble := false
+var _plate_quiet_frames := 0
+var _coin_prebuild_after := 0
+var _coin_shell: CanvasLayer
+var _coin_dim: ColorRect
+var _overlay_build_usec := 0
+var _overlay_reveal_usec := 0
+var _death_plate_serial := 0
+var _death_resources := 0
+var _death_assets_ready := false
 var _death_hold := false
 var _death_dive := ""
 var _mission_refresh_waiting := false
@@ -189,6 +201,14 @@ func _ready() -> void:
 		return
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_ON
+	# The previous scene's plate bake must not run on the load frame.
+	_plate_quiet_frames = 20
+	ButtonFeedbackScript.defer_heavy_plates = true
+	# The boot screen normally starts this. A direct scene run still has to
+	# stream the death card during the lobby, not on the death frame.
+	var sprites := get_node_or_null("/root/Sprites")
+	if sprites and sprites.has_method("start_gameplay"):
+		sprites.start_gameplay()
 	cosmetic_rng.randomize()
 	GameSession.ensure_challenge()
 	_ghost_match = GhostMatchScript.new()
@@ -757,6 +777,18 @@ func _tick_countdown(delta: float) -> void:
 func _physics_process(delta: float) -> void:
 	if paused:
 		return
+	# The fish keeps tipping with the reef. Spawns, scoring, ghosts, and the
+	# dive sim wait so the tumble frame is not also a simulation frame.
+	if _death_tumble:
+		if started and not finished:
+			scroll += RR.PIPE_SPEED * delta
+			if course:
+				course.position.x = -scroll
+			if _harpoon_live() or _harpoon_beat != 0:
+				_tick_harpoons(delta)
+		if player:
+			player.tick(delta)
+		return
 	if _events_on():
 		_events.set_corridor_clear(_corridor_clear())
 		_events.tick(delta)
@@ -799,40 +831,10 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
-	if _death_log_left > 0:
-		_death_frame_i += 1
-		var frame_ms := delta * 1000.0
-		if frame_ms > _death_longest_ms:
-			_death_longest_ms = frame_ms
-			_death_longest_i = _death_frame_i
-		var notes := ""
-		if RewardedAds.has_method("take_death_notes"):
-			notes = str(RewardedAds.take_death_notes())
-		print("[death] frame n=%d i=%d %.2f ms nodes=%d pipes=%d pool=%d ghosts=%d ad=%s inflight=%s pending=%d notes=%s" % [
-			_deaths,
-			_death_frame_i,
-			frame_ms,
-			_death_node_count(),
-			pipes.size(),
-			_pipe_pool.size(),
-			ghosts.size(),
-			_death_ad_label(),
-			_death_inflight(),
-			1 if _death_persist_pending else 0,
-			notes,
-		])
-		_death_log_left -= 1
-		if _death_log_left == 0:
-			print("[death] summary n=%d frames=%d longest=%.2f ms at=%d nodes=%d ad=%s dive=%s binds=%d" % [
-				_deaths,
-				_death_frame_i,
-				_death_longest_ms,
-				_death_longest_i,
-				_death_node_count(),
-				_death_ad_label(),
-				_death_dive,
-				_reward_binds,
-			])
+	_sample_death_frame(delta)
+	_tick_plate_hold()
+	ButtonFeedbackScript.service_plates()
+	_prepare_death_assets()
 	if PIPE_SPIKE_PROFILE and _dev_diag():
 		_sample_pipe_spike(delta)
 	if _warmup_frames > 0:
@@ -1081,6 +1083,9 @@ func _on_player_died() -> void:
 		return
 	var death_usec := Time.get_ticks_usec()
 	_death_mark_usec = death_usec
+	_death_tumble = true
+	_plate_quiet_frames = 0
+	ButtonFeedbackScript.defer_heavy_plates = true
 	_begin_death_watch()
 	if _events_on():
 		_events.notify_death()
@@ -1092,7 +1097,10 @@ func _on_player_died() -> void:
 	_death_log("sound", death_usec)
 	if not _freeze_player_rank():
 		_death_log("rank_aborted", death_usec)
+		_death_tumble = false
+		ButtonFeedbackScript.defer_heavy_plates = false
 		_end_death_hold()
+		_death_sample_left = 1
 		return
 	var rank := _final_rank
 	var remaining := _final_remaining
@@ -1132,9 +1140,98 @@ func _death_log(stage: String, origin_usec: int) -> void:
 	print("[death] %s +%d us" % [stage, Time.get_ticks_usec() - origin_usec])
 
 
+func _coin_plate_rect(src: Rect2) -> Rect2:
+	return Rect2(src.position + Vector2(30, 24), src.size - Vector2(60, 48))
+
+
+func _prepare_death_assets() -> void:
+	if _death_tumble or _coin_offer_open or finished:
+		return
+	var sprites := get_node_or_null("/root/Sprites")
+	if sprites == null:
+		return
+	if not _death_assets_ready and (_in_lobby or not started):
+		if sprites.peek("splash_b") == null:
+			sprites.tex("splash_b")
+	if not _death_assets_ready:
+		var overlay_tex: Texture2D = sprites.peek("coin_ad_overlay")
+		if overlay_tex == null:
+			return
+		ButtonFeedbackScript.warm_plate(overlay_tex, _coin_plate_rect(Rect2(400, 720, 360, 220)), "auto")
+		ButtonFeedbackScript.warm_plate(overlay_tex, _coin_plate_rect(Rect2(780, 720, 420, 220)), "auto")
+		var death_tex: Texture2D = sprites.peek("death_overlay")
+		if death_tex != null:
+			ButtonFeedbackScript.warm_plate(death_tex, Rect2(316, 1181, 418, 138), "green")
+		_death_assets_ready = true
+		# Let the image decode land on its own lobby frame, then build the card.
+		_coin_prebuild_after = Engine.get_process_frames() + 3
+	if _coin_shell == null and _plate_quiet_frames == 0 and Engine.get_process_frames() >= _coin_prebuild_after:
+		_ensure_coin_shell()
+
+
+func _tick_plate_hold() -> void:
+	# Plate scans stay off the tumble, the double-coins card, and the results card.
+	# A short quiet period also keeps the next scene's first frames clear.
+	if _death_tumble or _coin_offer_open or (finished and overlay != null and is_instance_valid(overlay)):
+		ButtonFeedbackScript.defer_heavy_plates = true
+		return
+	if _plate_quiet_frames > 0:
+		_plate_quiet_frames -= 1
+		ButtonFeedbackScript.defer_heavy_plates = true
+		if _plate_quiet_frames == 0:
+			_coin_prebuild_after = maxi(_coin_prebuild_after, Engine.get_process_frames() + 3)
+		return
+	ButtonFeedbackScript.defer_heavy_plates = false
+
+
+func _sample_death_frame(delta: float) -> void:
+	if not _death_sampling:
+		return
+	_death_frame_i += 1
+	var frame_ms := delta * 1000.0
+	if frame_ms > _death_longest_ms:
+		_death_longest_ms = frame_ms
+		_death_longest_i = _death_frame_i
+	if _death_tumble or _death_sample_left <= 0:
+		return
+	_death_sample_left -= 1
+	if _death_sample_left == 0:
+		_emit_death_summary()
+
+
+func _emit_death_summary() -> void:
+	if not _death_sampling:
+		return
+	_death_sampling = false
+	print("[death] frame n=%d frames=%d longest=%.2f ms at=%d to_card=%.2f ms nodes=%d pipes=%d pool=%d ghosts=%d ad=%s plate=%s pump=%d us dive=%s binds=%d build=%d us reveal=%d us plate_work=%d resources=%d orphans=%d %s" % [
+		_deaths,
+		_death_frame_i,
+		_death_longest_ms,
+		_death_longest_i,
+		_death_card_ms,
+		_death_node_count(),
+		pipes.size(),
+		_pipe_pool.size(),
+		ghosts.size(),
+		_death_ad_label(),
+		ButtonFeedbackScript.cache_label(),
+		ButtonFeedbackScript.last_pump_usec,
+		_death_dive,
+		_reward_binds,
+		_overlay_build_usec,
+		_overlay_reveal_usec,
+		ButtonFeedbackScript.work_serial - _death_plate_serial,
+		int(Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT)),
+		int(Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT)),
+		ButtonFeedbackScript.plate_diag(),
+	])
+
+
 func _begin_death_watch() -> void:
 	_deaths += 1
-	_death_log_left = 48
+	_death_sampling = true
+	_death_sample_left = 0
+	_death_card_ms = 0.0
 	_death_frame_i = 0
 	_death_longest_ms = 0.0
 	_death_longest_i = 0
@@ -1147,7 +1244,9 @@ func _begin_death_watch() -> void:
 		between = str(RewardedAds.take_death_notes())
 	if RewardedAds.has_method("set_load_hold"):
 		RewardedAds.set_load_hold(true)
-	print("[death] begin n=%d mode=%s dive=%s ad=%s nodes=%d pipes=%d pool=%d ghosts=%d binds=%d last_exit=%d between=%s" % [
+	_death_plate_serial = ButtonFeedbackScript.work_serial
+	_death_resources = int(Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT))
+	print("[death] begin n=%d mode=%s dive=%s ad=%s nodes=%d pipes=%d pool=%d ghosts=%d binds=%d last_exit=%d between=%s resources=%d shell=%d" % [
 		_deaths,
 		GameSession.match_mode,
 		_death_dive,
@@ -1159,6 +1258,8 @@ func _begin_death_watch() -> void:
 		_reward_binds,
 		_last_exit_nodes,
 		between,
+		_death_resources,
+		1 if _coin_shell != null and is_instance_valid(_coin_shell) else 0,
 	])
 
 
@@ -1202,6 +1303,11 @@ func _log_scene_boundary(kind: String) -> void:
 
 
 func _exit_tree() -> void:
+	_death_tumble = false
+	# Keep the static baker paused across the scene change. The next scene
+	# releases it after its own quiet frames.
+	ButtonFeedbackScript.defer_heavy_plates = true
+	ButtonFeedbackScript.drop_dead_hosts()
 	# A menu tap on the first card frame is deferred until after this save.
 	if _death_persist_pending:
 		_persist_death_result()
@@ -1213,6 +1319,13 @@ func _exit_tree() -> void:
 
 
 func _after_death(rank: int, remaining: int) -> void:
+	_death_tumble = false
+	if _death_mark_usec > 0:
+		_death_card_ms = float(Time.get_ticks_usec() - _death_mark_usec) / 1000.0
+	# The card stays up with plate work paused. Quiet frames used to release
+	# the baker onto the overlay; that was the second-run hitch window.
+	_plate_quiet_frames = 0
+	_death_sample_left = 3
 	RewardedAds.mark_timing("death_animation_done")
 	_death_log("card", _death_mark_usec)
 	if overlay and is_instance_valid(overlay):
@@ -1235,6 +1348,8 @@ func _after_death(rank: int, remaining: int) -> void:
 
 
 func _bind_rewarded_ads() -> void:
+	if RewardedAds.reward_earned.is_connected(_on_rewarded_ad_earned):
+		return
 	_reward_binds += 1
 	RewardedAds.reward_earned.connect(_on_rewarded_ad_earned)
 	RewardedAds.ad_closed.connect(_on_rewarded_ad_closed)
@@ -1242,7 +1357,8 @@ func _bind_rewarded_ads() -> void:
 	RewardedAds.ad_unavailable.connect(_on_rewarded_ad_unavailable)
 	if not RewardedAds.availability_changed.is_connected(_on_reward_availability_changed):
 		RewardedAds.availability_changed.connect(_on_reward_availability_changed)
-	tree_exiting.connect(_unbind_rewarded_ads)
+	if not tree_exiting.is_connected(_unbind_rewarded_ads):
+		tree_exiting.connect(_unbind_rewarded_ads)
 
 
 func _unbind_rewarded_ads() -> void:
@@ -1262,6 +1378,9 @@ func _unbind_rewarded_ads() -> void:
 func _clear_overlay() -> void:
 	_close_share_overlay(false)
 	if overlay and is_instance_valid(overlay):
+		if overlay == _coin_shell:
+			_coin_shell = null
+			_coin_dim = null
 		overlay.queue_free()
 	overlay = null
 	_wipe_again = null
@@ -1269,23 +1388,21 @@ func _clear_overlay() -> void:
 	_wipe_menu = null
 
 
-func _show_coin_ad() -> void:
-	RewardedAds.mark_timing("offer_requested")
-	finished = true
-	_invalidate_reward_session()
-	_coin_offer_open = true
-	_coin_reward_claimed = false
-	_reward_request_active = false
-	_clear_overlay()
-	overlay = CanvasLayer.new()
-	overlay.layer = 40
-	overlay.process_mode = Node.PROCESS_MODE_ALWAYS
-	add_child(overlay)
+func _ensure_coin_shell() -> void:
+	if _coin_shell != null and is_instance_valid(_coin_shell):
+		return
+	var started := Time.get_ticks_usec()
+	var shell := CanvasLayer.new()
+	shell.name = "CoinAdShell"
+	shell.layer = 40
+	shell.visible = false
+	shell.process_mode = Node.PROCESS_MODE_ALWAYS
+	add_child(shell)
 	var dim := ColorRect.new()
 	dim.color = Palette.SHADOW
 	dim.size = RR.screen_size()
-	dim.mouse_filter = Control.MOUSE_FILTER_STOP
-	overlay.add_child(dim)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	shell.add_child(dim)
 	var tex := Sprites.peek("coin_ad_overlay")
 	var src := Vector2(1536, 1024)
 	if tex:
@@ -1300,24 +1417,50 @@ func _show_coin_ad() -> void:
 	card.position = card_pos
 	card.size = card_size
 	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	overlay.add_child(card)
+	shell.add_child(card)
 	if tex == null:
-		var card_ref := card
+		var card_ref: WeakRef = weakref(card)
 		get_tree().process_frame.connect(func() -> void:
-			if is_instance_valid(card_ref):
-				card_ref.texture = Sprites.tex("coin_ad_overlay")
+			var shown: Node = card_ref.get_ref()
+			if shown != null:
+				shown.texture = Sprites.tex("coin_ad_overlay")
 		, CONNECT_ONE_SHOT)
-	overlay.add_child(_coin_ad_hotspot(card_pos, scale, Rect2(400, 720, 360, 220), _skip_coin_ad, tex))
+	shell.add_child(_coin_ad_hotspot(card_pos, scale, Rect2(400, 720, 360, 220), _skip_coin_ad, tex))
 	_coin_ad_watch = _coin_ad_hotspot(card_pos, scale, Rect2(780, 720, 420, 220), _watch_coin_ad, tex)
-	overlay.add_child(_coin_ad_watch)
+	shell.add_child(_coin_ad_watch)
 	_coin_ad_note = SpriteTextScript.new()
 	_coin_ad_note.position = Vector2(24, RR.VIEW_H - 70)
 	_coin_ad_note.configure("", 16, Vector2(RR.VIEW_W - 48, 28), HORIZONTAL_ALIGNMENT_CENTER)
-	overlay.add_child(_coin_ad_note)
+	shell.add_child(_coin_ad_note)
+	_coin_shell = shell
+	_coin_dim = dim
+	_overlay_build_usec = Time.get_ticks_usec() - started
+	print("[death] overlay_build %d us" % _overlay_build_usec)
+
+
+func _show_coin_ad() -> void:
+	var started := Time.get_ticks_usec()
+	RewardedAds.mark_timing("offer_requested")
+	finished = true
+	_invalidate_reward_session()
+	_coin_offer_open = true
+	_coin_reward_claimed = false
+	_reward_request_active = false
+	if _coin_shell == null or not is_instance_valid(_coin_shell):
+		if overlay != null:
+			_clear_overlay()
+		_ensure_coin_shell()
+	elif overlay != null and overlay != _coin_shell:
+		_clear_overlay()
+	overlay = _coin_shell
+	overlay.visible = true
+	if _coin_dim != null and is_instance_valid(_coin_dim):
+		_coin_dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	_apply_offer_phase()
 	_set_mission_presentation("aside")
 	RewardedAds.mark_timing("offer_visible")
 	_schedule_offer_load()
+	_overlay_reveal_usec = Time.get_ticks_usec() - started
 
 
 func _schedule_offer_load() -> void:
@@ -1330,8 +1473,10 @@ func _schedule_offer_load() -> void:
 		return
 	_offer_nudge_token += 1
 	var token := _offer_nudge_token
+	var host: WeakRef = weakref(self)
 	get_tree().process_frame.connect(func() -> void:
-		if not is_instance_valid(self) or token != _offer_nudge_token or not _coin_offer_open:
+		var game: Node = host.get_ref()
+		if game == null or token != game._offer_nudge_token or not game._coin_offer_open:
 			return
 		RewardedAds.mark_timing("offer_load_nudge")
 		RewardedAds.nudge_offer_load()
@@ -1374,7 +1519,7 @@ func _coin_ad_hotspot(origin: Vector2, scale: float, src: Rect2, pressed: Callab
 	btn.size = src.size * scale
 	btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	btn.pressed.connect(pressed)
-	var plate := Rect2(src.position + Vector2(30, 24), src.size - Vector2(60, 48))
+	var plate := _coin_plate_rect(src)
 	ButtonFeedbackScript.use_plate(btn, texture, src, plate, 0.4)
 	return btn
 

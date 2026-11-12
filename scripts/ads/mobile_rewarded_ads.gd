@@ -43,7 +43,7 @@ var _rewarded_sessions := {}
 func _ready() -> void:
 	if not _native_mobile():
 		return
-	_log("provider ready. mode=%s app_id=%s" % [AdCfg.monetization_mode(), AdCfg.app_id()])
+	_log_rewarded_selection("provider ready")
 	_request_consent()
 
 
@@ -460,8 +460,10 @@ func _start_sdk() -> void:
 		return
 	_block_reason = ""
 	_sdk_started = true
-	var unit := AdCfg.rewarded_unit_id()
-	_log("initializing Mobile Ads SDK. mode=%s unit=%s" % [AdCfg.monetization_mode(), unit])
+	_log_rewarded_selection("initializing Mobile Ads SDK")
+	# An empty list adds no programmatic test devices and does not remove
+	# devices registered in the AdMob console.
+	_log("request configuration does not add test-device identifiers")
 	var listener := OnInitializationCompleteListener.new()
 	listener.on_initialization_complete = _on_sdk_initialized
 	MobileAds.set_request_configuration(RequestConfiguration.new())
@@ -513,7 +515,7 @@ func _load_rewarded() -> void:
 	_block_reason = ""
 	_loading = true
 	_retry_pending = false
-	_log("rewarded request started. unit=%s" % unit)
+	_log_rewarded_selection("rewarded request started")
 	_mark_timing("ad_request_started")
 	_note_offer_phase()
 	_load_callback = RewardedAdLoadCallback.new()
@@ -637,6 +639,15 @@ func _mark_timing(event: String) -> void:
 	var host = get_parent()
 	if host != null and host.has_method("mark_timing"):
 		host.mark_timing(event)
+
+
+func _log_rewarded_selection(where: String) -> void:
+	var mode := AdCfg.monetization_mode()
+	var unit := AdCfg.rewarded_unit_id()
+	_log("%s. %s" % [where, AdCfg.describe_rewarded_selection(mode, unit)])
+	var note := AdCfg.rewarded_selection_note(mode, unit)
+	if not note.is_empty():
+		_log(note)
 
 
 func _log(message: String) -> void:

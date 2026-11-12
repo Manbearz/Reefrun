@@ -160,8 +160,26 @@ func _build_plate() -> void:
 	var region: Rect2 = info.get("region")
 	_plate_anchor = info.get("anchor")
 	_plate_kind = str(info.get("kind", "auto"))
+	var key := _mask_key(texture, region, _plate_kind)
+	if _masks.has(key):
+		var cached = _masks[key]
+		if cached is Image:
+			_apply_plate_image(cached)
+		return
+	var area := int(region.size.x) * int(region.size.y)
+	# Auto tries six full scans. A large explicit face is the same kind of
+	# main-thread stall. Both wait for the sliced baker instead of running here.
+	if _plate_kind == "auto" or area > HEAVY_PLATE_PIXELS:
+		_enqueue_plate(self, texture, region, _plate_kind)
+		return
 	var image := _silhouette(texture, region, _plate_kind)
 	if image == null:
+		return
+	_apply_plate_image(image)
+
+
+func _apply_plate_image(image: Image) -> void:
+	if _button == null or not is_instance_valid(_button) or _plate != null or image == null:
 		return
 	_plate = TextureRect.new()
 	_plate.name = "ButtonPlate"
@@ -224,18 +242,239 @@ func _draws_itself(button: BaseButton) -> bool:
 	return false
 
 
+const HEAVY_PLATE_PIXELS := 50000
+const PLATE_PIXELS_PER_FRAME := 2000
+const PLATE_SLICE_USEC := 1200
+
 static var _masks := {}
+static var _decoded := {}
+static var _jobs: Array = []
+static var _baker
+static var _baker_key := ""
+static var _baker_hosts: Array = []
+static var _service_frame := -1
+static var defer_heavy_plates := false
+static var main_thread_pixels := 0
+static var last_pump_usec := 0
+static var last_decode_usec := 0
+static var work_serial := 0
 
 
-static func _silhouette(texture: Texture2D, region: Rect2, kind: String) -> Image:
-	var key := "%s|%s|%s|%s" % [texture.resource_path, region, kind, texture.get_instance_id()]
+static func warm_plate(texture: Texture2D, region: Rect2, kind: String) -> void:
+	_enqueue_plate(null, texture, region, kind)
+
+
+static func service_plates() -> void:
+	var frame := Engine.get_process_frames()
+	if _service_frame == frame:
+		return
+	_service_frame = frame
+	if defer_heavy_plates:
+		return
+	if _baker == null:
+		if _jobs.is_empty():
+			return
+		# Decoding the source image is its own frame. Pixel work starts on the next one.
+		_begin_job(_jobs.pop_front())
+		return
+	var started := Time.get_ticks_usec()
+	var finished := false
+	var guard := 0
+	while not finished and guard < 16:
+		guard += 1
+		var before := int(_baker.pumped)
+		finished = bool(_baker.pump(200))
+		if int(_baker.pumped) == before:
+			break
+		if Time.get_ticks_usec() - started >= PLATE_SLICE_USEC:
+			break
+	last_pump_usec = Time.get_ticks_usec() - started
+	main_thread_pixels += int(_baker.pumped)
+	_baker.pumped = 0
+	work_serial += 1
+	if finished:
+		_finish_baker()
+
+
+static func cache_label() -> String:
+	var ready := 0
+	for key in _masks:
+		if _masks[key] is Image:
+			ready += 1
+	var waiting := _jobs.size() + (1 if _baker != null else 0)
+	return "ready=%d waiting=%d" % [ready, waiting]
+
+
+static func drop_dead_hosts() -> void:
+	var live: Array = []
+	for host in _baker_hosts:
+		if is_instance_valid(host):
+			live.append(host)
+	_baker_hosts = live
+	for job in _jobs:
+		var hosts: Array = job.get("hosts", [])
+		var kept: Array = []
+		for host in hosts:
+			if is_instance_valid(host):
+				kept.append(host)
+		job["hosts"] = kept
+
+
+static func plate_diag() -> String:
+	var phase := "idle"
+	var kind_i := -1
+	var kinds := 0
+	if _baker != null:
+		phase = str(_baker.phase)
+		kind_i = int(_baker.kind_i)
+		kinds = int(_baker.kind_list.size())
+	return "phase=%s kind=%d/%d jobs=%d defer=%s serial=%d" % [
+		phase, kind_i, kinds, _jobs.size(), str(defer_heavy_plates), work_serial
+	]
+
+
+static func debug_bake(texture: Texture2D, region: Rect2, kind: String) -> Image:
+	var full := _decoded_image(texture)
+	if full == null:
+		return null
+	var rect := Rect2i(int(region.position.x), int(region.position.y), int(region.size.x), int(region.size.y))
+	if rect.size.x < 4 or rect.size.y < 4 or rect.position.x < 0 or rect.position.y < 0:
+		return null
+	if rect.end.x > full.get_width() or rect.end.y > full.get_height():
+		return null
+	var crop := full.get_region(rect)
+	if crop.get_format() != Image.FORMAT_RGBA8:
+		crop.convert(Image.FORMAT_RGBA8)
+	var baker := PlateBaker.new()
+	baker.setup(crop.get_data(), crop.get_width(), crop.get_height(), kind)
+	var guard := 0
+	while not baker.pump(250000) and guard < 8:
+		guard += 1
+	return baker.result()
+
+
+static func _mask_key(texture: Texture2D, region: Rect2, kind: String) -> String:
+	var path := texture.resource_path
+	if path.is_empty():
+		path = "id:%d" % texture.get_instance_id()
+	return "%s|%s|%s" % [path, region, kind]
+
+
+static func _enqueue_plate(host: Node, texture: Texture2D, region: Rect2, kind: String) -> void:
+	if texture == null:
+		return
+	var key := _mask_key(texture, region, kind)
 	if _masks.has(key):
-		return _masks[key]
+		var cached = _masks[key]
+		if host != null and is_instance_valid(host) and cached is Image:
+			host._apply_plate_image(cached)
+		return
+	if _baker != null and _baker_key == key:
+		if host != null and host not in _baker_hosts:
+			_baker_hosts.append(host)
+		return
+	for job in _jobs:
+		if str(job.get("key", "")) != key:
+			continue
+		var hosts: Array = job.get("hosts", [])
+		if host != null and host not in hosts:
+			hosts.append(host)
+			job["hosts"] = hosts
+		return
+	var hosts: Array = []
+	if host != null:
+		hosts.append(host)
+	_jobs.append({
+		"texture": texture,
+		"region": region,
+		"kind": kind,
+		"key": key,
+		"hosts": hosts,
+	})
+
+
+static func _begin_job(job: Dictionary) -> bool:
+	var texture: Texture2D = job.get("texture") as Texture2D
+	var region: Rect2 = job.get("region", Rect2())
+	var kind := str(job.get("kind", "auto"))
+	var key := str(job.get("key", ""))
+	var hosts: Array = job.get("hosts", [])
+	if _masks.has(key):
+		var cached = _masks[key]
+		if cached is Image:
+			for host in hosts:
+				if is_instance_valid(host):
+					host._apply_plate_image(cached)
+		return false
+	var started := Time.get_ticks_usec()
+	var full := _decoded_image(texture)
+	last_decode_usec = Time.get_ticks_usec() - started
+	if full == null:
+		_masks[key] = false
+		return false
+	var rect := Rect2i(int(region.position.x), int(region.position.y), int(region.size.x), int(region.size.y))
+	if rect.size.x < 4 or rect.size.y < 4 or rect.position.x < 0 or rect.position.y < 0 or rect.end.x > full.get_width() or rect.end.y > full.get_height():
+		_masks[key] = false
+		return false
+	var crop := full.get_region(rect)
+	if crop.get_format() != Image.FORMAT_RGBA8:
+		crop.convert(Image.FORMAT_RGBA8)
+	var baker := PlateBaker.new()
+	baker.setup(crop.get_data(), crop.get_width(), crop.get_height(), kind)
+	_baker = baker
+	_baker_key = key
+	_baker_hosts = hosts
+	work_serial += 1
+	print("[plate] start decode=%d us pixels=%d key=%s" % [last_decode_usec, crop.get_width() * crop.get_height(), key])
+	return true
+
+
+static func _finish_baker() -> void:
+	var image: Image = _baker.result() if _baker != null else null
+	var key := _baker_key
+	var hosts := _baker_hosts
+	_baker = null
+	_baker_key = ""
+	_baker_hosts = []
+	_masks[key] = image if image != null else false
+	print("[plate] ready key=%s image=%s %s" % [key, str(image != null), cache_label()])
+	if image == null:
+		return
+	for host in hosts:
+		if is_instance_valid(host):
+			host._apply_plate_image(image)
+
+
+static func _decoded_image(texture: Texture2D) -> Image:
+	if texture == null:
+		return null
+	var path := texture.resource_path
+	if path.is_empty():
+		path = "id:%d" % texture.get_instance_id()
+	if _decoded.has(path):
+		return _decoded[path]
 	var src := texture.get_image()
 	if src == null:
 		return null
 	if src.is_compressed():
 		src.decompress()
+	if src.get_format() != Image.FORMAT_RGBA8:
+		src.convert(Image.FORMAT_RGBA8)
+	_decoded[path] = src
+	return src
+
+
+static func _silhouette(texture: Texture2D, region: Rect2, kind: String) -> Image:
+	var key := _mask_key(texture, region, kind)
+	if _masks.has(key):
+		var cached = _masks[key]
+		return cached if cached is Image else null
+	var src := texture.get_image()
+	if src == null:
+		return null
+	if src.is_compressed():
+		src.decompress()
+	main_thread_pixels += maxi(1, int(region.size.x) * int(region.size.y))
 	var picked := kind
 	if picked == "auto":
 		picked = _best_kind(src, region)
@@ -647,6 +886,7 @@ func _sync_visibility() -> void:
 
 
 func _process(delta: float) -> void:
+	service_plates()
 	if _button == null or not is_instance_valid(_button):
 		set_process(false)
 		return
@@ -775,3 +1015,463 @@ func _apply(instant: bool) -> void:
 	if _plate:
 		_tween.tween_property(_plate, "modulate", plate_color, seconds).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 		_tween.tween_property(_plate, "scale", plate_scale, seconds).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+
+
+# Spreads the coin-ad silhouette across frames. The crop is already RGBA8 bytes,
+# so a death frame never calls get_pixel on the full overlay.
+class PlateBaker:
+	extends RefCounted
+
+	var data := PackedByteArray()
+	var w := 0
+	var h := 0
+	var auto := false
+	var kind_list: Array[String] = []
+	var kind_i := 0
+	var phase := "face"
+	var face := PackedByteArray()
+	var seen := PackedByteArray()
+	var mask := PackedByteArray()
+	var outside := PackedByteArray()
+	var stack := PackedInt32Array()
+	var comp := PackedInt32Array()
+	var best_pixels := PackedInt32Array()
+	var edge := PackedInt32Array()
+	var grow := PackedInt32Array()
+	var best_count := 0
+	var head := 0
+	var scan := 0
+	var cursor := 0
+	var grow_step := 0
+	var filled := 0
+	var any_face := false
+	var image: Image
+	var best_image: Image
+	var best_score := -1.0
+	var opaque := 0
+	var score_x := 0
+	var score_y := 0
+	var finished := false
+	var pumped := 0
+
+	func setup(bytes: PackedByteArray, width: int, height: int, plate_kind: String) -> void:
+		data = bytes
+		w = width
+		h = height
+		auto = plate_kind == "auto"
+		kind_list.clear()
+		if auto:
+			kind_list.append("wood")
+			kind_list.append("stone")
+			kind_list.append("blue")
+			kind_list.append("gold")
+			kind_list.append("green")
+			kind_list.append("red")
+		else:
+			kind_list.append(plate_kind)
+		kind_i = 0
+		_begin_kind()
+
+	func pump(budget: int) -> bool:
+		var left := budget
+		while left > 0 and not finished:
+			var before := left
+			left = _pump_once(left)
+			if left == before:
+				break
+		return finished
+
+	func result() -> Image:
+		return best_image
+
+	func _begin_kind() -> void:
+		if kind_i >= kind_list.size():
+			if auto and best_image == null and phase != "bg_water":
+				phase = "bg_water"
+				_reset_buffers(false)
+				return
+			finished = true
+			return
+		phase = "face"
+		_reset_buffers(true)
+
+	func _reset_buffers(with_face: bool) -> void:
+		var n := w * h
+		if with_face:
+			face = PackedByteArray()
+			face.resize(n)
+		seen = PackedByteArray()
+		seen.resize(n)
+		mask = PackedByteArray()
+		mask.resize(n)
+		outside = PackedByteArray()
+		outside.resize(n)
+		stack = PackedInt32Array()
+		comp = PackedInt32Array()
+		best_pixels = PackedInt32Array()
+		edge = PackedInt32Array()
+		grow = PackedInt32Array()
+		best_count = 0
+		head = 0
+		scan = 0
+		cursor = 0
+		grow_step = 0
+		filled = 0
+		any_face = false
+		image = null
+		opaque = 0
+		score_x = 0
+		score_y = 0
+
+	func _pump_once(left: int) -> int:
+		match phase:
+			"face":
+				return _pump_face(left)
+			"components":
+				return _pump_components(left)
+			"mask":
+				return _pump_mask(left)
+			"outside":
+				return _pump_outside(left)
+			"holes":
+				return _pump_holes(left)
+			"grow":
+				return _pump_grow(left)
+			"grow_apply":
+				return _pump_grow_apply(left)
+			"paint":
+				return _pump_paint(left)
+			"score":
+				return _pump_score(left)
+			"bg_water":
+				return _pump_background(left)
+			"bg_paint":
+				return _pump_background_paint(left)
+			_:
+				finished = true
+				return 0
+		return left
+
+	func _color_at(index: int) -> Color:
+		var o := index * 4
+		return Color(data[o] / 255.0, data[o + 1] / 255.0, data[o + 2] / 255.0, data[o + 3] / 255.0)
+
+	func _is_ink(px: Color) -> bool:
+		return px.r + px.g + px.b > 2.15
+
+	func _is_water(px: Color) -> bool:
+		var r := px.r
+		var g := px.g
+		var b := px.b
+		if r > 0.55:
+			return false
+		if g > 0.85 and r > 0.35:
+			return false
+		return b > 0.25 and g > 0.18 and b + g > r + 0.28 and r < 0.5
+
+	func _is_face(px: Color, kind: String) -> bool:
+		var r := px.r
+		var g := px.g
+		var b := px.b
+		if kind == "wood":
+			return r > 0.58 and r > b + 0.12 and g > 0.28 and g < 0.9 and b < 0.62
+		if kind == "stone":
+			return b > 0.45 and b > r + 0.16 and r < 0.45 and g > 0.25 and g < 0.78 and b < 0.92
+		if kind == "blue":
+			return r < 0.62 and b > 0.45 and b > r + 0.18 and g > 0.18 and g < 0.98
+		if kind == "gold":
+			return r > 0.72 and g > 0.4 and g < 0.95 and b < 0.45 and r > b + 0.35
+		if kind == "green":
+			return g > 0.45 and g > r + 0.08 and g > b and r < 0.75
+		if kind == "red":
+			return r > 0.55 and r > g + 0.12 and r > b and g < 0.55
+		return false
+
+	func _pump_face(left: int) -> int:
+		var n := w * h
+		var current := kind_list[kind_i]
+		while left > 0 and scan < n:
+			if _is_face(_color_at(scan), current):
+				face[scan] = 1
+				any_face = true
+			scan += 1
+			left -= 1
+			pumped += 1
+		if scan >= n:
+			if not any_face:
+				_advance_kind()
+			else:
+				phase = "components"
+				scan = 0
+				head = 0
+		return left
+
+	func _pump_components(left: int) -> int:
+		var n := w * h
+		while left > 0:
+			if head < stack.size():
+				var i := stack[head]
+				head += 1
+				comp.append(i)
+				var py := int(i / w)
+				var neighbors := [i + 1, i - 1, i + w, i - w]
+				for n_i in neighbors.size():
+					var ni: int = neighbors[n_i]
+					if ni < 0 or ni >= n or seen[ni] != 0 or face[ni] == 0:
+						continue
+					if n_i < 2 and int(ni / w) != py:
+						continue
+					seen[ni] = 1
+					stack.append(ni)
+				left -= 1
+				pumped += 1
+				continue
+			if comp.size() > 0:
+				if comp.size() > best_count:
+					best_count = comp.size()
+					best_pixels = comp.duplicate()
+				comp = PackedInt32Array()
+				stack = PackedInt32Array()
+				head = 0
+			if scan >= n:
+				phase = "mask"
+				cursor = 0
+				return left
+			var start := scan
+			scan += 1
+			left -= 1
+			pumped += 1
+			if face[start] == 0 or seen[start] != 0:
+				continue
+			stack.append(start)
+			seen[start] = 1
+			head = 0
+		return left
+
+	func _pump_mask(left: int) -> int:
+		if best_count < 8:
+			_advance_kind()
+			return left - 1 if left > 0 else 0
+		while left > 0 and cursor < best_pixels.size():
+			mask[best_pixels[cursor]] = 1
+			cursor += 1
+			left -= 1
+			pumped += 1
+		if cursor < best_pixels.size():
+			return left
+		edge = PackedInt32Array()
+		for x in w:
+			edge.append(x)
+			edge.append((h - 1) * w + x)
+		for y in h:
+			edge.append(y * w)
+			edge.append(y * w + w - 1)
+		head = 0
+		phase = "outside"
+		return left
+
+	func _pump_outside(left: int) -> int:
+		var n := w * h
+		while left > 0 and head < edge.size():
+			var i := edge[head]
+			head += 1
+			left -= 1
+			pumped += 1
+			if i < 0 or i >= n or outside[i] != 0 or mask[i] != 0:
+				continue
+			if _is_ink(_color_at(i)):
+				continue
+			outside[i] = 1
+			var py := int(i / w)
+			var neighbors := [i + 1, i - 1, i + w, i - w]
+			for n_i in neighbors.size():
+				var ni: int = neighbors[n_i]
+				if ni < 0 or ni >= n:
+					continue
+				if n_i < 2 and int(ni / w) != py:
+					continue
+				edge.append(ni)
+		if head >= edge.size():
+			phase = "holes"
+			cursor = 0
+			filled = 0
+		return left
+
+	func _pump_holes(left: int) -> int:
+		var n := mask.size()
+		while left > 0 and cursor < n:
+			if mask[cursor] == 0 and outside[cursor] == 0:
+				mask[cursor] = 1
+			if mask[cursor] == 1:
+				filled += 1
+			cursor += 1
+			left -= 1
+			pumped += 1
+		if cursor >= n:
+			grow_step = 0
+			phase = "grow"
+			cursor = 0
+			grow = PackedInt32Array()
+		return left
+
+	func _pump_grow(left: int) -> int:
+		var n := w * h
+		while left > 0 and cursor < n:
+			var i := cursor
+			cursor += 1
+			left -= 1
+			pumped += 1
+			if mask[i] != 0:
+				continue
+			var x := i % w
+			var y := int(i / w)
+			var touches := false
+			if x > 0 and mask[i - 1] == 1:
+				touches = true
+			elif x + 1 < w and mask[i + 1] == 1:
+				touches = true
+			elif y > 0 and mask[i - w] == 1:
+				touches = true
+			elif y + 1 < h and mask[i + w] == 1:
+				touches = true
+			if not touches:
+				continue
+			var px := _color_at(i)
+			if px.r < 0.18 and px.g < 0.18 and px.b < 0.18:
+				grow.append(i)
+		if cursor < n:
+			return left
+		phase = "grow_apply"
+		cursor = 0
+		return left
+
+	func _pump_grow_apply(left: int) -> int:
+		while left > 0 and cursor < grow.size():
+			mask[grow[cursor]] = 1
+			filled += 1
+			cursor += 1
+			left -= 1
+			pumped += 1
+		if cursor < grow.size():
+			return left
+		grow_step += 1
+		if grow_step < 3:
+			phase = "grow"
+			cursor = 0
+			grow = PackedInt32Array()
+			return left
+		var coverage := float(filled) / float(maxi(1, w * h))
+		if coverage < 0.2 or coverage > 0.96:
+			_advance_kind()
+			return left
+		image = Image.create(w, h, false, Image.FORMAT_RGBA8)
+		phase = "paint"
+		cursor = 0
+		return left
+
+	func _pump_paint(left: int) -> int:
+		var n := w * h
+		while left > 0 and cursor < n:
+			var x := cursor % w
+			var y := int(cursor / w)
+			if mask[cursor] == 1:
+				var px := _color_at(cursor)
+				image.set_pixel(x, y, Color(px.r, px.g, px.b, 1.0))
+			cursor += 1
+			left -= 1
+			pumped += 1
+		if cursor < n:
+			return left
+		if auto:
+			phase = "score"
+			score_y = 0
+			opaque = 0
+		else:
+			best_image = image
+			finished = true
+		return left
+
+	func _pump_score(left: int) -> int:
+		while left > 0 and score_y < h:
+			while score_x < w and left > 0:
+				if image.get_pixel(score_x, score_y).a > 0.5:
+					opaque += 1
+				score_x += 2
+				left -= 1
+				pumped += 1
+			if score_x < w:
+				return left
+			score_x = 0
+			score_y += 2
+		if score_y < h:
+			return left
+		var coverage := float(opaque * 4) / float(maxi(1, w * h))
+		var score := 1.0 - absf(coverage - 0.62)
+		if score > best_score:
+			best_score = score
+			best_image = image
+		_advance_kind()
+		return left
+
+	func _pump_background(left: int) -> int:
+		var n := w * h
+		if edge.is_empty() and head == 0 and scan == 0:
+			for x in w:
+				edge.append(x)
+				edge.append((h - 1) * w + x)
+			for y in h:
+				edge.append(y * w)
+				edge.append(y * w + w - 1)
+		while left > 0 and head < edge.size():
+			var i := edge[head]
+			head += 1
+			left -= 1
+			pumped += 1
+			if i < 0 or i >= n or outside[i] != 0:
+				continue
+			var py := int(i / w)
+			if not _is_water(_color_at(i)):
+				continue
+			outside[i] = 1
+			var neighbors := [i + 1, i - 1, i + w, i - w]
+			for n_i in neighbors.size():
+				var ni: int = neighbors[n_i]
+				if ni < 0 or ni >= n or outside[ni] != 0:
+					continue
+				if n_i < 2 and int(ni / w) != py:
+					continue
+				edge.append(ni)
+		if head < edge.size():
+			return left
+		var kept := 0
+		for i in n:
+			if outside[i] == 0:
+				kept += 1
+		var coverage := float(kept) / float(maxi(1, n))
+		if coverage < 0.35 or coverage > 0.96:
+			finished = true
+			return left
+		filled = kept
+		image = Image.create(w, h, false, Image.FORMAT_RGBA8)
+		mask = outside
+		phase = "bg_paint"
+		cursor = 0
+		return left
+
+	func _pump_background_paint(left: int) -> int:
+		var n := w * h
+		while left > 0 and cursor < n:
+			if mask[cursor] == 0:
+				var px := _color_at(cursor)
+				image.set_pixel(cursor % w, int(cursor / w), Color(px.r, px.g, px.b, 1.0))
+			cursor += 1
+			left -= 1
+			pumped += 1
+		if cursor >= n:
+			best_image = image
+			finished = true
+		return left
+
+	func _advance_kind() -> void:
+		kind_i += 1
+		_begin_kind()

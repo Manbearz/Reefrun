@@ -53,6 +53,8 @@ func _run() -> void:
 	_test_platforms()
 	await _test_ui_notes(ads)
 	await _test_offer_enables_after_load(ads)
+	await _test_repeat_cycles(ads)
+	await _test_death_overlay_budget(ads)
 	_check("network_blocked", _live_http == 0, "live_completions=%d blocked_calls=%d" % [_live_http, _dead.calls if _dead != null else -1])
 	print("[admob-test] scenarios=%d passed=%d failed=%d warnings=%d" % [_passed + _failed, _passed, _failed, _warnings.size()])
 	for warning in _warnings:
@@ -441,6 +443,10 @@ func _test_platforms() -> void:
 	_check("desktop_stays_on_test", AdCfg.monetization_mode() == "test" and not AdCfg.is_production_ads())
 	_check("packed_ios_mode_is_production", AdCfg.mode_for_platform("ios") == "production")
 	_check("packed_android_mode_is_test", AdCfg.mode_for_platform("android") == "test")
+	var live_selection := AdCfg.describe_rewarded_selection("production", AdCfg.IOS_REWARDED_UNIT_ID)
+	var sample_selection := AdCfg.describe_rewarded_selection("test", AdCfg.IOS_TEST_REWARDED_UNIT_ID)
+	_check("selection_log_names_live_ios_unit", live_selection == "ad_mode=production unit=ca-app-pub-5190108736982657/2549031818 unit_kind=live" and AdCfg.rewarded_selection_note("production", AdCfg.IOS_REWARDED_UNIT_ID).contains("Test Ad label") and not live_selection.contains("idfa"))
+	_check("selection_log_names_google_sample_unit", sample_selection == "ad_mode=test unit=ca-app-pub-3940256099942544/1712485313 unit_kind=google_sample" and AdCfg.rewarded_selection_note("test", AdCfg.IOS_TEST_REWARDED_UNIT_ID).contains("Google sample"))
 	_check("packed_ios_unit_is_production", AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios")) == "ca-app-pub-5190108736982657/2549031818" and AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios")) == AdCfg.IOS_REWARDED_UNIT_ID and not AdCfg.is_google_test_rewarded_unit(AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios"))))
 	_check("packed_android_unit_is_google_test", AdCfg.rewarded_unit_for("android", AdCfg.mode_for_platform("android")) == AdCfg.ANDROID_TEST_REWARDED_UNIT_ID and AdCfg.is_google_test_rewarded_unit(AdCfg.rewarded_unit_for("android", AdCfg.mode_for_platform("android"))))
 	_check("android_test_unit", AdCfg.rewarded_unit_for("android", "test") == AdCfg.ANDROID_TEST_REWARDED_UNIT_ID)
@@ -504,6 +510,21 @@ func _test_att_policy(mobile_source: String) -> void:
 	var release := game_source.substr(game_source.find("func _release_death_and_nudge"), 420)
 	var persist_fn := game_source.substr(persist_at, 700)
 	_check("offer_paints_before_ad_request", show.find("offer_visible") != -1 and show.find("offer_visible") < show.find("nudge_offer_load") and game_source.contains("const DEATH_CARD_DELAY := 0.22") and died.contains("_begin_death_watch()") and not died.contains("_persist_death_result") and not died.contains("record_run(") and watch.contains("set_load_hold(true)") and persist_fn.find("begin_save_batch") != -1 and persist_fn.find("begin_save_batch") < persist_fn.find("record_run(") and persist_fn.find("record_run(") < persist_fn.find("end_save_batch") and release.find("_end_death_hold()") != -1 and release.find("_end_death_hold()") < release.find("nudge_offer_load") and game_source.contains("[death] frame n=%d"))
+	var physics := game_source.substr(game_source.find("func _physics_process"), 1600)
+	var after := game_source.substr(game_source.find("func _after_death"), 900)
+	_check("tumble_skips_pipe_spawn", physics.find("if _death_tumble:") != -1 and physics.find("if _death_tumble:") < physics.find("_spawn_pipes()"))
+	_check("dive_death_halts_before_card", died.contains("_halt_dive()") and died.contains("_death_tumble = true") and died.find("_halt_dive()") < died.find("create_timer"))
+	_check("daily_death_still_shows_results", after.contains("practice_daily") and after.contains("_show_over"))
+	_check("death_log_is_one_summary", game_source.contains("[death] frame n=%d") and not game_source.contains("_death_log_left"))
+	var mobile_load := Mobile.new()
+	mobile_load._loading = true
+	mobile_load._load_rewarded()
+	_check("loading_blocks_second_request", mobile_load._loading and not mobile_load._load_after_hold)
+	mobile_load._loading = false
+	mobile_load._load_hold = true
+	mobile_load._load_rewarded()
+	_check("hold_defers_without_a_second_request", mobile_load._load_after_hold and not mobile_load._loading)
+	mobile_load.free()
 	_check("wiped_out_keeps_offer_while_loading", game_source.contains("offer_phase() != \"hidden\"") and game_source.contains("AD LOADING") and game_source.contains("NO AD AVAILABLE"))
 	var preset := FileAccess.get_file_as_string("res://export_presets.cfg")
 	var ios_plugin := FileAccess.get_file_as_string("res://addons/admob/ios/bin/ads/poing_godot_admob_ads.gd")
@@ -558,6 +579,84 @@ func _test_offer_enables_after_load(ads: Node) -> void:
 	await _drop(game)
 	session.coins = 0
 	session._save()
+
+
+func _test_repeat_cycles(ads: Node) -> void:
+	var session = _session()
+	session.coins = 0
+	session.add_coins(4)
+	var game := _boot()
+	var bound := 0
+	game._bind_rewarded_ads()
+	for conn in root.get_node("RewardedAds").reward_earned.get_connections():
+		if conn.callable.get_object() == game:
+			bound += 1
+	_check("reward_signal_bound_once", bound == 1, "binds=%d" % bound)
+	ads.set_mock_offer_state("ready", "")
+	ads.set_mock_outcome(Mock.Outcome.SUCCESS, false, 0.0)
+	var shows := int(ads.mock_show_count())
+	for _i in 10:
+		_offer(game, 4)
+		game._coin_ad_watch.pressed.emit()
+		game._coin_ad_watch.pressed.emit()
+		await process_frame
+		await process_frame
+	_check("ten_cycles_pay_once_each", int(session.coins) == 44 and int(ads.mock_show_count()) == shows + 10, "wallet=%d shows=%d" % [int(session.coins), int(ads.mock_show_count())])
+	session._load()
+	_check("ten_cycles_persist", int(session.coins) == 44, "wallet=%d" % int(session.coins))
+	await _drop(game)
+	session.coins = 0
+	session._save()
+
+
+func _test_death_overlay_budget(ads: Node) -> void:
+	var game := _boot()
+	game.course = Node2D.new()
+	game.add_child(game.course)
+	game.started = true
+	game.finished = false
+	game.scroll = 0.0
+	game.spawn_index = 0
+	game._death_tumble = true
+	game._physics_process(1.0 / 60.0)
+	_check("tumble_keeps_the_fall_and_skips_spawn", game.scroll > 0.0 and game.spawn_index == 0, "scroll=%f spawn=%d" % [game.scroll, game.spawn_index])
+	game._death_tumble = false
+	var sprites = root.get_node("/root/Sprites")
+	sprites.remember("coin_ad_overlay", load("res://assets/sprites/coin_ad_overlay.png"))
+	var Feedback = preload("res://scripts/button_feedback.gd")
+	var worst_show := 0
+	var worst_pump := 0
+	var scanned := false
+	var cards := 0
+	var nodes_after_one := 0
+	for i in 10:
+		var pixels := int(Feedback.main_thread_pixels)
+		var started := Time.get_ticks_usec()
+		_offer(game, 3)
+		var show_us := Time.get_ticks_usec() - started
+		if show_us > worst_show:
+			worst_show = show_us
+		if int(Feedback.main_thread_pixels) != pixels:
+			scanned = true
+		await process_frame
+		await process_frame
+		if int(Feedback.last_pump_usec) > worst_pump:
+			worst_pump = int(Feedback.last_pump_usec)
+		cards = 0
+		for child in game.get_children():
+			if child is CanvasLayer and int(child.layer) == 40:
+				cards += 1
+		if i == 0:
+			nodes_after_one = int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT))
+	var nodes_after := int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT))
+	print("[admob-test] overlay_show_max_us=%d plate_pump_max_us=%d nodes=%d->%d" % [worst_show, worst_pump, nodes_after_one, nodes_after])
+	_check("ten_overlays_do_not_scan_on_show", not scanned and cards == 1, "cards=%d" % cards)
+	_check("ten_overlays_keep_one_card", cards == 1, "cards=%d" % cards)
+	_check("ten_overlays_do_not_accumulate_nodes", nodes_after < nodes_after_one + 40, "%d -> %d" % [nodes_after_one, nodes_after])
+	_check("overlay_show_is_bounded", worst_show < 80000, str(worst_show))
+	_check("plate_slice_is_bounded", worst_pump < 20000, str(worst_pump))
+	Feedback.defer_heavy_plates = false
+	await _drop(game)
 
 
 class DeadNet:

@@ -433,6 +433,7 @@ jobs:
           esac
           "$AAPT" dump xmltree build/Reefrun.apk AndroidManifest.xml > "$RUNNER_TEMP/apk-manifest.txt"
           printf '%s\n' "$manifest" > "$RUNNER_TEMP/aab-manifest.txt"
+          python3 -m pip install --disable-pip-version-check zstandard
           python3 tools/check_ad_build_mode.py --platform android --mode "${AD_MODE:-test}" --manifest-file "$RUNNER_TEMP/apk-manifest.txt" --manifest-file "$RUNNER_TEMP/aab-manifest.txt" --package build/Reefrun.apk --package build/Reefrun.aab
           if [ "${ANDROID_VERSION_CODE}" -le "${LAST_PUBLISHED_VERSION_CODE}" ]; then
             echo "Refusing to publish version code ${ANDROID_VERSION_CODE}. Play already has ${LAST_PUBLISHED_VERSION_CODE}."

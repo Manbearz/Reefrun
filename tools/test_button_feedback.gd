@@ -195,6 +195,18 @@ func _test_plate() -> bool:
 	if overlay.modulate.a > 0.05:
 		push_error("[button-feedback] plate stuck %s" % overlay.modulate)
 		return false
+	var baked := Feedback.debug_bake(load("res://assets/sprites/daily_overlay.png"), plate, "wood")
+	if baked == null or baked.get_width() != mask.get_width() or baked.get_height() != mask.get_height():
+		push_error("[button-feedback] sliced plate did not match the sync mask size")
+		return false
+	var mismatch := 0
+	for y in range(0, mask.get_height(), 3):
+		for x in range(0, mask.get_width(), 3):
+			if absf(mask.get_pixel(x, y).a - baked.get_pixel(x, y).a) > 0.01:
+				mismatch += 1
+	if mismatch > 0:
+		push_error("[button-feedback] sliced plate mismatches %d" % mismatch)
+		return false
 	button.queue_free()
 	return true
 

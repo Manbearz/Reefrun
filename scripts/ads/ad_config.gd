@@ -107,6 +107,24 @@ static func rewarded_unit_id() -> String:
 	return rewarded_unit_for(platform, monetization_mode())
 
 
+static func describe_rewarded_selection(mode: String, unit_id: String) -> String:
+	# The ad unit id is a public placement id. This line has no device or player id.
+	var kind := "none"
+	if is_google_test_rewarded_unit(unit_id):
+		kind = "google_sample"
+	elif not unit_id.is_empty():
+		kind = "live"
+	return "ad_mode=%s unit=%s unit_kind=%s" % [mode, unit_id, kind]
+
+
+static func rewarded_selection_note(mode: String, unit_id: String) -> String:
+	if is_google_test_rewarded_unit(unit_id):
+		return "Google sample rewarded unit. The served ad is labeled Test Ad."
+	if normalize_mode(mode) == "production" and not unit_id.is_empty():
+		return "Live rewarded unit. An AdMob-registered test device still shows the Test Ad label."
+	return ""
+
+
 static func use_mock_provider() -> bool:
 	# The mock provider can grant a reward. Keep it in the editor binary only.
 	# A debug iOS export is still an exported build, and TestFlight must not

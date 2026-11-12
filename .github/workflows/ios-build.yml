@@ -933,6 +933,7 @@ jobs:
               sys.exit(1)
           print(f"Exported iOS build number is {expected_build}. Marketing version is {expected_short}. AdMob app id, tracking description, and SDK reference are present. Checked {len(plists)} Info.plist file(s).")
           PY
+          python3 -m pip install --disable-pip-version-check zstandard
           python3 tools/check_ad_build_mode.py --platform ios --mode "${AD_MODE:-test}" --package build
 
       - name: Resolve the Google Mobile Ads Swift package
@@ -1039,6 +1040,8 @@ jobs:
             echo "Refusing to upload. Expected com.lunarentertainment.reefrun, marketing version ${IOS_MARKETING_VERSION}, and CFBundleVersion ${IOS_BUILD_NUMBER}, which must be higher than ${LAST_UPLOADED_IOS_BUILD}."
             exit 1
           fi
+          python3 -m pip install --disable-pip-version-check zstandard
+          python3 tools/check_ad_build_mode.py --platform ios --mode "${AD_MODE:-test}" --package "$IPA"
 
       - name: Upload the IPA artifact
         uses: actions/upload-artifact@v4

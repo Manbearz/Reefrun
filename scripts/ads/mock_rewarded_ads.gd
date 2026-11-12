@@ -102,6 +102,10 @@ func _show_scripted(session_id: int) -> void:
 		return
 	if outcome == Outcome.STALL:
 		return
+	# A finished cycle can run again. An in-flight resolve stays settled so it
+	# cannot be retargeted onto the show that replaced it.
+	if _settled:
+		_settled = false
 	# Bind the id now. A later show must not retarget this callback.
 	if resolve_delay <= 0.0:
 		_queue_resolve(session_id)
