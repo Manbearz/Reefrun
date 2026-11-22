@@ -314,11 +314,23 @@ static func parse_status(result: Dictionary) -> Dictionary:
 	if row.has("challenge_id"):
 		out["challenge_id"] = str(row.get("challenge_id", "")).strip_edges()
 	if not bool(out.get("attempts_counted", false)):
-		# A server that still omits the count must not be given a free life.
-		# A consumed one-attempt day stays locked. An unknown day stays unknown.
-		if out.attempted:
+		# The older status has no attempts_remaining column. attempted=false
+		# means this challenge has no consumed start, so the day opens at 3.
+		# attempted=true means the server already consumed the day.
+		var legacy_id := str(out.get("challenge_id", "")).strip_edges()
+		if legacy_id == "":
+			legacy_id = str(row.get("challenge_id", "")).strip_edges()
+		var legacy_known := legacy_id != "" or int(row.get("course_seed", 0)) != 0
+		if out.attempted and legacy_known:
+			out["attempts_used"] = ATTEMPT_LIMIT
 			out["attempts_remaining"] = 0
-			out["attempts_used"] = 1
+			out["attempts_counted"] = true
+			out["attempts_inferred"] = true
+		elif not out.attempted and legacy_known:
+			out["attempts_used"] = 0
+			out["attempts_remaining"] = ATTEMPT_LIMIT
+			out["attempts_counted"] = true
+			out["attempts_inferred"] = true
 	var course := DailyChallengeScript.from_server(row)
 	if not course.is_empty():
 		out["course"] = course
@@ -452,10 +464,75 @@ static func _upsert_period(book: Dictionary, player_id: String, display_name: St
 	})
 
 
-# Left fish stays colored longest. A negative remaining means the server
-# status is still unknown, so every fish stays gray.
+# Left fish stays colored longest. A negative remaining is still unknown:
+# the icons stay hidden until a count is confirmed.
 static func fish_lit(index: int, remaining: int) -> bool:
 	return remaining > index
+
+
+# One reading of a status payload. attempts_remaining wins when it agrees
+# with attempts_used. A mismatch is refused instead of turned into a life.
+static func count_verdict(status: Dictionary) -> Dictionary:
+	var out := {
+		"consistent": true,
+		"used": -1,
+		"remaining": -1,
+		"source": "unavailable",
+	}
+	if not bool(status.get("ok", false)):
+		return out
+	if bool(status.get("attempts_inferred", false)):
+		out["used"] = int(status.get("attempts_used", 0))
+		out["remaining"] = int(status.get("attempts_remaining", -1))
+		out["source"] = "legacy_consumed" if int(out["remaining"]) <= 0 else "legacy_unattempted"
+		out["consistent"] = (
+			int(out["used"]) >= 0
+			and int(out["used"]) <= ATTEMPT_LIMIT
+			and int(out["remaining"]) >= 0
+			and int(out["remaining"]) <= ATTEMPT_LIMIT
+			and int(out["remaining"]) == ATTEMPT_LIMIT - int(out["used"])
+		)
+		return out
+	var counted := bool(status.get("attempts_counted", false))
+	var has_used := counted and status.has("attempts_used")
+	var has_remaining := counted and status.has("attempts_remaining")
+	if has_used and has_remaining:
+		var used := int(status.get("attempts_used", 0))
+		var remaining := int(status.get("attempts_remaining", 0))
+		out["used"] = used
+		out["remaining"] = remaining
+		out["source"] = "supabase"
+		out["consistent"] = (
+			used >= 0
+			and used <= ATTEMPT_LIMIT
+			and remaining >= 0
+			and remaining <= ATTEMPT_LIMIT
+			and remaining == ATTEMPT_LIMIT - used
+		)
+		return out
+	if has_remaining:
+		var remaining := int(status.get("attempts_remaining", -1))
+		out["source"] = "supabase"
+		if remaining < 0 or remaining > ATTEMPT_LIMIT:
+			out["consistent"] = false
+			out["source"] = "inconsistent"
+			return out
+		out["remaining"] = remaining
+		out["used"] = ATTEMPT_LIMIT - remaining
+		return out
+	if has_used:
+		var used := int(status.get("attempts_used", -1))
+		out["source"] = "supabase"
+		if used < 0 or used > ATTEMPT_LIMIT:
+			out["consistent"] = false
+			out["source"] = "inconsistent"
+			return out
+		out["used"] = used
+		out["remaining"] = ATTEMPT_LIMIT - used
+		return out
+	out["consistent"] = false
+	out["source"] = "missing"
+	return out
 
 
 static func lives_from_status(status: Dictionary) -> int:
@@ -481,8 +558,11 @@ static func merge_lives(saved_challenge: String, saved_used: int, status: Dictio
 		"store": false,
 	}
 	if not bool(status.get("ok", false)):
-		if kept_challenge != "" and kept_used >= ATTEMPT_LIMIT:
-			out["lives"] = 0
+		# A failed load keeps a confirmed same-day count. It does not invent a
+		# spent day when nothing has been confirmed.
+		if kept_challenge != "" and kept_used > 0:
+			out["lives"] = maxi(0, ATTEMPT_LIMIT - kept_used)
+			out["used"] = kept_used
 		return out
 	var cid := str(status.get("challenge_id", "")).strip_edges()
 	if cid == "":
@@ -500,10 +580,13 @@ static func merge_lives(saved_challenge: String, saved_used: int, status: Dictio
 		if lives == 0:
 			out["lives"] = 0
 			return out
-		# A live server that still omits the count is the original one-attempt
-		# rule. One unstarted day is one available life. The other two are not
-		# invented, and nothing is stored as already used.
-		out["lives"] = 1 if kept_used <= 0 else 0
+		# The same challenge already has a confirmed start on this device.
+		# A later payload that drops the count must not give that life back.
+		if kept_challenge != "" and cid == kept_challenge and kept_used > 0:
+			out["lives"] = 0
+			return out
+		# The response did not identify a challenge or a count. Leave it unknown.
+		out["lives"] = -1
 		out["store"] = false
 		return out
 	if cid == "":

@@ -21,6 +21,7 @@ const ReferralRulesScript := preload("res://scripts/share/referral_rules.gd")
 
 signal signed_in(user_id: String)
 signal identity_ready
+signal daily_status_refresh_requested
 signal leaderboards_ready
 signal share_rewards_changed
 signal daily_missions_changed
@@ -948,6 +949,8 @@ func _notification(what: int) -> void:
 		return
 	refresh_daily_missions()
 	_daily_roll_checked = ""
+	# One status read after resume. The menu applies it. This is not a poll.
+	daily_status_refresh_requested.emit()
 
 
 func _process(_delta: float) -> void:

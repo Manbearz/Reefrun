@@ -1549,19 +1549,16 @@ func _watch_coin_ad() -> void:
 		return
 	if not _coin_offer_open:
 		return
-	_reward_request_active = true
-	if _coin_ad_watch:
-		_coin_ad_watch.disabled = true
-	_set_coin_ad_note("")
-	if not RewardedAds.is_rewarded_ad_available():
-		if RewardedAds.offer_phase() == "loading":
-			_reward_request_active = false
-			if _coin_ad_watch:
-				_coin_ad_watch.disabled = true
-			_set_coin_ad_note("AD LOADING")
-			return
-		_on_rewarded_ad_unavailable(0)
+	# The drawn checkmark is not a loaded ad. Present only when the provider
+	# says this show would hand a loaded object to the native SDK.
+	if RewardedAds.offer_phase() != "ready" or not RewardedAds.is_rewarded_ad_available():
+		_reward_request_active = false
+		RewardedAds.log_unready_press()
+		_apply_offer_phase()
 		return
+	_reward_request_active = true
+	_set_watch_enabled(false)
+	_set_coin_ad_note("")
 	# Store the id before show so a callback that returns immediately still
 	# belongs to this offer, not to whatever show happens next.
 	var session_id := RewardedAds.begin_show_session()
@@ -1581,6 +1578,9 @@ func _finish_coin_ad() -> void:
 	_coin_offer_open = false
 	_invalidate_reward_session()
 	var bonus := _run_coins
+	if GameSession.practice_daily:
+		_run_coins = 0
+		bonus = 0
 	if bonus > 0:
 		GameSession.add_coins(bonus)
 		_run_coins = 0
@@ -1608,9 +1608,26 @@ func _restore_coin_ad(message: String) -> void:
 		return
 	if overlay and is_instance_valid(overlay):
 		overlay.visible = true
-	if _coin_ad_watch:
-		_coin_ad_watch.disabled = still_showing
-	_set_coin_ad_note(message)
+	if still_showing:
+		_set_watch_enabled(false)
+		_set_coin_ad_note(message)
+		return
+	# A failed show or a closed ad leaves no loaded object. The checkmark
+	# stays off until the provider reports ready again. A provider that still
+	# has a loaded ad can be tried again, and keeps this message.
+	if RewardedAds.offer_phase() == "ready" and RewardedAds.is_rewarded_ad_available():
+		_set_watch_enabled(true)
+		_set_coin_ad_note(message)
+		return
+	_set_watch_enabled(false)
+	_apply_offer_phase()
+
+
+func _set_watch_enabled(enabled: bool) -> void:
+	if _coin_ad_watch == null:
+		return
+	_coin_ad_watch.disabled = not enabled
+	_coin_ad_watch.mouse_filter = Control.MOUSE_FILTER_STOP if enabled else Control.MOUSE_FILTER_IGNORE
 
 
 func _apply_offer_phase() -> void:
@@ -1618,14 +1635,12 @@ func _apply_offer_phase() -> void:
 		return
 	var phase := RewardedAds.offer_phase()
 	print("[ReefRun ads] double-coin offer visibility=%s" % phase)
-	if phase == "ready":
-		if _coin_ad_watch:
-			_coin_ad_watch.disabled = false
+	if phase == "ready" and RewardedAds.is_rewarded_ad_available():
+		_set_watch_enabled(true)
 		_set_coin_ad_note("")
 		RewardedAds.mark_timing("checkmark_enabled")
 		return
-	if _coin_ad_watch:
-		_coin_ad_watch.disabled = true
+	_set_watch_enabled(false)
 	var notice := RewardedAds.offer_status_text()
 	if notice.is_empty():
 		notice = "AD LOADING" if phase == "loading" else "NO AD AVAILABLE"
@@ -2192,6 +2207,14 @@ func _on_share_finished(_status: String) -> void:
 
 func _retry() -> void:
 	get_tree().paused = false
+	if GameSession.editor_daily_test_enabled():
+		if GameSession.editor_daily_test_lives <= 0:
+			_menu()
+			return
+		var left := GameSession.consume_editor_daily_test_life()
+		print("[DAILY DEBUG] Local test retry. Lives left: %d" % left)
+		get_tree().reload_current_scene.call_deferred()
+		return
 	if GameSession.practice_daily:
 		get_tree().reload_current_scene.call_deferred()
 		return
@@ -2205,6 +2228,8 @@ func _retry() -> void:
 
 func _menu() -> void:
 	get_tree().paused = false
+	if GameSession.editor_daily_test_enabled():
+		GameSession.editor_daily_test_show_modes = true
 	if GameSession.practice_daily:
 		GameSession.end_practice_daily()
 	get_tree().change_scene_to_file.call_deferred("res://scenes/menu/main_menu.tscn")

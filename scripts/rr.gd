@@ -9,6 +9,12 @@ const PLAY_TOP := 53.0
 const PLAY_BOTTOM := 803.0
 # The ground sprite is drawn this far past the screen bottom so its edge stays cropped.
 const GROUND_BLEED := 18.0
+# ground.png fades to nothing along its lower rows. The lobby keeps that fade
+# below the screen instead of letting the painted seabed show through.
+const GROUND_FADE := 26.0
+# background.png cuts its plants off on the last rows. That edge is drawn
+# below the screen so the visible plants end behind the ground.
+const BG_SINK := 78.0
 # Floor collision sits just below the death line, same offset the 960px layout used.
 const FLOOR_DROP := 24.0
 const FLOOR_THICK := 80.0

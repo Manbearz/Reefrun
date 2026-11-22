@@ -72,6 +72,11 @@ func set_mock_offer_state(phase: String, status: String) -> void:
 		_provider.set_offer_state(phase, status)
 
 
+func log_unready_press() -> void:
+	if _provider != null and _provider.has_method("log_unready_press"):
+		_provider.log_unready_press()
+
+
 func nudge_offer_load() -> void:
 	if _provider != null and _provider.has_method("nudge_offer_load"):
 		_provider.nudge_offer_load()

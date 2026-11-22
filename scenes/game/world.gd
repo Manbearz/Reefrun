@@ -85,11 +85,13 @@ func _build_ground() -> void:
 func apply_screen_layout() -> void:
 	var bottom := RR.screen_bottom()
 	if _bg:
-		_bg.position = Vector2(RR.VIEW_W * 0.5, bottom * 0.5)
 		var tex := _bg.texture
 		if tex:
-			var cover := maxf(RR.VIEW_W / float(tex.get_width()), bottom / float(tex.get_height()))
-			_bg.scale = Vector2(cover, cover)
+			var sink := RR.BG_SINK
+			var scale := maxf(RR.VIEW_W / float(tex.get_width()), (bottom + sink) / float(tex.get_height()))
+			_bg.scale = Vector2(scale, scale)
+			var drawn_h := float(tex.get_height()) * scale
+			_bg.position = Vector2(RR.VIEW_W * 0.5, bottom + sink - drawn_h * 0.5)
 	if _ground_a and _ground_a.texture:
 		var gy := bottom - _ground_a.texture.get_height() * _ground_a.scale.y + RR.GROUND_BLEED
 		_ground_a.position.y = gy

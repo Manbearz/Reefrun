@@ -20,8 +20,10 @@
 -- start, so an old build stops at one run. It cannot start a second.
 -- The new columns are extra JSON fields. Old builds ignore them.
 -- Ship this SQL before the Godot client that reads attempts_remaining.
--- Until this SQL is applied, that client treats a missing
--- attempts_remaining as the old one-attempt rule.
+-- Until this SQL is applied, get_daily_attempt_status omits
+-- attempts_remaining. The client treats attempted=false as 0 used and
+-- 3 remaining, and attempted=true as the day already consumed. The
+-- second and third real starts still fail on that older function.
 --
 -- A RUN THAT CROSSES MIDNIGHT
 -- The attempt stores the challenge it was claimed on. Finalize writes the

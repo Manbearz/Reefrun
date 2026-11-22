@@ -60,6 +60,7 @@ var _score_arrow_left_rect := Rect2()
 var _score_arrow_right_rect := Rect2()
 var _arrow_opaque: Dictionary = {}
 var _name_edit: LineEdit
+var _lobby_bg: TextureRect
 var _ground: TextureRect
 var _fish_icons: Array[TextureRect] = []
 var _fish_rings: Array[Panel] = []
@@ -158,7 +159,17 @@ var _status_busy := false
 var _status_again := false
 var _daily_resets_unix := 0
 var _daily_lives := -1
+# Editor-binary preview only. -1 follows the server count. Never written to disk.
+var _daily_visual_override := -1
+var _daily_source := "none"
+var _daily_paint_reason := ""
+var _daily_paint_sig := ""
+var _last_daily_status: Dictionary = {}
+var _editor_test_row: Control
+var _editor_test_announced := false
 var _status_gen := 0
+var _daily_net_retry_msec := 0
+var _daily_needs_session := false
 var _daily_fish: Array[TextureRect] = []
 var _daily_fish_color: Texture2D
 var _daily_fish_gray_tex: Texture2D
@@ -195,6 +206,8 @@ func _ready() -> void:
 		backend.leaderboards_ready.connect(_fill_scores)
 	if backend and backend.has_signal("identity_ready") and not backend.identity_ready.is_connected(_on_identity_ready):
 		backend.identity_ready.connect(_on_identity_ready)
+	if backend and backend.has_signal("daily_status_refresh_requested") and not backend.daily_status_refresh_requested.is_connected(_on_daily_status_refresh):
+		backend.daily_status_refresh_requested.connect(_on_daily_status_refresh)
 	if backend and backend.has_signal("share_rewards_changed") and not backend.share_rewards_changed.is_connected(_refresh_wallet):
 		backend.share_rewards_changed.connect(_refresh_wallet)
 	if backend and backend.has_signal("daily_missions_changed") and not backend.daily_missions_changed.is_connected(_refresh_wallet):
@@ -207,6 +220,19 @@ func _ready() -> void:
 	if ads and ads.has_signal("privacy_options_changed") and not ads.privacy_options_changed.is_connected(_sync_privacy_button):
 		ads.privacy_options_changed.connect(_sync_privacy_button)
 	_sync_menu_anchor()
+	if GameSession.has_signal("editor_daily_test_changed") and not GameSession.editor_daily_test_changed.is_connected(_on_editor_daily_test_changed):
+		GameSession.editor_daily_test_changed.connect(_on_editor_daily_test_changed)
+	_announce_editor_daily_controls()
+	if _editor_daily_test_active():
+		# A return from a local test run builds a new menu. The life count is
+		# already on the session. Paint the fish and the button from it here.
+		# The mode screen opens only for the first enable, not after every run.
+		_apply_editor_daily_test_presentation()
+		if GameSession.editor_daily_test_show_modes:
+			GameSession.editor_daily_test_show_modes = false
+			_open_modes()
+	else:
+		_refresh_daily_status()
 
 
 func _process(delta: float) -> void:
@@ -226,10 +252,19 @@ func _process(delta: float) -> void:
 	var backend := get_node_or_null("/root/Backend")
 	if _mode_busy:
 		backend = null
+	if (
+		_daily_net_retry_msec > 0
+		and Time.get_ticks_msec() >= _daily_net_retry_msec
+		and not _editor_daily_test_active()
+		and not _mode_busy
+		and not _launching
+	):
+		_daily_net_retry_msec = 0
+		_refresh_daily_status()
 	if backend and backend.has_method("daily_refresh_due") and backend.daily_refresh_due():
 		backend.call_deferred("refresh_daily_after_rollover")
-		if _modes and _modes.visible:
-			_refresh_daily_status()
+		if not _editor_daily_test_active():
+			_refresh_daily_status(true)
 	if not _scores.visible:
 		return
 	if GameSession.refresh_boards():
@@ -239,6 +274,8 @@ func _process(delta: float) -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if _try_daily_visual_override(event):
+		return
 	if _scores.visible and _score_swipe_input(event):
 		return
 	if event is InputEventScreenTouch:
@@ -322,23 +359,32 @@ func _press_button_in(node: Node, pos: Vector2) -> bool:
 
 
 func _backdrop() -> void:
-	var bg := TextureRect.new()
-	bg.texture = Sprites.tex("background")
-	bg.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	bg.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	bg.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
-	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(bg)
+	_lobby_bg = TextureRect.new()
+	_lobby_bg.texture = Sprites.tex("background")
+	_lobby_bg.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	_lobby_bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_lobby_bg.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	_lobby_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_lobby_bg)
 	_ground = TextureRect.new()
 	_ground.texture = Sprites.tex("ground")
 	_ground.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_ground.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	_ground.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_ground.position = Vector2(0, RR.screen_bottom() - RR.GROUND_H)
-	_ground.size = Vector2(RR.VIEW_W, RR.GROUND_H)
-	_ground.modulate = Color(1, 1, 1, 0.52)
+	_ground.modulate = Color.WHITE
 	add_child(_ground)
+	_place_lobby_edges()
+
+
+func _place_lobby_edges() -> void:
+	var bottom := RR.screen_bottom()
+	if _lobby_bg:
+		_lobby_bg.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		_lobby_bg.position = Vector2.ZERO
+		_lobby_bg.size = Vector2(RR.VIEW_W, bottom + RR.BG_SINK)
+	if _ground:
+		_ground.position = Vector2(0, bottom - RR.GROUND_H)
+		_ground.size = Vector2(RR.VIEW_W, RR.GROUND_H + RR.GROUND_FADE)
 
 
 func _layer() -> Control:
@@ -484,9 +530,7 @@ func _apply_home_safe_top() -> void:
 
 func _sync_menu_anchor() -> void:
 	_apply_home_safe_top()
-	var bottom := RR.screen_bottom()
-	if _ground:
-		_ground.position = Vector2(0, bottom - RR.GROUND_H)
+	_place_lobby_edges()
 	_layout_mode_overlay()
 	_layout_scores()
 	_sync_privacy_button()
@@ -1817,6 +1861,7 @@ func _build_mode_overlay() -> void:
 	_mode_reset.visible = false
 	_mode_reset.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_modes.add_child(_mode_reset)
+	_build_editor_daily_test_controls()
 	_layout_mode_overlay()
 
 
@@ -1865,6 +1910,7 @@ func _layout_mode_overlay() -> void:
 	_place_hotspot(_mission_button, MODE_MISSIONS)
 	_place_hotspot(_mode_back, MODE_BACK)
 	_layout_daily_fish()
+	_layout_editor_daily_test()
 	_layout_mode_status()
 
 
@@ -1914,7 +1960,8 @@ func _build_daily_fish() -> void:
 		icon.self_modulate = Color.WHITE
 		_modes.add_child(icon)
 		_daily_fish.append(icon)
-	_apply_attempt_fish(-1)
+	_daily_paint_reason = "build"
+	_repaint_attempt_fish()
 
 
 func _layout_daily_fish() -> void:
@@ -1939,7 +1986,10 @@ func _layout_daily_fish() -> void:
 		var icon := _daily_fish[i]
 		icon.position = placed[i].position
 		icon.size = placed[i].size
-	_apply_attempt_fish(_daily_lives)
+	# Position only. The life count is not rebuilt here, or a late layout
+	# paints gray fish on top of an already unlocked button.
+	_daily_paint_reason = "layout"
+	_repaint_attempt_fish()
 
 
 func _remember_fish_color(tex: Texture2D) -> void:
@@ -1984,22 +2034,416 @@ func _texture_has_color(tex: Texture2D) -> bool:
 	return false
 
 
+# A launched game reports Engine.is_editor_hint() false. The editor binary
+# still has the editor feature and never the export template feature.
+func _editor_daily_debug_allowed() -> bool:
+	return OS.has_feature("editor") and not OS.has_feature("template")
+
+
+func _try_daily_visual_override(event: InputEvent) -> bool:
+	if not _editor_daily_debug_allowed() or not event is InputEventKey:
+		return false
+	var key := event as InputEventKey
+	if not key.pressed or key.echo:
+		return false
+	var code := key.keycode if key.keycode != KEY_NONE else key.physical_keycode
+	var lives := -2
+	match code:
+		KEY_F6:
+			lives = 3
+		KEY_F7:
+			lives = 2
+		KEY_F8:
+			lives = 1
+		KEY_F9:
+			lives = 0
+		KEY_F10:
+			lives = -1
+		_:
+			return false
+	if code == KEY_F6:
+		print("[DAILY DEBUG] F6 reached the game input handler.")
+	if lives == 3:
+		if not GameSession.activate_editor_daily_test():
+			return false
+		_mark_input_handled()
+		return true
+	if not _set_daily_visual_override(lives):
+		return false
+	if lives >= 0 and _modes != null and not _modes.visible:
+		_open_modes()
+	_mark_input_handled()
+	return true
+
+
+func _set_daily_visual_override(lives: int) -> bool:
+	if not _editor_daily_debug_allowed():
+		return false
+	if not GameSession.set_editor_daily_test(lives):
+		return false
+	_announce_editor_daily_test(lives)
+	_apply_editor_daily_test_presentation()
+	_log_button_disable_state(_last_daily_status)
+	return true
+
+
+func _build_editor_daily_test_controls() -> void:
+	if not _editor_daily_debug_allowed() or _modes == null:
+		return
+	var panel := PanelContainer.new()
+	panel.name = "EditorDailyTest"
+	panel.z_index = 120
+	panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	var box := StyleBoxFlat.new()
+	box.bg_color = Color(0.04, 0.1, 0.16, 0.94)
+	box.set_content_margin_all(8)
+	panel.add_theme_stylebox_override("panel", box)
+	var column := VBoxContainer.new()
+	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.add_theme_constant_override("separation", 4)
+	panel.add_child(column)
+	var title := Label.new()
+	title.text = "DAILY TEST  ·  Ctrl+Shift+9"
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.add_child(title)
+	var row := HBoxContainer.new()
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_theme_constant_override("separation", 6)
+	column.add_child(row)
+	_add_editor_test_button(row, "ENABLE 3", 3)
+	_add_editor_test_button(row, "2", 2)
+	_add_editor_test_button(row, "1", 1)
+	_add_editor_test_button(row, "0 LOCK", 0)
+	_add_editor_test_button(row, "SERVER", -1)
+	var day_row := HBoxContainer.new()
+	day_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	day_row.add_theme_constant_override("separation", 6)
+	column.add_child(day_row)
+	var new_day := Button.new()
+	new_day.text = "NEW DAY"
+	new_day.focus_mode = Control.FOCUS_NONE
+	new_day.custom_minimum_size = Vector2(120, 40)
+	new_day.pressed.connect(_on_editor_new_day)
+	day_row.add_child(new_day)
+	panel.z_index = 500
+	add_child(panel)
+	_editor_test_row = panel
+
+
+func _add_editor_test_button(row: HBoxContainer, label: String, lives: int) -> void:
+	var button := Button.new()
+	button.text = label
+	button.focus_mode = Control.FOCUS_NONE
+	button.custom_minimum_size = Vector2(86, 40)
+	button.pressed.connect(_on_editor_test_lives.bind(lives))
+	row.add_child(button)
+
+
+func _layout_editor_daily_test() -> void:
+	if _editor_test_row == null:
+		return
+	var screen := RR.screen_size()
+	_editor_test_row.position = Vector2(8, 8)
+	_editor_test_row.size = Vector2(maxf(screen.x - 16.0, 280.0), 168.0)
+
+
+func _on_editor_daily_test_changed(lives: int) -> void:
+	_apply_editor_daily_test_presentation()
+	if lives >= 0 and _modes != null and not _modes.visible:
+		_open_modes()
+
+
+func _on_editor_test_lives(lives: int) -> void:
+	if lives == 3:
+		if not GameSession.activate_editor_daily_test():
+			print("[DAILY DEBUG] REFUSED. This is not an editor play session.")
+		return
+	if not _set_daily_visual_override(lives):
+		print("[DAILY DEBUG] REFUSED. This is not an editor play session.")
+		return
+	if lives < 0:
+		_refresh_daily_status()
+		return
+	if lives >= 0 and _modes != null and not _modes.visible:
+		_open_modes()
+
+
+func _on_editor_new_day() -> void:
+	if not GameSession.simulate_editor_daily_new_day():
+		print("[DAILY DEBUG] REFUSED. This is not an editor play session.")
+		return
+	if _modes != null and not _modes.visible:
+		_open_modes()
+
+
+func _on_daily_status_refresh() -> void:
+	if _editor_daily_test_active() or _mode_busy or _launching:
+		return
+	_daily_needs_session = false
+	_refresh_daily_status(true)
+
+
+func _announce_editor_daily_controls() -> void:
+	if not _editor_daily_debug_allowed() or _editor_test_announced:
+		return
+	_editor_test_announced = true
+	print("[DAILY DEBUG] DAILY TEST button is on the menu. Click ENABLE 3, or press Ctrl+Shift+9. NEW DAY restores 3 local lives.")
+
+
+func _announce_editor_daily_test(lives: int) -> void:
+	if lives < 0:
+		print("[DAILY DEBUG] Local test disabled. Following the server. Server lives: %s. test_mode=%s editor_local=off" % [
+			_server_lives_label(),
+			DailyTestModeScript.status_label(),
+		])
+		return
+	var shown := GameSession.editor_daily_test_lives
+	var fish: PackedStringArray = []
+	for i in DailyAttemptScript.ATTEMPT_LIMIT:
+		fish.append("colored" if DailyAttemptScript.fish_lit(i, shown) else "gray")
+	print("[DAILY DEBUG] Local test enabled. Lives: %d of %d. Button %s. Fish: %s. Server attempts, scores, ghosts, and coins stay unchanged. test_mode=%s editor_local=on" % [
+		shown,
+		DailyAttemptScript.ATTEMPT_LIMIT,
+		"enabled" if shown > 0 else "disabled",
+		", ".join(fish),
+		DailyTestModeScript.status_label(),
+	])
+
+
+func _log_button_disable_state(status: Dictionary) -> void:
+	var counted := bool(status.get("attempts_counted", false))
+	var server_used := "absent"
+	var server_remaining := "absent"
+	var server_max := "absent"
+	if counted:
+		if status.has("attempts_used"):
+			server_used = str(int(status.get("attempts_used", 0)))
+		if status.has("attempts_remaining"):
+			server_remaining = str(int(status.get("attempts_remaining", 0)))
+		if status.has("attempts_used") and status.has("attempts_remaining"):
+			server_max = str(int(status.get("attempts_used", 0)) + int(status.get("attempts_remaining", 0)))
+	var course: Variant = status.get("course", {})
+	var date := ""
+	var seed := 0
+	if typeof(course) == TYPE_DICTIONARY:
+		date = str(course.get("challenge_date", "")).strip_edges()
+		seed = int(course.get("course_seed", 0))
+	if date == "":
+		var challenge_id := str(status.get("challenge_id", ""))
+		var parts := challenge_id.split(":")
+		if parts.size() >= 2:
+			date = parts[1]
+	var available := date != "" or seed != 0
+	var run_active := false
+	if GameSession:
+		run_active = GameSession.practice_daily or GameSession.match_mode == GameSession.MODE_DAILY
+	var loading_done := not _status_busy and not _daily_checking
+	var editor_on := _editor_daily_test_active()
+	var editor_lives := GameSession.editor_daily_test_lives if editor_on else -1
+	var disabled := _daily_button != null and _daily_button.disabled
+	var because := "none"
+	var reasons: PackedStringArray = []
+	if disabled:
+		if editor_on and editor_lives <= 0:
+			because = "editor_local_lives_zero"
+			reasons.append("editor_local_lives_zero")
+		elif _daily_locked or _daily_lives == 0:
+			because = "server_lives_zero"
+			reasons.append("server_lives_zero")
+			if _daily_locked:
+				reasons.append("daily_locked")
+			if _saved_attempts_spent():
+				reasons.append("local_cache_spent")
+		elif _daily_lives < 0:
+			because = "status_loading"
+			reasons.append("status_loading")
+			reasons.append("server_lives_unknown")
+			if not DailyTestModeScript.enabled():
+				reasons.append("export_test_mode_off")
+			if not editor_on:
+				reasons.append("editor_local_off")
+		else:
+			because = "held_disabled"
+			reasons.append("held_disabled")
+		if not status.is_empty() and not bool(status.get("ok", false)):
+			reasons.append("status_not_ok")
+		if run_active:
+			reasons.append("run_active")
+	else:
+		reasons.append("none")
+		if editor_on:
+			reasons.append("editor_local_button_enabled")
+	var playable := _daily_button != null and not disabled
+	print("[daily] button_state server_used=%s server_remaining=%s server_max=%s client_limit=%d challenge_date=%s available=%s playable=%s run_active=%s status_loading_done=%s button_disabled=%s because=%s conditions=%s test_mode=%s editor_local=%s editor_lives=%d server_lives=%d" % [
+		server_used,
+		server_remaining,
+		server_max,
+		DailyAttemptScript.ATTEMPT_LIMIT,
+		date if date != "" else "absent",
+		"yes" if available else "no",
+		"yes" if playable else "no",
+		"yes" if run_active else "no",
+		"yes" if loading_done else "no",
+		"true" if disabled else "false",
+		because,
+		",".join(reasons),
+		DailyTestModeScript.status_label(),
+		"on" if editor_on else "off",
+		editor_lives,
+		_daily_lives,
+	])
+
+
+func _editor_daily_test_active() -> bool:
+	return _editor_daily_debug_allowed() and GameSession.editor_daily_test_enabled()
+
+
+func _apply_editor_daily_test_presentation() -> void:
+	if not _editor_daily_test_active():
+		_daily_visual_override = -1
+		_restore_server_daily_button()
+		return
+	_daily_visual_override = GameSession.editor_daily_test_lives
+	_repaint_attempt_fish()
+	if _daily_button:
+		_daily_button.disabled = GameSession.editor_daily_test_lives <= 0
+		_daily_button.modulate = Color.WHITE
+	_apply_mode_art()
+	_set_mode_note("")
+	_set_mode_reset("")
+
+
+func _restore_server_daily_button() -> void:
+	_present_server_daily("server")
+
+
+func _present_server_daily(reason: String) -> void:
+	if _editor_daily_test_active():
+		_apply_editor_daily_test_presentation()
+		return
+	var lives := _daily_lives
+	var checking := _daily_checking or _status_busy
+	_daily_locked = lives == 0 and not checking
+	var playable := lives > 0 and not checking and not _mode_busy
+	if _daily_button and not _mode_busy:
+		_daily_button.disabled = not playable
+		_daily_button.modulate = Color.WHITE
+	_daily_paint_reason = reason
+	_repaint_attempt_fish()
+	_apply_mode_art()
+	_log_daily_lives(reason)
+	_log_daily_settled()
+
+
+func _server_lives_label() -> String:
+	if _daily_lives < 0:
+		return "unknown"
+	return str(_daily_lives)
+
+
+func _fish_display_lives() -> int:
+	if _editor_daily_test_active():
+		return GameSession.editor_daily_test_lives
+	# Hide the count until this check commits, so a click cannot land on a
+	# button that already looks open.
+	if _daily_checking or _status_busy:
+		return -1
+	return _daily_lives
+
+
 func _apply_attempt_fish(remaining: int) -> void:
 	_daily_lives = remaining
+	if _editor_daily_test_active():
+		_daily_paint_reason = "editor"
+		_repaint_attempt_fish()
+		return
+	_present_server_daily("apply")
+
+
+func _repaint_attempt_fish() -> void:
+	var shown := _fish_display_lives()
+	var loading := shown < 0
 	for i in _daily_fish.size():
 		var icon := _daily_fish[i]
-		var lit := DailyAttemptScript.fish_lit(i, remaining)
 		icon.use_parent_material = false
 		icon.material = null
 		icon.modulate = Color.WHITE
 		icon.self_modulate = Color.WHITE
-		if lit and _daily_fish_color != null:
-			icon.texture = _daily_fish_color
-		elif not lit and _daily_fish_gray_tex != null:
+		icon.visible = not loading
+		if loading:
+			_log_fish_icon(i, shown, false, icon)
+			continue
+		var lit := DailyAttemptScript.fish_lit(i, shown)
+		if lit:
+			if _daily_fish_color == null:
+				icon.visible = false
+			else:
+				icon.texture = _daily_fish_color
+		elif _daily_fish_gray_tex != null:
 			icon.texture = _daily_fish_gray_tex
 		elif _daily_fish_color != null:
 			icon.texture = _daily_fish_color
-		_log_fish_icon(i, remaining, lit, icon)
+		_log_fish_icon(i, shown, lit, icon)
+	_log_fish_count(shown)
+	_note_fish_paint(shown)
+
+
+func _fish_signature(shown: int) -> String:
+	if shown < 0:
+		return "loading"
+	var parts: PackedStringArray = PackedStringArray()
+	for i in DailyAttemptScript.ATTEMPT_LIMIT:
+		parts.append("colored" if DailyAttemptScript.fish_lit(i, shown) else "gray")
+	return ",".join(parts)
+
+
+func _note_fish_paint(shown: int) -> void:
+	var sig := _fish_signature(shown)
+	if _daily_paint_sig != "" and sig != _daily_paint_sig and _daily_paint_reason == "layout":
+		print("[daily_lives] overwrite previous=%s next=%s reason=layout" % [_daily_paint_sig, sig])
+	_daily_paint_sig = sig
+
+
+func _log_daily_lives(reason: String) -> void:
+	var override_on := (
+		DailyTestModeScript.enabled()
+		or _editor_daily_test_active()
+		or _daily_visual_override >= 0
+	)
+	var shown := _fish_display_lives() if override_on else _daily_lives
+	var date := "absent"
+	var course: Variant = _last_daily_status.get("course", {})
+	if typeof(course) == TYPE_DICTIONARY:
+		date = str(course.get("challenge_date", "")).strip_edges()
+	if date == "":
+		date = "absent"
+	var used := "absent"
+	var remaining := "absent"
+	if shown >= 0:
+		used = str(DailyAttemptScript.ATTEMPT_LIMIT - shown)
+		remaining = str(shown)
+	var colored := "loading"
+	if shown >= 0:
+		var count := 0
+		for i in DailyAttemptScript.ATTEMPT_LIMIT:
+			if DailyAttemptScript.fish_lit(i, shown):
+				count += 1
+		colored = str(count)
+	var button_on := _daily_button != null and not _daily_button.disabled and not _mode_shows_locked()
+	var fish_ready := _daily_fish.size() == DailyAttemptScript.ATTEMPT_LIMIT and _daily_fish_color != null
+	var parsed := bool(_last_daily_status.get("ok", false)) and _daily_source != "inconsistent" and _daily_source != "missing"
+	print("[daily_lives] mode=%s date=%s used=%s remaining=%s fish_colored=%s button_enabled=%s source=%s fish_ready=%s parsed=%s overwrite=false reason=%s" % [
+		"override" if override_on else "normal",
+		date,
+		used,
+		remaining,
+		colored,
+		str(button_on),
+		_daily_source if _daily_source != "" else "none",
+		str(fish_ready),
+		str(parsed),
+		reason,
+	])
 
 
 func _log_fish_icon(index: int, remaining: int, lit: bool, icon: TextureRect) -> void:
@@ -2017,9 +2461,12 @@ func _log_fish_icon(index: int, remaining: int, lit: bool, icon: TextureRect) ->
 	if icon.material is ShaderMaterial:
 		var mat := icon.material as ShaderMaterial
 		shader_name = mat.shader.resource_path if mat.shader != null else "shader"
+	var expected := "loading"
+	if remaining >= 0:
+		expected = "available" if lit else "consumed"
 	print("[daily] fish index=%d expected=%s texture=%s modulate=%s self=%s parent=%s shader=%s grayscale=%s colored_pixels=%s" % [
 		index,
-		"available" if lit else "consumed",
+		expected,
 		path,
 		icon.modulate,
 		icon.self_modulate,
@@ -2030,11 +2477,87 @@ func _log_fish_icon(index: int, remaining: int, lit: bool, icon: TextureRect) ->
 	])
 
 
+func _log_fish_count(shown: int) -> void:
+	var status := _last_daily_status
+	var date := "absent"
+	var course: Variant = status.get("course", {})
+	if typeof(course) == TYPE_DICTIONARY:
+		date = str(course.get("challenge_date", "")).strip_edges()
+	if date == "":
+		var parts := str(status.get("challenge_id", "")).split(":")
+		if parts.size() >= 2:
+			date = parts[1]
+	var used := "absent"
+	var remaining := "absent"
+	if status.has("attempts_used"):
+		used = str(int(status.get("attempts_used", 0)))
+	if status.has("attempts_remaining"):
+		remaining = str(int(status.get("attempts_remaining", 0)))
+	var fish: PackedStringArray = []
+	if shown < 0:
+		fish = PackedStringArray(["loading", "loading", "loading"])
+	else:
+		for i in DailyAttemptScript.ATTEMPT_LIMIT:
+			fish.append("colored" if DailyAttemptScript.fish_lit(i, shown) else "gray")
+	var displayed := "unknown" if shown < 0 else str(shown)
+	print("[daily] fish_count challenge_date=%s attempts_used=%s attempts_remaining=%s max=%d displayed=%s fish=%s" % [
+		date if date != "" else "absent",
+		used,
+		remaining,
+		DailyAttemptScript.ATTEMPT_LIMIT,
+		displayed,
+		",".join(fish),
+	])
+
+
 func _redact_player_id(raw: String) -> String:
 	var clean := raw.strip_edges()
 	if clean.length() <= 8:
 		return "redacted" if clean != "" else ""
 	return "%s…%s" % [clean.substr(0, 4), clean.substr(clean.length() - 4, 4)]
+
+
+func _log_normal_daily(status: Dictionary) -> void:
+	var override_on := (
+		DailyTestModeScript.enabled()
+		or _editor_daily_test_active()
+		or _daily_visual_override >= 0
+	)
+	var date := "absent"
+	var course: Variant = status.get("course", {})
+	if typeof(course) == TYPE_DICTIONARY:
+		date = str(course.get("challenge_date", "")).strip_edges()
+	if date == "":
+		date = "absent"
+	var used := "absent"
+	var remaining := "absent"
+	if bool(status.get("attempts_counted", false)):
+		used = str(int(status.get("attempts_used", 0)))
+		remaining = str(int(status.get("attempts_remaining", 0)))
+	var colored := "loading"
+	if not override_on and _daily_lives >= 0:
+		var count := 0
+		for i in DailyAttemptScript.ATTEMPT_LIMIT:
+			if DailyAttemptScript.fish_lit(i, _daily_lives):
+				count += 1
+		colored = str(count)
+	elif override_on and GameSession.editor_daily_test_lives >= 0:
+		var count := 0
+		for i in DailyAttemptScript.ATTEMPT_LIMIT:
+			if DailyAttemptScript.fish_lit(i, GameSession.editor_daily_test_lives):
+				count += 1
+		colored = str(count)
+	var enabled := _daily_button != null and not _daily_button.disabled and not _mode_shows_locked()
+	print("[daily] mode=%s" % ("override" if override_on else "normal"))
+	print("[daily] challenge_date=%s" % date)
+	print("[daily] attempts_used=%s" % used)
+	print("[daily] attempts_remaining=%s" % remaining)
+	print("[daily] fish_colored=%s" % colored)
+	print("[daily] button_enabled=%s" % str(enabled))
+	print("[daily] server_fields=%s attempted=%s" % [
+		str(status.get("raw_fields", "absent")),
+		str(bool(status.get("attempted", false))),
+	])
 
 
 func _log_daily_menu(kind: String, status: Dictionary = {}, phase: String = "", lives: int = -999) -> void:
@@ -2075,6 +2598,75 @@ func _log_daily_menu(kind: String, status: Dictionary = {}, phase: String = "", 
 	])
 
 
+func _log_daily_authority(status: Dictionary, merged: Dictionary, applied: bool) -> void:
+	var course: Variant = status.get("course", {})
+	var date := ""
+	var challenge_id := str(merged.get("challenge_id", status.get("challenge_id", ""))).strip_edges()
+	if typeof(course) == TYPE_DICTIONARY:
+		date = str(course.get("challenge_date", "")).strip_edges()
+		if challenge_id == "":
+			challenge_id = str(course.get("challenge_id", "")).strip_edges()
+	var counted := bool(status.get("attempts_counted", false))
+	var server_used := "absent"
+	var server_remaining := "absent"
+	if counted:
+		server_used = str(int(status.get("attempts_used", 0)))
+		server_remaining = str(int(status.get("attempts_remaining", 0)))
+	var local_challenge := ""
+	var local_used := 0
+	if GameSession:
+		local_challenge = GameSession.daily_attempt_challenge.strip_edges()
+		local_used = GameSession.daily_attempt_used
+	var cache := local_challenge != "" or local_used > 0
+	var cache_applied := bool(merged.get("store", false))
+	if (
+		not counted
+		and local_challenge != ""
+		and local_used > 0
+		and (challenge_id == "" or challenge_id == local_challenge)
+		and int(merged.get("lives", -1)) == 0
+	):
+		cache_applied = true
+	var account := "none"
+	var backend := get_node_or_null("/root/Backend")
+	if backend != null and backend.has_method("has_session") and backend.has_session():
+		account = "shared_production_player"
+	elif GameSession and str(GameSession.player_id).begins_with("local_"):
+		account = "local_fallback"
+	var player := ""
+	if GameSession:
+		player = _redact_player_id(str(GameSession.player_id))
+	var reason := "server_count"
+	if not bool(status.get("ok", false)):
+		reason = "status_unavailable"
+	elif cache_applied and not counted:
+		reason = "local_cache_floor"
+	elif not counted:
+		reason = "server_omitted_attempts_remaining"
+	elif bool(status.get("attempts_inferred", false)):
+		reason = "legacy_status_inferred"
+	elif _daily_lives == 0:
+		reason = "server_none_remaining"
+	print("[daily] authority date=%s challenge=%s server_used=%s server_remaining=%s ui_lives=%d display_lives=%d local_cache=%s local_challenge=%s local_used=%d cache_applied=%s account=%s player=%s editor_binary=%s editor_hint=%s applied=%s reason=%s" % [
+		date if date != "" else "absent",
+		challenge_id if challenge_id != "" else "absent",
+		server_used,
+		server_remaining,
+		_daily_lives,
+		_fish_display_lives(),
+		"yes" if cache else "no",
+		local_challenge if local_challenge != "" else "none",
+		local_used,
+		"yes" if cache_applied else "no",
+		account,
+		player,
+		str(_editor_daily_debug_allowed()),
+		str(Engine.is_editor_hint()),
+		str(applied),
+		reason,
+	])
+
+
 func _mode_cover() -> Panel:
 	var cover := Panel.new()
 	cover.visible = false
@@ -2100,8 +2692,12 @@ func _layout_mode_status() -> void:
 
 
 func _mode_shows_locked() -> bool:
+	if _editor_daily_test_active():
+		return GameSession.editor_daily_test_lives <= 0
 	if DailyTestModeScript.enabled():
 		return false
+	if _daily_checking or _status_busy or _daily_lives < 0:
+		return true
 	return _daily_locked
 
 
@@ -2116,26 +2712,52 @@ func _apply_mode_art() -> void:
 		_mode_card.texture = tex
 
 
+func _saved_attempt_period_open() -> bool:
+	var resets := int(GameSession.daily_attempt_resets_unix)
+	if resets <= 0:
+		return false
+	var now := 0
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("estimated_server_unix"):
+		now = int(backend.estimated_server_unix())
+	if now <= 0:
+		return false
+	return now < resets
+
+
+func _cache_for_status_merge() -> Array:
+	if not _saved_attempt_period_open():
+		return ["", 0]
+	return [GameSession.daily_attempt_challenge, GameSession.daily_attempt_used]
+
+
 func _open_modes() -> void:
 	if _modes == null:
 		return
 	_mode_busy = false
 	_modes.visible = true
-	if _daily_locked or _saved_attempts_spent():
+	if _editor_daily_test_active():
+		_apply_editor_daily_test_presentation()
+	elif _daily_checking or _status_busy:
+		_arm_daily_pending()
+	elif _daily_lives == 0 and (_daily_locked or _saved_attempts_spent()):
 		var resets := _daily_resets_unix
 		if resets <= 0:
 			resets = int(GameSession.daily_attempt_resets_unix)
 		_show_daily_completed(resets)
-	elif _daily_lives > 0:
-		_clear_daily_lock()
+	elif _daily_status_settled():
 		_apply_attempt_fish(_daily_lives)
 	else:
 		_set_mode_note("")
 		_set_mode_reset("")
 		_hold_daily_until_status()
 	_layout_mode_overlay()
+	if _editor_daily_test_active():
+		_apply_editor_daily_test_presentation()
+	_announce_editor_daily_controls()
 	_log_daily_menu("open")
-	_refresh_daily_status()
+	if not _editor_daily_test_active() and not _daily_status_settled():
+		_refresh_daily_status()
 
 
 func _saved_attempts_spent() -> bool:
@@ -2177,8 +2799,12 @@ func _set_mode_reset(_text: String) -> void:
 
 
 func _on_identity_ready() -> void:
-	if _modes and _modes.visible:
-		_refresh_daily_status()
+	if _editor_daily_test_active() or _mode_busy or _launching:
+		return
+	if not _daily_needs_session and _daily_status_settled():
+		return
+	_daily_needs_session = false
+	_refresh_daily_status()
 
 
 func _show_daily_completed(resets_unix: int) -> void:
@@ -2198,10 +2824,21 @@ func _show_daily_completed(resets_unix: int) -> void:
 
 
 func _clear_daily_lock() -> void:
-	_daily_locked = false
+	if (_daily_checking or _status_busy) and not _editor_daily_test_active():
+		_arm_daily_pending()
+		return
 	_daily_checking = false
+	if _daily_lives <= 0:
+		if _daily_lives == 0:
+			_daily_locked = true
+		if _daily_button and not _mode_busy:
+			_daily_button.disabled = true
+			_daily_button.modulate = Color.WHITE
+		_apply_mode_art()
+		return
+	_daily_locked = false
 	_daily_resets_unix = 0
-	if _daily_button:
+	if _daily_button and not _mode_busy:
 		_daily_button.disabled = false
 		_daily_button.modulate = Color.WHITE
 	_apply_mode_art()
@@ -2213,58 +2850,132 @@ func _clear_daily_lock() -> void:
 
 
 func _keep_daily_unavailable() -> void:
-	if _saved_attempts_spent():
+	if _editor_daily_test_active():
+		# A missing session must not lock the editor-only life count.
+		_apply_editor_daily_test_presentation()
+		return
+	var cache: Array = _cache_for_status_merge()
+	var cached_used := int(cache[1])
+	if str(cache[0]) != "" and cached_used >= DailyAttemptScript.ATTEMPT_LIMIT:
 		_show_daily_completed(GameSession.daily_attempt_resets_unix if _daily_resets_unix <= 0 else _daily_resets_unix)
 		return
 	_hold_daily_until_status()
 
 
 func _hold_daily_until_status() -> void:
-	if DailyTestModeScript.enabled():
+	if DailyTestModeScript.enabled() or _editor_daily_test_active():
 		return
 	_apply_attempt_fish(-1)
 	if _daily_button and not _daily_locked:
 		_daily_button.disabled = true
 
 
-func _refresh_daily_status() -> void:
-	if _status_busy:
-		_status_again = true
+func _daily_status_settled() -> bool:
+	return (
+		not _editor_daily_test_active()
+		and not _daily_checking
+		and not _status_busy
+		and _daily_lives >= 0
+		and bool(_last_daily_status.get("ok", false))
+		and _daily_net_retry_msec == 0
+	)
+
+
+func _arm_daily_pending() -> void:
+	if _editor_daily_test_active():
 		return
-	if _mode_busy:
-		return
-	var backend := get_node_or_null("/root/Backend")
-	if backend == null or not backend.has_method("fetch_daily_attempt_status"):
-		print("[daily] status_ui skipped error=no_backend")
-		_keep_daily_unavailable()
-		return
-	if not backend.has_method("has_session") or not backend.has_session():
-		print("[daily] status_ui skipped error=no_session button_disabled=%s" % str(_daily_button != null and _daily_button.disabled))
-		_keep_daily_unavailable()
-		return
-	_status_busy = true
-	_daily_checking = true
-	_status_gen += 1
-	var gen := _status_gen
-	if _daily_button and not _daily_locked and not DailyTestModeScript.enabled():
+	if _daily_button and not _mode_busy:
 		_daily_button.disabled = true
-	var token := _mode_token
-	var status: Dictionary = await backend.fetch_daily_attempt_status()
-	_status_busy = false
-	if gen != _status_gen:
-		_daily_checking = false
+		_daily_button.modulate = Color.WHITE
+	_repaint_attempt_fish()
+	_apply_mode_art()
+
+
+func _colored_fish_count(lives: int) -> int:
+	if lives < 0:
+		return -1
+	var count := 0
+	for i in DailyAttemptScript.ATTEMPT_LIMIT:
+		if DailyAttemptScript.fish_lit(i, lives):
+			count += 1
+	return count
+
+
+func _log_daily_settled() -> void:
+	if _editor_daily_test_active():
 		return
+	var shown := _fish_display_lives()
+	var remaining := "absent"
+	var colored := "loading"
+	if shown >= 0:
+		remaining = str(shown)
+		colored = str(_colored_fish_count(shown))
+	print("[daily] checking=%s remaining=%s fish_colored=%s button_disabled=%s" % [
+		str(_daily_checking),
+		remaining,
+		colored,
+		str(_daily_button != null and _daily_button.disabled),
+	])
+
+
+func _commit_daily_lives(lives: int) -> void:
+	_daily_checking = false
+	_status_busy = false
+	if _editor_daily_test_active():
+		_apply_editor_daily_test_presentation()
+		return
+	if lives >= 0:
+		_daily_net_retry_msec = 0
+		_daily_needs_session = false
+	if lives == 0:
+		_show_daily_completed(_daily_resets_unix)
+	elif lives > 0:
+		_apply_attempt_fish(lives)
+	else:
+		_hold_daily_until_status()
+
+
+func _fail_daily_status(status: Dictionary) -> void:
+	_status_busy = false
+	_daily_checking = false
+	_hold_daily_until_status()
+	var code := int(status.get("status", 0))
+	if not _editor_daily_test_active() and (code == 0 or code >= 500):
+		_daily_net_retry_msec = Time.get_ticks_msec() + 30000
+	else:
+		_daily_net_retry_msec = 0
+
+
+func _finish_daily_status(status: Dictionary, generation: int) -> void:
+	if generation != _status_gen:
+		return
+	_status_busy = false
 	if _status_again:
 		_status_again = false
-		_daily_checking = false
 		_refresh_daily_status()
+		if not _status_busy:
+			_fail_daily_status(status)
 		return
 	if not is_inside_tree():
 		_daily_checking = false
 		return
+	var verdict := DailyAttemptScript.count_verdict(status)
+	_daily_source = str(verdict.get("source", "unavailable"))
+	if not bool(status.get("ok", false)) or not bool(verdict.get("consistent", true)):
+		if bool(status.get("ok", false)):
+			print("[daily_lives] inconsistent used=%s remaining=%s" % [
+				str(verdict.get("used", -1)),
+				str(verdict.get("remaining", -1)),
+			])
+		_last_daily_status = status
+		_fail_daily_status(status)
+		_log_daily_authority(status, {"lives": -1, "store": false}, true)
+		_log_button_disable_state(status)
+		return
+	var cache: Array = _cache_for_status_merge()
 	var merged: Dictionary = DailyAttemptScript.merge_lives(
-		GameSession.daily_attempt_challenge,
-		GameSession.daily_attempt_used,
+		str(cache[0]),
+		int(cache[1]),
 		status
 	)
 	if bool(merged.get("store", false)):
@@ -2274,39 +2985,59 @@ func _refresh_daily_status() -> void:
 			int(status.get("resets_at_unix", -1))
 		)
 	var lives := int(merged.get("lives", -1))
-	var phase := "unavailable"
-	if bool(status.get("ok", false)) and lives >= 0:
-		phase = "confirmed"
-	elif str(status.get("error", "")) == "busy":
-		phase = "loading"
-	_log_daily_menu("status", status, phase, lives)
-	if token != _mode_token or not is_inside_tree() or _modes == null:
-		_daily_checking = false
-		return
 	var course: Variant = status.get("course", {})
 	if typeof(course) == TYPE_DICTIONARY and int(course.get("course_seed", 0)) != 0:
 		_status_course = course
-	if lives == 0:
-		_show_daily_completed(int(status.get("resets_at_unix", GameSession.daily_attempt_resets_unix)))
-	elif lives > 0:
-		_clear_daily_lock()
-		_apply_attempt_fish(lives)
-	else:
-		_daily_checking = false
-		if _saved_attempts_spent():
-			_show_daily_completed(GameSession.daily_attempt_resets_unix)
-		else:
-			_hold_daily_until_status()
+	_last_daily_status = status
+	if lives >= 0:
+		_daily_resets_unix = int(status.get("resets_at_unix", _daily_resets_unix))
+	_commit_daily_lives(lives)
 	if DailyTestModeScript.enabled():
 		_apply_daily_test_override()
-	print("[daily] status_ui status=%d ok=%s attempted=%s error=%s button_disabled=%s test_mode=%s" % [
+	if _editor_daily_test_active():
+		_apply_editor_daily_test_presentation()
+	_log_daily_authority(status, merged, true)
+	_log_button_disable_state(status)
+	print("[daily] status_ui status=%d ok=%s attempted=%s error=%s button_disabled=%s test_mode=%s editor_local=%s" % [
 		int(status.get("status", 0)),
 		str(bool(status.get("ok", false))),
 		str(bool(status.get("attempted", false))),
 		str(status.get("error", "")),
 		str(_daily_button != null and _daily_button.disabled),
 		DailyTestModeScript.status_label(),
+		"on" if _editor_daily_test_active() else "off",
 	])
+	_log_normal_daily(status)
+
+
+func _refresh_daily_status(follow_when_busy: bool = false) -> void:
+	if _editor_daily_test_active():
+		return
+	if _status_busy:
+		if follow_when_busy:
+			_status_again = true
+		return
+	if _mode_busy:
+		return
+	var backend := get_node_or_null("/root/Backend")
+	if backend == null or not backend.has_method("fetch_daily_attempt_status"):
+		print("[daily] status_ui skipped error=no_backend")
+		_fail_daily_status({"ok": false, "status": 0, "error": "no_backend"})
+		return
+	if not backend.has_method("has_session") or not backend.has_session():
+		_daily_needs_session = true
+		print("[daily] status_ui skipped error=no_session button_disabled=%s" % str(_daily_button != null and _daily_button.disabled))
+		_fail_daily_status({"ok": false, "status": 0, "error": "no_session"})
+		return
+	_daily_needs_session = false
+	_status_busy = true
+	_daily_checking = true
+	_status_gen += 1
+	var gen := _status_gen
+	_arm_daily_pending()
+	_log_daily_settled()
+	var status: Dictionary = await backend.fetch_daily_attempt_status()
+	_finish_daily_status(status, gen)
 
 
 func _daily_backend_ready() -> bool:
@@ -2360,6 +3091,63 @@ func _start_practice_daily() -> void:
 	await _open_game()
 
 
+func _editor_test_course() -> Dictionary:
+	if int(_status_course.get("course_seed", 0)) != 0 and str(_status_course.get("challenge_id", "")).strip_edges() != "":
+		return _status_course.duplicate(true)
+	if _status_busy:
+		for _i in 300:
+			await get_tree().process_frame
+			if not _status_busy:
+				break
+		if int(_status_course.get("course_seed", 0)) != 0 and str(_status_course.get("challenge_id", "")).strip_edges() != "":
+			return _status_course.duplicate(true)
+	var backend := get_node_or_null("/root/Backend")
+	if backend and backend.has_method("challenge_for_new_match"):
+		var ready: Variant = backend.challenge_for_new_match()
+		if typeof(ready) == TYPE_DICTIONARY and int(ready.get("course_seed", 0)) != 0 and str(ready.get("challenge_id", "")).strip_edges() != "":
+			return ready
+	if backend and backend.has_method("fetch_daily_attempt_status"):
+		var status: Dictionary = await backend.fetch_daily_attempt_status()
+		var course: Variant = status.get("course", {})
+		if typeof(course) == TYPE_DICTIONARY and int(course.get("course_seed", 0)) != 0:
+			_status_course = course
+			return course.duplicate(true)
+	return {}
+
+
+func _start_editor_daily_test() -> void:
+	if not _editor_daily_test_active() or _mode_busy:
+		return
+	if GameSession.editor_daily_test_lives <= 0:
+		_apply_editor_daily_test_presentation()
+		print("[DAILY DEBUG] Local test blocked. Lives left: 0")
+		return
+	_mode_busy = true
+	_mode_token += 1
+	var token := _mode_token
+	var course := await _editor_test_course()
+	if not is_inside_tree() or token != _mode_token:
+		_mode_busy = false
+		return
+	if int(course.get("course_seed", 0)) == 0 or str(course.get("challenge_id", "")).strip_edges() == "":
+		_mode_busy = false
+		print("[DAILY DEBUG] Local test blocked. Daily course is not loaded.")
+		_apply_editor_daily_test_presentation()
+		return
+	if not GameSession.begin_editor_daily_test(course):
+		_mode_busy = false
+		_apply_editor_daily_test_presentation()
+		return
+	var left := GameSession.consume_editor_daily_test_life()
+	_apply_editor_daily_test_presentation()
+	print("[DAILY DEBUG] Local test run started. Lives left: %d seed=%d id=%s" % [
+		left,
+		GameSession.course_seed,
+		GameSession.current_challenge_id(),
+	])
+	await _open_game()
+
+
 func _choose_unlimited() -> void:
 	if _mode_busy:
 		return
@@ -2367,19 +3155,30 @@ func _choose_unlimited() -> void:
 
 
 func _choose_daily() -> void:
+	if _editor_daily_test_active():
+		_start_editor_daily_test()
+		return
 	if DailyTestModeScript.enabled():
 		_start_practice_daily()
 		return
-	if _mode_busy or _daily_checking:
+	if _mode_busy or _daily_checking or _status_busy:
+		_arm_daily_pending()
 		print("[daily] choose blocked busy=%s checking=%s button_disabled=%s" % [
 			str(_mode_busy),
-			str(_daily_checking),
+			str(_daily_checking or _status_busy),
 			str(_daily_button != null and _daily_button.disabled),
 		])
 		return
 	if _daily_locked:
 		print("[daily] choose blocked locked=true")
 		_show_daily_completed(_daily_resets_unix)
+		return
+	if _daily_lives <= 0:
+		print("[daily] choose blocked lives=%d" % _daily_lives)
+		if _daily_lives == 0:
+			_show_daily_completed(_daily_resets_unix)
+		else:
+			_hold_daily_until_status()
 		return
 	if not _daily_backend_ready():
 		print("[daily] choose blocked error=backend_not_ready")

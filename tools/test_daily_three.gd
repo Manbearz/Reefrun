@@ -20,8 +20,13 @@ func _run() -> void:
 	ok = _check("next_day_restores_three", _reset()) and ok
 	ok = _check("crossing_midnight_keeps_the_started_day", _midnight()) and ok
 	ok = _check("fish_states", _fish()) and ok
+	ok = _check("startup_fish_and_button_agree", _startup_agreement()) and ok
+	ok = _check("status_check_blocks_the_button", _status_race()) and ok
 	ok = _check("fish_textures_are_separate", _fish_textures()) and ok
+	ok = _check("editor_visual_override_is_display_only", _visual_override()) and ok
+	ok = _check("editor_daily_test_is_local", _editor_daily_test()) and ok
 	ok = _check("unknown_status_is_not_three_lives", _unknown()) and ok
+	ok = _check("production_status_shape", _production_status_shape()) and ok
 	ok = _check("restart_cannot_restore_a_life", _restart_floor()) and ok
 	ok = _check("locked_button_replaces_open_art", _button_art()) and ok
 	ok = _check("locked_only_at_zero", _locked()) and ok
@@ -212,6 +217,244 @@ func _midnight() -> bool:
 	)
 
 
+func _startup_agreement() -> bool:
+	var bad := DailyAttemptScript.count_verdict({
+		"ok": true,
+		"attempts_counted": true,
+		"attempts_used": 1,
+		"attempts_remaining": 3,
+	})
+	var both := DailyAttemptScript.count_verdict({
+		"ok": true,
+		"attempts_counted": true,
+		"attempts_used": 1,
+		"attempts_remaining": 2,
+	})
+	var only_remaining := DailyAttemptScript.count_verdict({
+		"ok": true,
+		"attempts_counted": true,
+		"attempts_remaining": 1,
+	})
+	var legacy := DailyAttemptScript.count_verdict(DailyAttemptScript.parse_status({
+		"ok": true,
+		"status": 200,
+		"data": [{"attempted": false, "challenge_id": "daily:2026-11-21:cv1:pv1", "course_seed": 1}],
+	}))
+	if (
+		bool(bad.get("consistent", true))
+		or not bool(both.get("consistent", false))
+		or int(both.get("remaining", -1)) != 2
+		or str(both.get("source", "")) != "supabase"
+		or int(only_remaining.get("used", -1)) != 2
+		or str(legacy.get("source", "")) != "legacy_unattempted"
+		or int(legacy.get("remaining", -1)) != 3
+	):
+		return false
+	var menu_script: GDScript = load("res://scenes/menu/main_menu.gd") as GDScript
+	if menu_script == null:
+		return false
+	var menu = menu_script.new()
+	var host := Control.new()
+	var button := Button.new()
+	menu._modes = host
+	menu._daily_button = button
+	menu._daily_lives = 3
+	menu._daily_source = "supabase"
+	menu._build_daily_fish()
+	if menu._daily_lives != 3:
+		host.free()
+		button.free()
+		menu.free()
+		return false
+	var img := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.1, 0.45, 0.95, 1.0))
+	menu._remember_fish_color(ImageTexture.create_from_image(img))
+	var color_tex: Texture2D = menu._daily_fish_color
+	var agreed := true
+	for remaining in [3, 2, 1, 0]:
+		menu._apply_attempt_fish(remaining)
+		var enabled: bool = not button.disabled and not menu._mode_shows_locked()
+		var fish_ok: bool = _fish_icons_match(menu, [remaining > 0, remaining > 1, remaining > 2], color_tex)
+		if enabled != (remaining > 0) or menu._daily_locked != (remaining == 0) or not fish_ok:
+			agreed = false
+	menu._apply_attempt_fish(2)
+	menu._daily_paint_reason = "layout"
+	menu._repaint_attempt_fish()
+	if button.disabled or menu._daily_lives != 2 or not _fish_icons_match(menu, [true, true, false], color_tex):
+		agreed = false
+	menu._apply_attempt_fish(2)
+	menu._clear_daily_lock()
+	if button.disabled or menu._daily_locked or not _fish_icons_match(menu, [true, true, false], color_tex):
+		agreed = false
+	menu._apply_attempt_fish(0)
+	menu._clear_daily_lock()
+	if not button.disabled or not menu._daily_locked or not _fish_icons_match(menu, [false, false, false], color_tex):
+		agreed = false
+	var session = get_root().get_node("GameSession")
+	var was_active: bool = session.editor_daily_test_active
+	session.set_editor_daily_test(-1)
+	var normal: bool = not session.editor_daily_test_enabled() and menu._daily_visual_override < 0
+	session.editor_daily_test_active = was_active
+	host.free()
+	button.free()
+	menu.free()
+	return agreed and normal
+
+
+func _fish_hidden(menu) -> bool:
+	if menu._daily_fish.size() != 3:
+		return false
+	for icon in menu._daily_fish:
+		if icon.visible:
+			return false
+	return true
+
+
+func _status_race() -> bool:
+	# The menu stays out of the tree, so _ready cannot start a live status
+	# request. Nothing here claims, starts, or finalizes an attempt.
+	var session = get_root().get_node("GameSession")
+	var was_active: bool = session.editor_daily_test_active
+	var was_lives: int = session.editor_daily_test_lives
+	session.set_editor_daily_test(-1)
+	var menu_script: GDScript = load("res://scenes/menu/main_menu.gd") as GDScript
+	if menu_script == null:
+		session.editor_daily_test_active = was_active
+		session.editor_daily_test_lives = was_lives
+		return false
+	var menu = menu_script.new()
+	var host := Control.new()
+	var button := Button.new()
+	var card := TextureRect.new()
+	menu._modes = host
+	menu._daily_button = button
+	menu._mode_card = card
+	menu._build_daily_fish()
+	var img := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.1, 0.45, 0.95, 1.0))
+	menu._remember_fish_color(ImageTexture.create_from_image(img))
+	var color_tex: Texture2D = menu._daily_fish_color
+	if menu._editor_daily_test_active() or color_tex == null:
+		host.free()
+		button.free()
+		card.free()
+		menu.free()
+		session.editor_daily_test_active = was_active
+		session.editor_daily_test_lives = was_lives
+		return false
+	var passed := true
+	button.disabled = false
+	menu._daily_checking = true
+	menu._status_busy = false
+	menu._mode_busy = false
+	menu._mode_token = 0
+	menu._daily_lives = 3
+	menu._apply_attempt_fish(3)
+	passed = passed and button.disabled and menu._mode_shows_locked() and _fish_hidden(menu) and menu._daily_checking
+	menu._choose_daily()
+	passed = (
+		passed
+		and not menu._mode_busy
+		and menu._mode_token == 0
+		and button.disabled
+		and menu._daily_checking
+		and menu._daily_lives == 3
+	)
+	menu._status_gen = 4
+	menu._finish_daily_status({"ok": false, "status": 500, "error": "stale"}, 3)
+	passed = passed and menu._daily_checking and menu._daily_lives == 3 and menu._status_gen == 4 and button.disabled
+	menu._status_busy = true
+	menu._status_again = false
+	menu._refresh_daily_status(false)
+	passed = passed and not menu._status_again and menu._status_busy and menu._status_gen == 4
+	menu._refresh_daily_status(true)
+	passed = passed and menu._status_again and menu._status_gen == 4
+	menu._status_again = false
+	menu._daily_needs_session = false
+	menu._launching = false
+	menu._on_daily_status_refresh()
+	passed = passed and menu._status_again and menu._status_gen == 4
+	menu._status_again = false
+	menu._on_identity_ready()
+	passed = passed and not menu._status_again and menu._status_busy and menu._status_gen == 4
+	menu._mode_card = null
+	menu._open_modes()
+	passed = passed and not menu._status_again and menu._status_busy and button.disabled and menu._daily_checking
+	menu._fail_daily_status({"ok": false, "status": 404, "error": "missing"})
+	passed = (
+		passed
+		and not menu._daily_checking
+		and menu._daily_lives < 0
+		and button.disabled
+		and menu._mode_shows_locked()
+		and menu._daily_net_retry_msec == 0
+		and not menu._daily_status_settled()
+	)
+	menu._fail_daily_status({"ok": false, "status": 0, "error": "offline"})
+	passed = (
+		passed
+		and not menu._daily_checking
+		and not menu._status_busy
+		and menu._daily_lives < 0
+		and button.disabled
+		and _fish_hidden(menu)
+		and menu._daily_net_retry_msec > Time.get_ticks_msec()
+	)
+	menu._commit_daily_lives(3)
+	passed = passed and _race_settled(menu, 3, false, [true, true, true], color_tex)
+	menu._commit_daily_lives(2)
+	passed = passed and _race_settled(menu, 2, false, [true, true, false], color_tex)
+	menu._commit_daily_lives(1)
+	passed = passed and _race_settled(menu, 1, false, [true, false, false], color_tex)
+	menu._commit_daily_lives(0)
+	passed = passed and _race_settled(menu, 0, true, [false, false, false], color_tex)
+	menu._commit_daily_lives(3)
+	menu._last_daily_status = {"ok": true}
+	menu._status_gen = 9
+	menu._status_busy = false
+	menu._daily_checking = false
+	menu._daily_net_retry_msec = 0
+	menu._daily_needs_session = false
+	menu._on_identity_ready()
+	menu._open_modes()
+	passed = (
+		passed
+		and menu._status_gen == 9
+		and not menu._status_busy
+		and not menu._daily_checking
+		and menu._daily_lives == 3
+		and not button.disabled
+		and _fish_icons_match(menu, [true, true, true], color_tex)
+	)
+	host.free()
+	button.free()
+	card.free()
+	menu.free()
+	session.editor_daily_test_active = was_active
+	session.editor_daily_test_lives = was_lives
+	return passed
+
+
+func _race_fish_visible(menu) -> bool:
+	for icon in menu._daily_fish:
+		if not icon.visible:
+			return false
+	return menu._daily_fish.size() == 3
+
+
+func _race_settled(menu, lives: int, locked: bool, lit: Array, color_tex: Texture2D) -> bool:
+	return (
+		not menu._daily_checking
+		and not menu._status_busy
+		and menu._daily_lives == lives
+		and menu._daily_net_retry_msec == 0
+		and menu._daily_button.disabled == locked
+		and menu._mode_shows_locked() == locked
+		and _fish_icons_match(menu, lit, color_tex)
+		and _race_fish_visible(menu)
+	)
+
+
 func _fish() -> bool:
 	if not DailyAttemptScript.fish_lit(0, 3) or not DailyAttemptScript.fish_lit(2, 3):
 		return false
@@ -280,6 +523,213 @@ func _fish_icons_match(menu, lit: Array, color_tex: Texture2D) -> bool:
 	return true
 
 
+func _fn_body(source: String, name: String) -> String:
+	var at := source.find(name)
+	if at < 0:
+		return ""
+	var body := source.substr(at)
+	var next := body.find("\nfunc ")
+	if next > 0:
+		body = body.substr(0, next)
+	return body
+
+
+func _visual_override() -> bool:
+	var source := FileAccess.get_file_as_string("res://scenes/menu/main_menu.gd")
+	var gate := _fn_body(source, "func _editor_daily_debug_allowed")
+	var setter := _fn_body(source, "func _set_daily_visual_override")
+	var paint := _fn_body(source, "func _repaint_attempt_fish")
+	var choose := _fn_body(source, "func _choose_daily")
+	var keys := _fn_body(source, "func _try_daily_visual_override")
+	var gated := (
+		gate.find("OS.has_feature(\"editor\")") >= 0
+		and gate.find("not OS.has_feature(\"template\")") >= 0
+		and gate.find("has_feature(\"debug\")") < 0
+		and gate.find("is_debug_build") < 0
+		and gate.find("is_editor_hint") < 0
+	)
+	var display_only := (
+		setter.find("_daily_lives") < 0
+		and setter.find("note_ranked") < 0
+		and setter.find("claim") < 0
+		and setter.find("finalize") < 0
+		and setter.find("start_daily") < 0
+		and paint.find("_daily_lives =") < 0
+		and choose.find("if _daily_lives <= 0:") >= 0
+		and keys.find("KEY_F6") >= 0
+		and keys.find("KEY_F7") >= 0
+		and keys.find("KEY_F8") >= 0
+		and keys.find("KEY_F9") >= 0
+		and keys.find("KEY_F10") >= 0
+	)
+	var menu_script: GDScript = load("res://scenes/menu/main_menu.gd") as GDScript
+	if menu_script == null:
+		return false
+	var menu = menu_script.new()
+	var host := Control.new()
+	var button := Button.new()
+	menu._modes = host
+	menu._daily_button = button
+	menu._daily_locked = true
+	button.disabled = true
+	menu._build_daily_fish()
+	var img := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.12, 0.45, 0.92, 1.0))
+	var color_tex := ImageTexture.create_from_image(img)
+	menu._remember_fish_color(color_tex)
+	menu._apply_attempt_fish(0)
+	var session: Node = get_root().get_node("GameSession")
+	var allowed: bool = menu._editor_daily_debug_allowed()
+	var accepted: bool = menu._set_daily_visual_override(3)
+	var painted := false
+	if allowed:
+		painted = (
+			accepted
+			and menu._daily_lives == 0
+			and menu._daily_locked
+			and not button.disabled
+			and menu._daily_visual_override == 3
+			and int(session.get("editor_daily_test_lives")) == 3
+			and not menu._mode_shows_locked()
+			and _fish_icons_match(menu, [true, true, true], color_tex)
+		)
+		menu._set_daily_visual_override(2)
+		painted = painted and menu._daily_lives == 0 and not button.disabled and _fish_icons_match(menu, [true, true, false], color_tex)
+		menu._set_daily_visual_override(1)
+		painted = painted and menu._daily_lives == 0 and not button.disabled and _fish_icons_match(menu, [true, false, false], color_tex)
+		menu._set_daily_visual_override(0)
+		painted = painted and menu._daily_lives == 0 and button.disabled and menu._mode_shows_locked() and _fish_icons_match(menu, [false, false, false], color_tex)
+		var blocked: bool = not bool(session.call("begin_editor_daily_test", {
+			"challenge_id": "daily:2026-11-20:cv1:pv1",
+			"course_seed": 9,
+			"attempt_id": "should-be-stripped",
+		}))
+		menu._set_daily_visual_override(3)
+		menu._apply_attempt_fish(0)
+		painted = painted and blocked and menu._daily_lives == 0 and menu._daily_locked and not button.disabled and _fish_icons_match(menu, [true, true, true], color_tex)
+		var off: bool = menu._set_daily_visual_override(-1)
+		painted = painted and off and menu._daily_visual_override == -1 and not bool(session.call("editor_daily_test_enabled")) and menu._daily_lives == 0 and button.disabled and menu._mode_shows_locked() and _fish_icons_match(menu, [false, false, false], color_tex)
+	else:
+		painted = (
+			not accepted
+			and menu._daily_visual_override == -1
+			and menu._daily_lives == 0
+			and button.disabled
+			and _fish_icons_match(menu, [false, false, false], color_tex)
+		)
+	var echo := InputEventKey.new()
+	echo.pressed = true
+	echo.echo = true
+	echo.keycode = KEY_F6
+	var ignored: bool = not menu._try_daily_visual_override(echo)
+	if allowed:
+		menu._set_daily_visual_override(-1)
+	host.free()
+	button.free()
+	menu.free()
+	return gated and display_only and painted and ignored
+
+
+func _editor_daily_test() -> bool:
+	var session = get_root().get_node("GameSession")
+	var before_games: int = session.games_played
+	var before_coins: int = session.coins
+	var before_best: int = session.best_score
+	var before_last: int = session.last_score
+	var before_mode: String = session.match_mode
+	var before_seed: int = session.course_seed
+	var before_challenge: String = session.daily_attempt_challenge
+	var before_used: int = session.daily_attempt_used
+	var before_pending: String = session.pending_finalize_attempt
+	var source := FileAccess.get_file_as_string("res://scenes/menu/main_menu.gd")
+	var start := _fn_body(source, "func _start_editor_daily_test")
+	var isolated := (
+		start.find("claim_daily_attempt") < 0
+		and start.find("start_daily_attempt") < 0
+		and start.find("finalize_daily_attempt") < 0
+		and start.find("note_ranked_attempts") < 0
+		and start.find("add_coins") < 0
+		and start.find("upload_ghost") < 0
+	)
+	var day_fn := _fn_body(FileAccess.get_file_as_string("res://autoload/game_session.gd"), "func simulate_editor_daily_new_day")
+	var day_isolated := (
+		day_fn.find("editor_daily_test_allowed") >= 0
+		and day_fn.find("claim_daily_attempt") < 0
+		and day_fn.find("finalize_daily_attempt") < 0
+		and day_fn.find("note_ranked_attempts") < 0
+		and day_fn.find("add_coins") < 0
+		and day_fn.find("_save") < 0
+	)
+	if not session.editor_daily_test_allowed():
+		return isolated and day_isolated and not session.set_editor_daily_test(3) and not session.begin_editor_daily_test({
+			"challenge_id": "daily:2026-11-20:cv1:pv1",
+			"course_seed": 9,
+		}) and not session.simulate_editor_daily_new_day()
+	session.set_editor_daily_test(3)
+	var started: bool = session.begin_editor_daily_test({
+		"challenge_id": "daily:2026-11-20:cv1:pv1",
+		"challenge_date": "2026-11-20",
+		"course_seed": 9,
+		"attempt_id": "6f1e8c2a-9b34-4d5e-8f70-123456789abc",
+		"server_confirmed": true,
+	})
+	var left: int = int(session.consume_editor_daily_test_life())
+	session.record_run(before_last + 40, 1, 1)
+	var clean: bool = (
+		started
+		and session.practice_daily
+		and session.course_seed == 9
+		and str(session.current_challenge().get("attempt_id", "")) == ""
+		and not bool(session.current_challenge().get("server_confirmed", true))
+		and left == 2
+		and session.games_played == before_games
+		and session.coins == before_coins
+		and session.best_score == before_best
+		and session.last_score == before_last
+		and session.daily_attempt_challenge == before_challenge
+		and session.daily_attempt_used == before_used
+		and session.pending_finalize_attempt == before_pending
+	)
+	session.editor_daily_test_lives = 0
+	var fourth: bool = not session.begin_editor_daily_test({
+		"challenge_id": "daily:2026-11-20:cv1:pv1",
+		"course_seed": 9,
+	})
+	session.set_editor_daily_test(3)
+	var reset: bool = session.editor_daily_test_lives == 3 and session.begin_editor_daily_test({
+		"challenge_id": "daily:2026-11-20:cv1:pv1",
+		"course_seed": 9,
+	})
+	session.end_practice_daily()
+	var seed_back: bool = session.course_seed == before_seed
+	session.match_mode = before_mode
+	session.course_seed = before_seed
+	session.set_editor_daily_test(0)
+	var day_reset: bool = (
+		session.simulate_editor_daily_new_day()
+		and session.editor_daily_test_lives == 3
+		and session.editor_daily_test_day == 1
+		and session.coins == before_coins
+		and session.daily_attempt_used == before_used
+		and session.begin_editor_daily_test({
+			"challenge_id": "daily:2026-11-21:cv1:pv1",
+			"course_seed": 11,
+		})
+	)
+	session.end_practice_daily()
+	session.match_mode = before_mode
+	session.course_seed = before_seed
+	session.set_editor_daily_test(-1)
+	var restored: bool = (
+		not session.editor_daily_test_enabled()
+		and not session.practice_daily
+		and seed_back
+		and session.games_played == before_games
+		and session.coins == before_coins
+	)
+	return isolated and day_isolated and clean and fourth and reset and day_reset and restored
+
+
 func _unknown() -> bool:
 	var missing: Dictionary = DailyAttemptScript.parse_status({"ok": false, "status": 0, "error": "offline"})
 	var old_open: Dictionary = DailyAttemptScript.parse_status({
@@ -295,11 +745,96 @@ func _unknown() -> bool:
 	return (
 		DailyAttemptScript.lives_from_status(missing) == -1
 		and not DailyAttemptScript.fish_lit(0, DailyAttemptScript.lives_from_status(missing))
-		and DailyAttemptScript.lives_from_status(old_open) == -1
-		and not DailyAttemptScript.fish_lit(0, DailyAttemptScript.lives_from_status(old_open))
+		and 		DailyAttemptScript.lives_from_status(old_open) == 3
+		and int(old_open.get("attempts_used", -1)) == 0
+		and int(old_open.get("attempts_remaining", -1)) == 3
+		and DailyAttemptScript.fish_lit(0, DailyAttemptScript.lives_from_status(old_open))
+		and DailyAttemptScript.fish_lit(1, DailyAttemptScript.lives_from_status(old_open))
+		and DailyAttemptScript.fish_lit(2, DailyAttemptScript.lives_from_status(old_open))
 		and DailyAttemptScript.lives_from_status(old_used) == 0
-		and not bool(old_open.get("attempts_counted", false))
+		and bool(old_open.get("attempts_counted", false))
 	)
+
+
+# The columns below are the PostgREST row from get_daily_attempt_status.
+# The old function stops at recoverable. The three-attempt function adds
+# attempts_used, attempts_remaining, and best_score.
+func _production_status_shape() -> bool:
+	var old_fresh := _status_row(false, -1)
+	var old_parsed: Dictionary = DailyAttemptScript.parse_status({"ok": true, "status": 200, "data": [old_fresh]})
+	var old_merged: Dictionary = DailyAttemptScript.merge_lives("", 0, old_parsed)
+	var counted_fresh := _status_row(true, 3)
+	var fresh_parsed: Dictionary = DailyAttemptScript.parse_status({"ok": true, "status": 200, "data": [counted_fresh]})
+	var fresh_merged: Dictionary = DailyAttemptScript.merge_lives("", 0, fresh_parsed)
+	var one_left: Dictionary = DailyAttemptScript.merge_lives("", 0, DailyAttemptScript.parse_status({
+		"ok": true,
+		"status": 200,
+		"data": [_status_row(true, 1)],
+	}))
+	var none_left: Dictionary = DailyAttemptScript.merge_lives("", 0, DailyAttemptScript.parse_status({
+		"ok": true,
+		"status": 200,
+		"data": [_status_row(true, 0)],
+	}))
+	var offline: Dictionary = DailyAttemptScript.merge_lives("", 0, DailyAttemptScript.parse_status({
+		"ok": false,
+		"status": 0,
+		"error": "offline",
+	}))
+	var menu := FileAccess.get_file_as_string("res://scenes/menu/main_menu.gd")
+	var old_lives := int(old_merged.get("lives", 1))
+	var fresh_lives := int(fresh_merged.get("lives", -1))
+	return (
+		not old_fresh.has("attempts_remaining")
+		and bool(old_parsed.get("attempts_counted", false))
+		and bool(old_parsed.get("attempts_inferred", false))
+		and int(old_parsed.get("attempts_used", -1)) == 0
+		and int(old_parsed.get("attempts_remaining", -1)) == 3
+		and old_lives == 3
+		and bool(old_merged.get("store", false))
+		and int(old_merged.get("used", -1)) == 0
+		and DailyAttemptScript.fish_lit(0, old_lives)
+		and DailyAttemptScript.fish_lit(1, old_lives)
+		and DailyAttemptScript.fish_lit(2, old_lives)
+		and bool(fresh_parsed.get("attempts_counted", false))
+		and not bool(fresh_parsed.get("attempts_inferred", false))
+		and int(fresh_parsed.get("attempts_remaining", -1)) == 3
+		and fresh_lives == 3
+		and int(fresh_merged.get("used", -1)) == 0
+		and bool(fresh_merged.get("store", false))
+		and DailyAttemptScript.fish_lit(0, fresh_lives)
+		and DailyAttemptScript.fish_lit(1, fresh_lives)
+		and DailyAttemptScript.fish_lit(2, fresh_lives)
+		and int(one_left.get("lives", -1)) == 1
+		and DailyAttemptScript.fish_lit(0, 1)
+		and not DailyAttemptScript.fish_lit(1, 1)
+		and int(none_left.get("lives", -1)) == 0
+		and not DailyAttemptScript.fish_lit(0, 0)
+		and int(offline.get("lives", 0)) == -1
+		and menu.find("if _daily_lives <= 0:") >= 0
+	)
+
+
+func _status_row(counted: bool, remaining: int) -> Dictionary:
+	var course := DailyChallengeScript.make("2026-11-20", true, DailyChallengeScript.unix_utc(2026, 11, 20, 18, 0))
+	var row := {
+		"challenge_id": str(course.get("challenge_id", "")),
+		"challenge_date": str(course.get("challenge_date", "")),
+		"course_seed": int(course.get("course_seed", 0)),
+		"course_version": int(course.get("course_version", 0)),
+		"physics_version": int(course.get("physics_version", 0)),
+		"as_of": "2026-11-20T23:00:00+00:00",
+		"as_of_unix": int(course.get("as_of_unix", 0)),
+		"resets_at": "2026-11-21T05:00:00+00:00",
+		"resets_unix": int(course.get("as_of_unix", 0)) + 6 * 3600,
+		"attempted": counted and remaining < 3,
+		"recoverable": false,
+	}
+	if counted:
+		row["attempts_used"] = 3 - remaining
+		row["attempts_remaining"] = remaining
+		row["best_score"] = 0
+	return row
 
 
 func _counted(cid: String, remaining: int) -> Dictionary:
@@ -343,22 +878,22 @@ func _restart_floor() -> bool:
 		and int(delayed.get("lives", -1)) == 0
 		and int(offline.get("lives", -1)) == 0
 		and int(legacy.get("lives", -1)) == 0
-		and not bool(legacy.get("store", true))
+		and int(legacy.get("used", 0)) == 3
 		and int(DailyAttemptScript.merge_lives("", 0, DailyAttemptScript.parse_status({
 			"ok": true,
 			"status": 200,
 			"data": [{"attempted": false, "challenge_id": cid, "course_seed": 1}],
-		})).get("lives", -1)) == 1
-		and not bool(DailyAttemptScript.merge_lives("", 0, DailyAttemptScript.parse_status({
+		})).get("lives", 1)) == 3
+		and bool(DailyAttemptScript.merge_lives("", 0, DailyAttemptScript.parse_status({
 			"ok": true,
 			"status": 200,
 			"data": [{"attempted": false, "challenge_id": cid, "course_seed": 1}],
-		})).get("store", true))
+		})).get("store", false))
 		and int(DailyAttemptScript.merge_lives(cid, 1, DailyAttemptScript.parse_status({
 			"ok": true,
 			"status": 200,
 			"data": [{"attempted": false, "challenge_id": cid, "course_seed": 1}],
-		})).get("lives", -1)) == 0
+		})).get("lives", -1)) == 2
 		and int(after_one.get("lives", -1)) == 2
 		and int(two_left.get("lives", -1)) == 2
 		and int(one_left.get("lives", -1)) == 1
@@ -386,6 +921,7 @@ func _button_art() -> bool:
 	menu._mode_card = card
 	menu._daily_button = button
 	menu._daily_locked = false
+	menu._daily_lives = 3
 	menu._apply_mode_art()
 	var open_art: Texture2D = card.texture
 	menu._apply_attempt_fish(3)

@@ -15,6 +15,12 @@ var player_id: String = ""
 var course_seed: int = 0
 var match_mode: String = ""
 var practice_daily: bool = false
+# Editor-run memory only. Never written by _save.
+var editor_daily_test_active: bool = false
+var editor_daily_test_lives: int = -1
+var editor_daily_test_show_modes: bool = false
+var editor_daily_test_day: int = 0
+signal editor_daily_test_changed(lives: int)
 var active_challenge: Dictionary = {}
 var pending_finalize_attempt: String = ""
 var pending_finalize_score: int = 0
@@ -86,6 +92,7 @@ func _ready() -> void:
 	if incoming != "":
 		remember_referral_code(incoming)
 	refresh_boards()
+	_announce_editor_daily_test_connected()
 
 
 func _phone_web() -> bool:
@@ -336,11 +343,84 @@ func _bind_reload() -> void:
 	InputMap.action_add_event("dev_reload", ctrl_r)
 
 
+func _input(event: InputEvent) -> void:
+	if _editor_daily_test_shortcut(event):
+		get_viewport().set_input_as_handled()
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("dev_reload"):
 		get_tree().paused = false
 		OS.set_restart_on_exit(true)
 		get_tree().quit()
+
+
+func _announce_editor_daily_test_connected() -> void:
+	if not editor_daily_test_allowed():
+		return
+	print("[DAILY DEBUG] ========== EDITOR DAILY TEST CONNECTED ==========")
+	print("[DAILY DEBUG] This play session can run a local Daily Challenge.")
+	print("[DAILY DEBUG] Enable it with the DAILY TEST button at the top of the menu, or Ctrl+Shift+9. NEW DAY restores 3 local lives.")
+	print("[DAILY DEBUG] F6 is Godot Run Current Scene. F7 pauses, F8 stops, F9 and F10 are debugger keys. The editor keeps those keys.")
+	print("[DAILY DEBUG] =================================================")
+
+
+func _editor_daily_test_shortcut(event: InputEvent) -> bool:
+	if not event is InputEventKey:
+		return false
+	var key := event as InputEventKey
+	if not key.pressed or key.echo or key.alt_pressed or not key.ctrl_pressed or not key.shift_pressed:
+		return false
+	var code := key.keycode if key.keycode != KEY_NONE else key.physical_keycode
+	if code != KEY_9:
+		return false
+	print("[DAILY DEBUG] Ctrl+Shift+9 reached the game input handler.")
+	if not editor_daily_test_allowed():
+		print("[DAILY DEBUG] REFUSED. Exported builds cannot enable the local Daily Challenge test.")
+		return true
+	activate_editor_daily_test()
+	return true
+
+
+func activate_editor_daily_test() -> bool:
+	if not editor_daily_test_allowed():
+		print("[DAILY DEBUG] REFUSED. Exported builds cannot enable the local Daily Challenge test.")
+		return false
+	if practice_daily and editor_daily_test_enabled():
+		print("[DAILY DEBUG] Local test swim already running. Lives left: %d" % editor_daily_test_lives)
+		return true
+	if not set_editor_daily_test(3):
+		print("[DAILY DEBUG] REFUSED. Exported builds cannot enable the local Daily Challenge test.")
+		return false
+	editor_daily_test_show_modes = true
+	print("[DAILY DEBUG] ========== LOCAL DAILY TEST ON ==========")
+	print("[DAILY DEBUG] Lives: 3. Open Daily Challenge and swim. Each local run spends one life.")
+	print("[DAILY DEBUG] Supabase attempts, scores, ghosts, and coins are not written.")
+	print("[DAILY DEBUG] ========================================")
+	editor_daily_test_changed.emit(3)
+	return true
+
+
+# A local challenge day. Lives return to 3. No save and no Supabase call.
+func simulate_editor_daily_new_day() -> bool:
+	if not editor_daily_test_allowed():
+		print("[DAILY DEBUG] REFUSED. Exported builds cannot simulate a local Daily Challenge day.")
+		return false
+	if not editor_daily_test_active:
+		print("[DAILY DEBUG] REFUSED. Enable the local Daily Challenge test before simulating a new day.")
+		return false
+	if practice_daily:
+		print("[DAILY DEBUG] Local test swim already running. Finish it before a simulated new day.")
+		return false
+	editor_daily_test_day += 1
+	editor_daily_test_lives = DailyAttemptScript.ATTEMPT_LIMIT
+	editor_daily_test_active = true
+	editor_daily_test_show_modes = true
+	print("[DAILY DEBUG] ========== LOCAL DAY RESET ==========")
+	print("[DAILY DEBUG] Simulated challenge day %d. Lives restored to 3. Supabase was not contacted." % editor_daily_test_day)
+	print("[DAILY DEBUG] ====================================")
+	editor_daily_test_changed.emit(editor_daily_test_lives)
+	return true
 
 
 func selected_fish() -> String:
@@ -437,7 +517,13 @@ func adopt_supabase_id(id: String) -> bool:
 	var uid := id.strip_edges()
 	if uid.is_empty() or uid.begins_with("local_"):
 		return false
+	var previous := player_id
 	player_id = uid
+	# The attempt floor belongs to one account. Another login must not inherit it.
+	if previous != "" and previous != uid:
+		daily_attempt_challenge = ""
+		daily_attempt_used = 0
+		daily_attempt_resets_unix = 0
 	_save()
 	return true
 
@@ -509,6 +595,58 @@ func end_practice_daily() -> void:
 
 func is_practice_daily() -> bool:
 	return practice_daily and match_mode == MODE_DAILY
+
+
+# A launched game reports Engine.is_editor_hint() false. Export templates
+# report the template feature, including debug TestFlight, Android, and web.
+func editor_daily_test_allowed() -> bool:
+	return OS.has_feature("editor") and not OS.has_feature("template")
+
+
+func editor_daily_test_enabled() -> bool:
+	return editor_daily_test_allowed() and editor_daily_test_active
+
+
+func set_editor_daily_test(lives: int) -> bool:
+	if not editor_daily_test_allowed():
+		return false
+	if lives < 0:
+		editor_daily_test_active = false
+		editor_daily_test_lives = -1
+		editor_daily_test_show_modes = false
+		return true
+	editor_daily_test_active = true
+	editor_daily_test_lives = clampi(lives, 0, DailyAttemptScript.ATTEMPT_LIMIT)
+	return true
+
+
+func consume_editor_daily_test_life() -> int:
+	if not editor_daily_test_enabled():
+		return -1
+	if editor_daily_test_lives <= 0:
+		return 0
+	editor_daily_test_lives -= 1
+	return editor_daily_test_lives
+
+
+func begin_editor_daily_test(challenge: Dictionary) -> bool:
+	if not editor_daily_test_enabled() or editor_daily_test_lives <= 0:
+		return false
+	var course := challenge.duplicate(true)
+	course.erase("attempt_id")
+	course["server_confirmed"] = false
+	course["practice"] = true
+	if int(course.get("course_seed", 0)) == 0 or str(course.get("challenge_id", "")).strip_edges() == "":
+		return false
+	if not practice_daily:
+		_practice_saved_seed = course_seed
+	practice_daily = true
+	match_mode = MODE_DAILY
+	commit_match_challenge(course)
+	last_score = 0
+	last_rank = RR.GHOST_COUNT + 1
+	last_alive_at_death = RR.GHOST_COUNT
+	return true
 
 
 func begin_claimed_daily(challenge: Dictionary) -> void:
