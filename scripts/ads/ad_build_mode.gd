@@ -9,7 +9,9 @@ extends Object
 ## rewarded unit. The iPhone must stay registered as an AdMob test device, and
 ## the served ad must show Google's test-ad label. "test" requests Google's
 ## official iOS rewarded test unit and leaves IOS_REWARDED_UNIT_ID unchanged.
-## ANDROID_MODE stays on Google's test rewarded unit.
+## "diagnostic" also requests that Google unit and is applied only by
+## tools/prepare_ios_ad_diagnostic.py for an internal TestFlight checkout.
+## Do not commit that rewrite. ANDROID_MODE stays on Google's test rewarded unit.
 const IOS_MODE := "production"
 const ANDROID_MODE := "test"
 ## Plain markers an exported package can be scanned for. Each must name the same mode as its constant.

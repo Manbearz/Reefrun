@@ -45,8 +45,13 @@ static func monetization_mode() -> String:
 
 
 static func normalize_mode(raw: String) -> String:
-	if raw.strip_edges().to_lower() == "production":
+	var mode := raw.strip_edges().to_lower()
+	if mode == "production":
 		return "production"
+	# Diagnostic is an explicit internal TestFlight selection. It is not production
+	# and it is not folded into a nameless test fallback.
+	if mode == "diagnostic":
+		return "diagnostic"
 	return "test"
 
 
@@ -86,7 +91,8 @@ static func rewarded_unit_for(platform: String, mode: String) -> String:
 		test_unit = ANDROID_TEST_REWARDED_UNIT_ID
 	else:
 		return ""
-	# Anything other than the exact production mode stays on the Google test unit.
+	# Production is the only mode that may request the live unit. Diagnostic and
+	# test both request Google's official rewarded test unit for that platform.
 	if normalize_mode(mode) != "production":
 		if not is_google_test_rewarded_unit(test_unit):
 			push_error("[ReefRun ads] Refusing to load because the test unit is not a Google test rewarded unit.")
@@ -118,6 +124,8 @@ static func describe_rewarded_selection(mode: String, unit_id: String) -> String
 
 
 static func rewarded_selection_note(mode: String, unit_id: String) -> String:
+	if normalize_mode(mode) == "diagnostic" and is_google_test_rewarded_unit(unit_id):
+		return "Google official rewarded test unit. Internal TestFlight only. Do not submit this build for App Store release."
 	if is_google_test_rewarded_unit(unit_id):
 		return "Google sample rewarded unit. The served ad is labeled Test Ad."
 	if normalize_mode(mode) == "production" and not unit_id.is_empty():

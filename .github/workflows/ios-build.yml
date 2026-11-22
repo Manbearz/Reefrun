@@ -13,13 +13,13 @@ on:
         type: boolean
         default: false
       ad_mode:
-        description: iOS rewarded ads. This source packs production, so this run must select production. production requests the live iOS rewarded unit and requires a registered AdMob test device. test requests Google's official iOS test unit and is refused while IOS_MODE is production. Android stays on Google's test unit.
+        description: production requests the live iOS rewarded unit ca-app-pub-5190108736982657/2549031818. diagnostic rewrites this checkout only and requests Google's official rewarded test unit ca-app-pub-3940256099942544/1712485313 for internal TestFlight. Diagnostic builds cannot be submitted for App Store release. Android stays on Google's test unit.
         required: true
         type: choice
-        default: test
+        default: production
         options:
-          - test
           - production
+          - diagnostic
 
 permissions:
   contents: read
@@ -113,8 +113,17 @@ jobs:
               --github-env "$GITHUB_ENV"
           fi
 
+      - name: Select the internal iOS diagnostic rewarded unit
+        if: ${{ inputs.ad_mode == 'diagnostic' }}
+        run: |
+          set -euo pipefail
+          python3 tools/prepare_ios_ad_diagnostic.py --confirm-demo-unit
+          echo "Selected ad mode=diagnostic."
+          echo "Selected rewarded unit=ca-app-pub-3940256099942544/1712485313."
+          echo "This checkout is internal TestFlight only. Do not commit it."
+
       - name: Check the rewarded ad mode
-        run: python3 tools/check_ad_build_mode.py --platform ios --mode "${AD_MODE:-test}"
+        run: python3 tools/check_ad_build_mode.py --platform ios --mode "${AD_MODE:-production}"
 
       - name: Select an Xcode with the iOS 26 Metal symbols
         run: |
@@ -960,7 +969,7 @@ jobs:
               sys.exit(1)
           print(f"Exported iOS build number is {expected_build}. Marketing version is {expected_short}. AdMob app id, tracking description, and SDK reference are present. Checked {len(plists)} Info.plist file(s).")
           PY
-          python3 tools/check_ad_build_mode.py --platform ios --mode "${AD_MODE:-test}" --package build
+          python3 tools/check_ad_build_mode.py --platform ios --mode "${AD_MODE:-production}" --package build
 
       - name: Resolve the Google Mobile Ads Swift package
         run: |
@@ -1066,7 +1075,7 @@ jobs:
             echo "Refusing to upload. Expected com.lunarentertainment.reefrun, marketing version ${IOS_MARKETING_VERSION}, and CFBundleVersion ${IOS_BUILD_NUMBER}, which must be higher than ${LAST_UPLOADED_IOS_BUILD}."
             exit 1
           fi
-          python3 tools/check_ad_build_mode.py --platform ios --mode "${AD_MODE:-test}" --package "$IPA"
+          python3 tools/check_ad_build_mode.py --platform ios --mode "${AD_MODE:-production}" --package "$IPA"
 
       - name: Upload the IPA artifact
         uses: actions/upload-artifact@v4
@@ -1105,6 +1114,12 @@ jobs:
           if [ ! -f "$IPA" ]; then
             echo "No exported IPA was found to upload."
             exit 1
+          fi
+          if [ "${AD_MODE}" = "diagnostic" ]; then
+            python3 tools/check_ad_build_mode.py --platform ios --mode diagnostic --distribution testflight --package "$IPA"
+            echo "Selected ad mode=diagnostic."
+            echo "Selected rewarded unit=ca-app-pub-3940256099942544/1712485313."
+            echo "Uploading to internal TestFlight. This command does not submit the build for App Store review."
           fi
           echo "Uploading $(basename "$IPA") with xcrun altool."
           xcrun altool --upload-app \

@@ -49,10 +49,11 @@ func _run() -> void:
 	await _test_cancel_and_failure(ads)
 	await _test_callback_order(ads)
 	await _test_old_ad_and_timeout(ads)
-	_test_mobile_guards()
+	await _test_mobile_guards()
 	_test_platforms()
 	await _test_ui_notes(ads)
 	await _test_offer_enables_after_load(ads)
+	await _test_unavailable_at_death(ads)
 	await _test_repeat_cycles(ads)
 	await _test_death_overlay_budget(ads)
 	_check("network_blocked", _live_http == 0, "live_completions=%d blocked_calls=%d" % [_live_http, _dead.calls if _dead != null else -1])
@@ -216,7 +217,8 @@ func _test_cancel_and_failure(ads: Node) -> void:
 		ads.reward_earned.emit(attempt_session)
 		var label := "fail" if outcome == Mock.Outcome.FAILED else "unavailable"
 		_check("%s_no_bonus" % label, int(session.coins) == 5 and not game._coin_reward_claimed and game._coin_offer_open, "wallet=%d" % int(session.coins))
-		_check("%s_note" % label, _note(game) == "NO AD AVAILABLE" and not game._coin_ad_watch.disabled, _note(game))
+		var yes_stays_closed: bool = outcome == Mock.Outcome.UNAVAILABLE
+		_check("%s_note" % label, _note(game) == "NO AD AVAILABLE" and game._coin_ad_watch.disabled == yes_stays_closed, "note=%s disabled=%s" % [_note(game), game._coin_ad_watch.disabled])
 		if outcome == Mock.Outcome.UNAVAILABLE:
 			_check("unavailable_no_show", ads.mock_show_count() == before_shows)
 		await _drop(game)
@@ -415,6 +417,8 @@ func _test_mobile_guards() -> void:
 	mobile._on_ad_failed_to_load(null)
 	mobile._on_ad_failed_to_load(null)
 	_check("mobile_load_keeps_retrying", int(mobile._load_failures) == 2 and mobile._retry_pending and int(rewards[0]) == 2)
+	mobile._cancel_rewarded_retry()
+	await _exercise_reward_lifecycle(mobile, rewards, fails)
 	if not Engine.has_singleton("PoingGodotAdMob"):
 		mobile._start_sdk()
 	else:
@@ -435,6 +439,96 @@ func _test_mobile_guards() -> void:
 	web.queue_free()
 
 
+func _exercise_reward_lifecycle(mobile, rewards: Array, fails: Array) -> void:
+	var before := int(rewards[0])
+	mobile._retry_delay_scale = 0.0
+	mobile._on_ad_failed_to_load(_sdk_error(1, "com.google.admob", "Request Error: No ad to show."))
+	_check("ios_no_fill_does_not_pay", int(rewards[0]) == before and mobile._last_failure_kind == "no_fill" and int(mobile._last_error_code) == 1 and not mobile.is_available() and mobile._retry_pending, "kind=%s code=%s" % [mobile._last_failure_kind, mobile._last_error_code])
+	await process_frame
+	await process_frame
+	_check("ios_no_fill_retry_does_not_pay", int(rewards[0]) == before and not mobile._retry_pending and not mobile._loading and mobile._last_failure_kind == "no_fill")
+	var shows_before := int(fails[0])
+	mobile._on_ad_failed_to_show(_sdk_error(1, "com.google.admob", "Request Error: No ad to show."), 11)
+	_check("presentation_no_fill_does_not_pay", int(rewards[0]) == before and int(fails[0]) == shows_before + 1 and mobile._last_failure_kind == "no_fill" and int(mobile._last_error_code) == 1)
+	mobile._on_ad_failed_to_load(_sdk_error(3, "com.google.android.gms.ads", "No fill."))
+	_check("android_code_3_is_no_fill_and_unpaid", int(rewards[0]) == before and mobile._last_failure_kind == "no_fill" and int(mobile._last_error_code) == 3)
+	await process_frame
+	await process_frame
+	mobile._on_ad_failed_to_load(_sdk_error(3, "", "No fill."))
+	_check("internal_code_3_is_not_no_fill", int(rewards[0]) == before and mobile._last_failure_kind == "other" and int(mobile._last_error_code) == 3)
+	await process_frame
+	mobile._on_ad_failed_to_load(_sdk_error(3, "com.google.admob", "Server error."))
+	_check("ios_code_3_is_server_error", int(rewards[0]) == before and mobile._last_failure_kind == "server")
+	await process_frame
+	await process_frame
+	mobile._cancel_rewarded_retry()
+	mobile._runtime_platform = "ios"
+	mobile._ads_request_allowed = true
+	mobile._consent_resolved = true
+	mobile._block_reason = ""
+	mobile._on_ad_loaded(RewardedAd.new(42))
+	_check("retry_load_becomes_ready", mobile.is_available() and int(mobile._load_failures) == 0 and mobile._last_failure_kind == "" and mobile._rewarded_unit() == "ca-app-pub-5190108736982657/2549031818" and int(rewards[0]) == before)
+	var missed := [0]
+	mobile.ad_unavailable.connect(func(_session_id: int) -> void: missed[0] += 1)
+	_check("first_show_consumes_ad", mobile._arm_presentation(8) and not mobile.is_available() and mobile._ad == null and mobile._presented_ad != null)
+	_check("second_show_does_not_reuse_ad", not mobile._arm_presentation(8) and not mobile._arm_presentation(9) and int(missed[0]) == 2 and int(rewards[0]) == before)
+	mobile._on_user_earned_reward(null, 8)
+	mobile._on_user_earned_reward(null, 8)
+	_check("consumed_show_pays_once", int(rewards[0]) == before + 1)
+	mobile._on_ad_dismissed(8)
+	_check("dismiss_after_reward_does_not_pay_again", int(rewards[0]) == before + 1 and mobile._presented_ad == null and not mobile._showing)
+	for cycle in 10:
+		var session_id := 100 + cycle
+		mobile._block_reason = ""
+		mobile._ads_request_allowed = true
+		mobile._on_ad_loaded(RewardedAd.new(session_id))
+		if not mobile._arm_presentation(session_id):
+			_check("ten_mobile_cycles_arm", false, "cycle=%d" % cycle)
+			mobile._runtime_platform = ""
+			mobile._retry_delay_scale = 1.0
+			mobile._cancel_rewarded_retry()
+			return
+		mobile._on_user_earned_reward(null, session_id)
+		mobile._on_user_earned_reward(null, session_id)
+		mobile._on_ad_dismissed(session_id)
+	_check("ten_mobile_cycles_pay_once_each", int(rewards[0]) == before + 11 and mobile._presented_ad == null)
+	mobile._runtime_platform = ""
+	mobile._retry_delay_scale = 1.0
+	mobile._cancel_rewarded_retry()
+
+
+func _sdk_error(code: int, domain: String, message: String) -> AdError:
+	return AdError.new(code, domain, message, null)
+
+
+func _test_unavailable_at_death(ads: Node) -> void:
+	var session = _session()
+	session.coins = 0
+	session.add_coins(6)
+	var game := _boot()
+	ads.set_mock_outcome(Mock.Outcome.UNAVAILABLE, false, 0.0)
+	ads.set_mock_offer_state("unavailable", "NO AD AVAILABLE")
+	_offer(game, 6)
+	var shows := int(ads.mock_show_count())
+	_check("death_without_ad_keeps_yes_disabled", game._coin_offer_open and game._coin_ad_watch.disabled and _note(game) == "NO AD AVAILABLE", _note(game))
+	for _press in 3:
+		game._coin_ad_watch.pressed.emit()
+	_check("death_without_ad_does_not_present", int(ads.mock_show_count()) == shows and int(session.coins) == 6 and not game._coin_reward_claimed and game._coin_ad_watch.disabled)
+	var skip: Button = null
+	for child in game.overlay.get_children():
+		if child is Button and child != game._coin_ad_watch:
+			skip = child
+	_check("death_without_ad_can_continue", skip != null and not skip.disabled)
+	if skip != null:
+		skip.pressed.emit()
+	_check("death_without_ad_keeps_base_coins", int(session.coins) == 6 and game._wipe_again != null and not game._coin_offer_open and not game._coin_reward_claimed, "wallet=%d" % int(session.coins))
+	ads.set_mock_offer_state("", "")
+	ads.set_mock_outcome(Mock.Outcome.SUCCESS, false, 0.0)
+	await _drop(game)
+	session.coins = 0
+	session._save()
+
+
 func _test_platforms() -> void:
 	var ios := FileAccess.get_file_as_string("res://scripts/ads/ios_rewarded_ads.gd")
 	var android := FileAccess.get_file_as_string("res://scripts/ads/android_rewarded_ads.gd")
@@ -448,6 +542,9 @@ func _test_platforms() -> void:
 	_check("selection_log_names_live_ios_unit", live_selection == "ad_mode=production unit=ca-app-pub-5190108736982657/2549031818 unit_kind=live" and AdCfg.rewarded_selection_note("production", AdCfg.IOS_REWARDED_UNIT_ID).contains("Test Ad label") and not live_selection.contains("idfa"))
 	_check("selection_log_names_google_sample_unit", sample_selection == "ad_mode=test unit=ca-app-pub-3940256099942544/1712485313 unit_kind=google_sample" and AdCfg.rewarded_selection_note("test", AdCfg.IOS_TEST_REWARDED_UNIT_ID).contains("Google sample"))
 	_check("packed_ios_unit_is_production", AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios")) == "ca-app-pub-5190108736982657/2549031818" and AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios")) == AdCfg.IOS_REWARDED_UNIT_ID and not AdCfg.is_google_test_rewarded_unit(AdCfg.rewarded_unit_for("ios", AdCfg.mode_for_platform("ios"))))
+	var diagnostic_note := AdCfg.describe_rewarded_selection("diagnostic", AdCfg.IOS_TEST_REWARDED_UNIT_ID)
+	_check("diagnostic_ios_unit_is_google_official", AdCfg.normalize_mode("diagnostic") == "diagnostic" and AdCfg.rewarded_unit_for("ios", "diagnostic") == "ca-app-pub-3940256099942544/1712485313" and AdCfg.rewarded_unit_for("ios", "diagnostic") == AdCfg.IOS_TEST_REWARDED_UNIT_ID and AdCfg.rewarded_unit_for("ios", "production") == AdCfg.IOS_REWARDED_UNIT_ID)
+	_check("diagnostic_log_names_mode_and_unit", diagnostic_note == "ad_mode=diagnostic unit=ca-app-pub-3940256099942544/1712485313 unit_kind=google_sample" and AdCfg.rewarded_selection_note("diagnostic", AdCfg.IOS_TEST_REWARDED_UNIT_ID).contains("Internal TestFlight only") and not diagnostic_note.contains("secret") and AdCfg.IOS_APP_ID == "ca-app-pub-5190108736982657~5175195159")
 	_check("packed_android_unit_is_google_test", AdCfg.rewarded_unit_for("android", AdCfg.mode_for_platform("android")) == AdCfg.ANDROID_TEST_REWARDED_UNIT_ID and AdCfg.is_google_test_rewarded_unit(AdCfg.rewarded_unit_for("android", AdCfg.mode_for_platform("android"))))
 	_check("android_test_unit", AdCfg.rewarded_unit_for("android", "test") == AdCfg.ANDROID_TEST_REWARDED_UNIT_ID)
 	_check("ios_test_unit", AdCfg.rewarded_unit_for("ios", "test") == AdCfg.IOS_TEST_REWARDED_UNIT_ID)
@@ -495,8 +592,50 @@ func _test_att_policy(mobile_source: String) -> void:
 	_check("offer_hidden_without_mobile_unit", Mobile.classify_offer(false, false, false, true, false, false, false, 0, false) == "hidden")
 	_check("no_fill_error_is_not_personal", Mobile.describe_load_error(_load_error_stub()).contains("code=1") and Mobile.describe_load_error(_load_error_stub()).contains("kind=no_fill") and not Mobile.describe_load_error(_load_error_stub()).contains("idfa-secret"))
 	_check("ios_error_map", Mobile.load_failure_kind(0, "com.google.admob") == "invalid_request" and Mobile.load_failure_kind(1, "com.google.admob") == "no_fill" and Mobile.load_failure_kind(2, "com.google.admob") == "network" and Mobile.load_failure_kind(3, "com.google.admob") == "server")
-	_check("other_domain_keeps_ios_map_unused", Mobile.load_failure_kind(1, "com.google.android.gms.ads") == "other" and Mobile.load_failure_kind(0, "") == "other")
+	_check("android_no_fill_is_code_3", Mobile.load_failure_kind(3, "com.google.android.gms.ads") == "no_fill" and Mobile.load_failure_kind(1, "com.google.android.gms.ads") == "invalid_request" and Mobile.load_failure_kind(2, "com.google.android.gms.ads") == "network" and Mobile.load_failure_kind(0, "com.google.android.gms.ads") == "other")
+	_check("missing_domain_is_not_no_fill", Mobile.load_failure_kind(1, "") == "other" and Mobile.load_failure_kind(3, "") == "other" and Mobile.status_text("unavailable", "other", false) == "NO AD AVAILABLE" and Mobile.status_text("unavailable", "no_fill", false) == "NO FILL" and Mobile.status_text("unavailable", "server", false) == "SERVER ERROR")
 	_check("no_fill_note_is_not_loaded", Mobile.status_text("loading", "no_fill", false) == "NO FILL" and Mobile.status_text("loading", "no_fill", true) == "AD LOADING" and Mobile.status_text("ready", "no_fill", false) == "")
+	var native := {
+		"code": 1,
+		"domain": "com.google.admob",
+		"message": "No ad to show. 12345678-1234-1234-1234-123456789abc",
+		"cause": {"code": 9, "domain": "underlying.domain", "message": "adapter failed", "cause": null},
+		"response_info": {
+			"response_id": "resp-9",
+			"mediation_adapter_class_name": "GADMAdapterGoogleAdMobAds",
+			"adapter_responses": [{
+				"ad_source_name": "AdMob Network",
+				"adapter_class_name": "GADMAdapterGoogleAdMobAds",
+				"ad_source_id": "secret-source",
+				"ad_error": {"code": 1, "domain": "com.google.admob", "message": "no fill"},
+			}],
+			"response_extras": {"advertising_id": "idfa-secret"},
+		},
+	}
+	var native_text := Mobile.describe_load_error(native)
+	_check("native_error_keeps_public_fields", native_text.contains("code=1") and native_text.contains("domain=com.google.admob") and native_text.contains("kind=no_fill") and native_text.contains("response_id=resp-9") and native_text.contains("cause_code=9") and native_text.contains("cause_domain=underlying.domain") and native_text.contains("source=AdMob Network"), native_text)
+	_check("native_error_hides_identifiers", native_text.contains("[redacted]") and not native_text.contains("12345678-1234-1234-1234-123456789abc") and not native_text.contains("idfa-secret") and not native_text.contains("secret-source"), native_text)
+	_check("backoff_keeps_sdk_no_fill_note", Mobile.classify_offer(true, true, false, true, false, true, false, 1, true, true) == "loading" and Mobile.status_text("loading", "no_fill", false) == "NO FILL")
+	_check("in_flight_request_says_loading", Mobile.classify_offer(true, true, false, true, false, true, true, 1, true, false) == "loading" and Mobile.status_text("loading", "no_fill", true) == "AD LOADING")
+	var noted := Mobile.new()
+	noted._remember_ad_error(native)
+	_check("stored_error_is_the_sdk_no_fill", noted._last_failure_kind == "no_fill" and noted._last_error_domain == "com.google.admob" and int(noted._last_error_code) == 1 and noted._last_error_detail.contains("response_id=resp-9") and not noted._last_error_detail.contains("idfa-secret"))
+	noted.free()
+	var late := Mobile.new()
+	late._load_generation = 4
+	late._on_ad_failed_to_load(_sdk_error(1, "com.google.admob", "No ad to show."), 2)
+	_check("late_failure_is_ignored", late._load_failures == 0 and late._last_failure_kind == "" and not late._retry_pending)
+	late._runtime_platform = "ios"
+	late._ads_request_allowed = true
+	late._consent_resolved = true
+	late._on_ad_loaded(RewardedAd.new(70), 4)
+	var kept: RewardedAd = late._ad
+	late._on_ad_loaded(RewardedAd.new(71), 1)
+	_check("late_load_does_not_replace_ad", late._ad == kept and late.is_available())
+	late._load_generation = 5
+	late._on_ad_loaded(RewardedAd.new(72), 5)
+	_check("current_generation_replaces_loaded_ad", late._ad != kept and late._ad != null and late.is_available())
+	late.free()
 	_check("retry_backoff_is_bounded", Mobile.retry_delay_for_failure(1) == 8.0 and Mobile.retry_delay_for_failure(2) == 16.0 and Mobile.retry_delay_for_failure(8) == 30.0)
 	var AdsScript = load("res://autoload/rewarded_ads.gd")
 	_check("timing_elapsed_is_monotonic", AdsScript.elapsed_usec(1000, 1600) == 600 and AdsScript.elapsed_usec(1600, 1000) == 0)
@@ -526,6 +665,29 @@ func _test_att_policy(mobile_source: String) -> void:
 	_check("hold_defers_without_a_second_request", mobile_load._load_after_hold and not mobile_load._loading)
 	mobile_load.free()
 	_check("wiped_out_keeps_offer_while_loading", game_source.contains("offer_phase() != \"hidden\"") and game_source.contains("AD LOADING") and game_source.contains("NO AD AVAILABLE"))
+	var load_fn := mobile_source.substr(mobile_source.find("func _load_rewarded"), 2200)
+	var watch_fn := game_source.substr(game_source.find("func _watch_coin_ad"), 900)
+	_check("request_cancels_pending_retry", load_fn.find("_cancel_rewarded_retry()") != -1 and load_fn.find("_cancel_rewarded_retry()") < load_fn.find("_loader.load("))
+	var nudge := Mobile.new()
+	nudge._runtime_platform = "ios"
+	nudge._ads_request_allowed = true
+	nudge._sdk_started = true
+	nudge._sdk_initialized = true
+	nudge._retry_pending = true
+	nudge._retry_token = 3
+	nudge._load_failures = 1
+	nudge._last_failure_kind = "no_fill"
+	nudge.nudge_offer_load()
+	_check("nudge_keeps_no_fill_backoff", nudge._retry_pending and nudge._retry_token == 3 and not nudge._loading and nudge._load_generation == 0)
+	nudge._sdk_initialized = false
+	nudge._retry_pending = false
+	nudge.nudge_offer_load()
+	_check("nudge_before_init_does_not_request", not nudge._loading and nudge._load_generation == 0 and nudge._sdk_started)
+	nudge._load_rewarded()
+	_check("load_waits_for_sdk_initialization", not nudge._loading and nudge._load_generation == 0)
+	nudge.free()
+	_check("retry_stops_when_provider_leaves_tree", mobile_source.contains("func _exit_tree()") and mobile_source.contains("not is_inside_tree()"))
+	_check("yes_without_ad_logs_and_does_not_show", watch_fn.contains("log_unready_press()") and watch_fn.find("log_unready_press()") < watch_fn.find("show_session("))
 	var preset := FileAccess.get_file_as_string("res://export_presets.cfg")
 	var ios_plugin := FileAccess.get_file_as_string("res://addons/admob/ios/bin/ads/poing_godot_admob_ads.gd")
 	_check("ios_tracking_declaration_present", preset.contains("NSUserTrackingUsageDescription") and preset.contains("privacy/tracking_enabled=true") and preset.contains("privacy/collected_data/device_id/used_for_tracking=true") and preset.contains("privacy/collected_data/advertising_data/used_for_tracking=true") and ios_plugin.contains("AppTrackingTransparency.framework") and ios_plugin.contains("SKAdNetworkItems"))
@@ -561,7 +723,12 @@ func _test_offer_enables_after_load(ads: Node) -> void:
 	ads.set_mock_outcome(Mock.Outcome.SUCCESS, false, 0.0)
 	ads.set_mock_offer_state("loading", "NO FILL")
 	_offer(game, 4)
-	_check("visible_offer_shows_no_fill", game._coin_offer_open and game._coin_ad_watch.disabled and _note(game) == "NO FILL", _note(game))
+	_check("visible_offer_shows_no_fill", game._coin_offer_open and game._coin_ad_watch.disabled and game._coin_ad_watch.mouse_filter == Control.MOUSE_FILTER_IGNORE and _note(game) == "NO FILL", _note(game))
+	var shows_while_blocked := int(ads.mock_show_count())
+	var wallet_while_blocked := int(session.coins)
+	for _press in 5:
+		game._coin_ad_watch.pressed.emit()
+	_check("no_fill_press_does_not_present", int(ads.mock_show_count()) == shows_while_blocked and int(session.coins) == wallet_while_blocked and not game._coin_reward_claimed and game._coin_ad_watch.disabled and _note(game) == "NO FILL", "shows=%d wallet=%d note=%s" % [ads.mock_show_count(), int(session.coins), _note(game)])
 	var card: Node = game.overlay
 	var started := Time.get_ticks_usec()
 	ads.set_mock_offer_state("loading", "AD LOADING")
@@ -570,7 +737,7 @@ func _test_offer_enables_after_load(ads: Node) -> void:
 	var before := int(session.coins)
 	ads.set_mock_offer_state("ready", "")
 	await process_frame
-	_check("late_load_enables_checkmark", not game._coin_ad_watch.disabled and _note(game) == "" and int(session.coins) == before, _note(game))
+	_check("late_load_enables_checkmark", not game._coin_ad_watch.disabled and game._coin_ad_watch.mouse_filter == Control.MOUSE_FILTER_STOP and _note(game) == "" and int(session.coins) == before, _note(game))
 	game._coin_ad_watch.pressed.emit()
 	await process_frame
 	await process_frame

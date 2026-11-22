@@ -30,11 +30,13 @@ def const_string(source: str, name: str) -> str:
     return match.group(1)
 
 
-def check_source(platform: str, mode: str) -> str:
+def check_source(platform: str, mode: str) -> tuple[str, str]:
     if platform not in ("ios", "android"):
         fail("Pass --platform ios or --platform android. One mode no longer applies to both stores.")
-    if mode not in ("test", "production"):
-        fail(f"Unsupported ad mode {mode!r}. Use test or production.")
+    if mode not in ("test", "production", "diagnostic"):
+        fail(f"Unsupported ad mode {mode!r}. Use test, production, or diagnostic.")
+    if mode == "diagnostic" and platform != "ios":
+        fail("Diagnostic mode is an iOS TestFlight selection. Android stays on its own mode.")
     build = (ROOT / "scripts/ads/ad_build_mode.gd").read_text(encoding="utf-8")
     ads = (ROOT / "scripts/ads/ad_config.gd").read_text(encoding="utf-8")
     project = (ROOT / "project.godot").read_text(encoding="utf-8")
@@ -42,8 +44,8 @@ def check_source(platform: str, mode: str) -> str:
     android_mode = const_string(build, "ANDROID_MODE")
     ios_marker = const_string(build, "IOS_OUTPUT_MARKER")
     android_marker = const_string(build, "ANDROID_OUTPUT_MARKER")
-    if ios_mode not in ("test", "production") or android_mode not in ("test", "production"):
-        fail("IOS_MODE and ANDROID_MODE must each be exactly test or production.")
+    if ios_mode not in ("test", "production", "diagnostic") or android_mode not in ("test", "production"):
+        fail("IOS_MODE must be test, production, or diagnostic. ANDROID_MODE must be test or production.")
     if ios_marker != f"REEFRUN_IOS_AD_MODE={ios_mode}":
         fail(f"IOS_OUTPUT_MARKER is {ios_marker!r}.")
     if android_marker != f"REEFRUN_ANDROID_AD_MODE={android_mode}":
@@ -83,18 +85,39 @@ def check_source(platform: str, mode: str) -> str:
         fail("project.godot is missing the production Android AdMob app id.")
     if f'general/ios/app_id="{IOS_APP_ID}"' not in project:
         fail("project.godot is missing the production iOS AdMob app id.")
-    selected = IOS_LIVE_UNIT if platform == "ios" and packed == "production" else ""
-    if platform == "ios" and packed == "test":
+    selected = ""
+    if platform == "ios" and packed == "production":
+        selected = IOS_LIVE_UNIT
+    elif platform == "ios" and packed in ("test", "diagnostic"):
         selected = IOS_TEST_UNIT
-    if platform == "android" and packed == "test":
+    elif platform == "android" and packed == "test":
         selected = ANDROID_TEST_UNIT
-    if platform == "android" and packed == "production":
+    elif platform == "android" and packed == "production":
         selected = ANDROID_LIVE_UNIT
+    if platform == "ios" and packed == "diagnostic":
+        if IOS_LIVE_UNIT not in ads:
+            fail("Diagnostic mode removed the production rewarded unit from ad_config.gd.")
+        print(
+            "Diagnostic iOS mode selects Google's official rewarded test unit. "
+            f"Production unit {IOS_LIVE_UNIT} remains configured and is not requested."
+        )
+        check_diagnostic_cannot_release()
     print(
         f"{platform} ad mode is {packed}. Android mode is {android_mode}. "
         f"iOS mode is {ios_mode}. Selected rewarded unit is {selected}."
     )
     return marker, selected
+
+
+def check_diagnostic_cannot_release() -> None:
+    workflow = ROOT / ".github" / "workflows" / "ios-build.yml"
+    text = workflow.read_text(encoding="utf-8")
+    for banned in ("submit-for-review", "submit_for_review", "appStoreVersionSubmissions"):
+        if banned in text:
+            fail(f"Diagnostic mode refuses App Store review submission ({banned}).")
+    if "xcrun altool --upload-app" not in text:
+        fail("The iOS workflow no longer has its TestFlight upload command.")
+    print("Diagnostic channel is internal TestFlight. This workflow does not submit for App Store review.")
 
 
 def check_manifest(text: str) -> None:
@@ -121,18 +144,31 @@ def package_files(path: pathlib.Path) -> list[pathlib.Path]:
     return found
 
 
+def forbidden_markers(marker: str) -> list[str]:
+    ios = (
+        "REEFRUN_IOS_AD_MODE=test",
+        "REEFRUN_IOS_AD_MODE=production",
+        "REEFRUN_IOS_AD_MODE=diagnostic",
+    )
+    android = (
+        "REEFRUN_ANDROID_AD_MODE=test",
+        "REEFRUN_ANDROID_AD_MODE=production",
+    )
+    if marker in ios:
+        return [item for item in ios if item != marker]
+    if marker in android:
+        return [item for item in android if item != marker]
+    fail(f"Unrecognized ad-mode marker {marker!r}.")
+
+
 def check_packages(paths: list[str], marker: str, unit: str) -> None:
-    if marker.startswith("REEFRUN_IOS_AD_MODE="):
-        wrong = "REEFRUN_IOS_AD_MODE=production" if marker.endswith("=test") else "REEFRUN_IOS_AD_MODE=test"
-    elif marker.startswith("REEFRUN_ANDROID_AD_MODE="):
-        wrong = "REEFRUN_ANDROID_AD_MODE=production" if marker.endswith("=test") else "REEFRUN_ANDROID_AD_MODE=test"
-    else:
-        fail(f"Unrecognized ad-mode marker {marker!r}.")
+    blocked = forbidden_markers(marker)
     marker_bytes = marker.encode("utf-8")
-    wrong_bytes = wrong.encode("utf-8")
     unit_bytes = unit.encode("utf-8")
+    production_bytes = IOS_LIVE_UNIT.encode("utf-8")
     saw_marker = False
     saw_unit = False
+    saw_production_constant = False
     parsed_pack = False
     for raw in paths:
         for package in package_files(pathlib.Path(raw)):
@@ -141,14 +177,17 @@ def check_packages(paths: list[str], marker: str, unit: str) -> None:
             if pack_count:
                 parsed_pack = True
             haystack = scripts if pack_count else blob
-            if wrong_bytes in haystack:
-                fail(f"{package} contains {wrong}, which does not match this build.")
+            for wrong in blocked:
+                if wrong.encode("utf-8") in haystack:
+                    fail(f"{package} contains {wrong}, which does not match this build.")
             if marker_bytes in haystack:
                 saw_marker = True
                 print(f"Found {marker} in {package}.")
             if unit_bytes and unit_bytes in haystack:
                 saw_unit = True
                 print(f"Found rewarded unit {unit} in {package}.")
+            if production_bytes in haystack:
+                saw_production_constant = True
     if not saw_marker:
         fail(
             "The exported package does not contain "
@@ -157,6 +196,10 @@ def check_packages(paths: list[str], marker: str, unit: str) -> None:
         )
     if unit and parsed_pack and not saw_unit:
         fail(f"The exported scripts do not contain rewarded unit {unit}.")
+    if marker.endswith("=diagnostic") and parsed_pack and not saw_production_constant:
+        fail("The diagnostic export dropped the production rewarded unit constant.")
+    if marker.endswith("=diagnostic") and saw_production_constant:
+        print(f"Production unit {IOS_LIVE_UNIT} is still in the export and is not the selected unit.")
     if not parsed_pack:
         fail("No Godot pack could be read from the exported package.")
 
@@ -260,11 +303,19 @@ def main() -> None:
     parser.add_argument("--manifest", action="append", default=[])
     parser.add_argument("--manifest-file", action="append", default=[])
     parser.add_argument("--package", action="append", default=[])
+    parser.add_argument("--distribution", default="", choices=("", "testflight", "app-store"))
     args = parser.parse_args()
     mode = (args.mode or "test").strip().lower()
     if mode == "":
         mode = "test"
+    if mode == "diagnostic" and args.distribution == "app-store":
+        fail(
+            "A diagnostic iOS build cannot be submitted for App Store release. "
+            "Upload it to internal TestFlight only."
+        )
     marker, selected = check_source(args.platform, mode)
+    if mode == "diagnostic" and args.distribution == "testflight":
+        print(f"TestFlight upload will request rewarded unit {selected}.")
     for manifest in args.manifest:
         check_manifest(manifest)
     for manifest_path in args.manifest_file:

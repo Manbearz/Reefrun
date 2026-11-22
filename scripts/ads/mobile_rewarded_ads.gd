@@ -24,7 +24,11 @@ var _load_failures := 0
 var _retry_pending := false
 var _retry_token := 0
 var _last_error_code := -1
+var _last_error_domain := ""
+var _last_error_detail := ""
 var _last_failure_kind := ""
+var _load_generation := 0
+var _sdk_initialized := false
 var _offer_notice := ""
 var _block_reason := ""
 var _consent_busy := false
@@ -32,8 +36,12 @@ var _consent_resolved := false
 var _ump_form_presented := false
 var _tracking_status := TrackingPolicy.Status.UNAVAILABLE
 var _offer_phase := ""
+var _presented_ad: RewardedAd
+var _runtime_platform := ""
+var _retry_delay_scale := 1.0
 const _RETRY_DELAYS: Array[float] = [8.0, 16.0, 30.0]
 const IOS_LOAD_ERROR_DOMAIN := "com.google.admob"
+const ANDROID_LOAD_ERROR_DOMAIN := "com.google.android.gms.ads"
 # RewardedItem has no ad id. Each show stamps its own session, and a repeat
 # of that same session is ignored. Entries are not cleared when a new show
 # starts, so a late callback cannot be counted as the new show's reward.
@@ -47,6 +55,13 @@ func _ready() -> void:
 	_request_consent()
 
 
+func _exit_tree() -> void:
+	# A freed provider must not keep a timer that would start another request.
+	_cancel_rewarded_retry()
+	_loading = false
+	_load_generation += 1
+
+
 func _notification(what: int) -> void:
 	if what != NOTIFICATION_APPLICATION_RESUMED:
 		return
@@ -56,7 +71,7 @@ func _notification(what: int) -> void:
 
 
 func is_available() -> bool:
-	return _ads_request_allowed and _native_mobile() and _ad != null and not _showing and not AdCfg.rewarded_unit_id().is_empty()
+	return _ads_request_allowed and _native_mobile() and _ad != null and not _showing and not _loading and not _rewarded_unit().is_empty()
 
 
 func is_show_active() -> bool:
@@ -74,25 +89,52 @@ func show_privacy_options() -> void:
 
 
 func show_session(session_id: int) -> void:
-	if not _ads_request_allowed or not _native_mobile() or _ad == null or _showing or AdCfg.rewarded_unit_id().is_empty():
-		_log("show skipped. loaded=%s showing=%s" % [_ad != null, _showing])
-		_emit_unavailable(session_id)
+	if not _arm_presentation(session_id):
 		return
+	# The loaded object is consumed above. A second show cannot present it.
+	_presented_ad.show(_reward_listener)
+
+
+func _arm_presentation(session_id: int) -> bool:
+	if not is_available():
+		_log("show skipped. stage=presentation %s" % _readiness_label())
+		_emit_unavailable(session_id)
+		return false
+	_presented_ad = _ad
+	_ad = null
 	_showing = true
 	_reward_listener = OnUserEarnedRewardListener.new()
 	# The native listener receives only RewardedItem. RewardedAd.gd drops the
 	# plugin uid before this runs, and the reward dictionary has no response id.
-	# bind() keeps this show's session even if a later show replaces _ad.
+	# bind() keeps this show's session even if a later show replaces the ad.
 	_reward_listener.on_user_earned_reward = _on_user_earned_reward.bind(session_id)
 	if _fullscreen != null:
 		_fullscreen.on_ad_dismissed_full_screen_content = _on_ad_dismissed.bind(session_id)
 		_fullscreen.on_ad_failed_to_show_full_screen_content = _on_ad_failed_to_show.bind(session_id)
-	_log("showing rewarded ad session=%d" % session_id)
-	_ad.show(_reward_listener)
+	_log("showing rewarded ad. stage=presentation session=%d %s" % [session_id, _readiness_label()])
+	return true
+
+
+func _platform_name() -> String:
+	if _runtime_platform == "ios" or _runtime_platform == "android":
+		return _runtime_platform
+	if OS.has_feature("ios"):
+		return "ios"
+	if OS.has_feature("android"):
+		return "android"
+	return ""
 
 
 func _native_mobile() -> bool:
-	return OS.has_feature("ios") or OS.has_feature("android")
+	var name := _platform_name()
+	return name == "ios" or name == "android"
+
+
+func _rewarded_unit() -> String:
+	var name := _platform_name()
+	if name.is_empty():
+		return ""
+	return AdCfg.rewarded_unit_for(name, AdCfg.mode_for_platform(name))
 
 
 static func ump_status_name(status: int) -> String:
@@ -124,21 +166,33 @@ static func classify_offer(native_mobile: bool, unit_ready: bool, ad_ready: bool
 
 
 static func load_failure_kind(code: int, domain: String = "") -> String:
-	# iOS GADErrorCode values belong only to com.google.admob. Android uses
-	# different numbers in a different domain, so an unknown domain stays unlabeled.
-	if domain.strip_edges() != IOS_LOAD_ERROR_DOMAIN:
-		return "other"
-	match code:
-		0:
-			return "invalid_request"
-		1:
-			return "no_fill"
-		2:
-			return "network"
-		3:
-			return "server"
-		_:
-			return "other"
+	# The same integer is a different error on each platform. iOS GADErrorNoFill
+	# is 1 and GADErrorServerError is 3. Android ERROR_CODE_NO_FILL is 3.
+	# A code without one of those domains is an internal miss, not no-fill.
+	var which := domain.strip_edges()
+	if which == IOS_LOAD_ERROR_DOMAIN:
+		match code:
+			0:
+				return "invalid_request"
+			1:
+				return "no_fill"
+			2:
+				return "network"
+			3:
+				return "server"
+			_:
+				return "other"
+	if which == ANDROID_LOAD_ERROR_DOMAIN:
+		match code:
+			1:
+				return "invalid_request"
+			2:
+				return "network"
+			3:
+				return "no_fill"
+			_:
+				return "other"
+	return "other"
 
 
 static func status_text(phase: String, failure_kind: String, request_in_flight: bool) -> String:
@@ -176,6 +230,61 @@ static func _field(source, key: String):
 	return source.get(key)
 
 
+static func _redact(text: String) -> String:
+	# Advertising identifiers are UUIDs. Response ids and placement ids are not.
+	var pattern := RegEx.new()
+	if pattern.compile("(?i)\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b") != OK:
+		return text
+	return pattern.sub(text, "[redacted]", true)
+
+
+static func _text_field(source, key: String) -> String:
+	var value = _field(source, key)
+	if value == null:
+		return ""
+	return _redact(str(value))
+
+
+static func describe_response_info(info) -> String:
+	if info == null:
+		return "response_id= adapter="
+	var response_id := _text_field(info, "response_id")
+	var adapter := _text_field(info, "mediation_adapter_class_name")
+	var adapter_errors := ""
+	var responses = _field(info, "adapter_responses")
+	if responses != null:
+		for item in responses:
+			if item == null:
+				continue
+			var item_error = _field(item, "ad_error")
+			var item_code := "" if item_error == null else str(_field(item_error, "code"))
+			var item_domain := "" if item_error == null else _text_field(item_error, "domain")
+			var item_message := "" if item_error == null else _text_field(item_error, "message")
+			# Source name and adapter class only. Source ids and extras can identify a device.
+			adapter_errors += " source=%s adapter=%s code=%s domain=%s message=%s" % [
+				_text_field(item, "ad_source_name"),
+				_text_field(item, "adapter_class_name"),
+				item_code,
+				item_domain,
+				item_message,
+			]
+	return "response_id=%s adapter=%s%s" % [response_id, adapter, adapter_errors]
+
+
+static func _cause_text(error, depth: int = 0) -> String:
+	if error == null or depth >= 3:
+		return ""
+	var cause = _field(error, "cause")
+	if cause == null:
+		return ""
+	return " cause_code=%s cause_domain=%s cause_message=%s%s" % [
+		_field(cause, "code"),
+		_text_field(cause, "domain"),
+		_text_field(cause, "message"),
+		_cause_text(cause, depth + 1),
+	]
+
+
 static func describe_load_error(error) -> String:
 	if error == null:
 		return "code=unknown domain= message=unknown kind=unknown response_id= adapter="
@@ -183,33 +292,19 @@ static func describe_load_error(error) -> String:
 	if code_value == null:
 		code_value = "unknown"
 	var code := int(code_value) if str(code_value).is_valid_int() else -1
-	var domain_value = _field(error, "domain")
-	var message_value = _field(error, "message")
-	var domain := "" if domain_value == null else str(domain_value)
-	var message := "" if message_value == null else str(message_value)
-	var cause := ""
-	var cause_value = _field(error, "cause")
-	if cause_value != null:
-		cause = " cause_code=%s cause_message=%s" % [_field(cause_value, "code"), _field(cause_value, "message")]
-	var response_id := ""
-	var adapter := ""
-	var adapter_errors := ""
+	var domain := _text_field(error, "domain")
+	var message := _text_field(error, "message")
+	if message.is_empty():
+		message = "unknown"
 	var info = _field(error, "response_info")
-	if info != null:
-		var response_value = _field(info, "response_id")
-		var adapter_value = _field(info, "mediation_adapter_class_name")
-		response_id = "" if response_value == null else str(response_value)
-		adapter = "" if adapter_value == null else str(adapter_value)
-		var responses = _field(info, "adapter_responses")
-		if responses != null:
-			for item in responses:
-				if item == null:
-					continue
-				var item_error = _field(item, "ad_error")
-				var item_code := "" if item_error == null else str(_field(item_error, "code"))
-				var item_message := "" if item_error == null else str(_field(item_error, "message"))
-				adapter_errors += " source=%s adapter=%s code=%s message=%s" % [str(_field(item, "ad_source_name")), str(_field(item, "adapter_class_name")), item_code, item_message]
-	return "code=%s domain=%s message=%s kind=%s response_id=%s adapter=%s%s%s" % [code_value, domain, message, load_failure_kind(code, domain), response_id, adapter, cause, adapter_errors]
+	return "code=%s domain=%s message=%s kind=%s %s%s" % [
+		code_value,
+		domain,
+		message,
+		load_failure_kind(code, domain),
+		describe_response_info(info),
+		_cause_text(error),
+	]
 
 
 static func describe_form_error(error) -> String:
@@ -347,7 +442,7 @@ func _refresh_privacy_options() -> void:
 func offer_phase() -> String:
 	return classify_offer(
 		_native_mobile(),
-		not AdCfg.rewarded_unit_id().is_empty() and _block_reason != "unit",
+		not _rewarded_unit().is_empty() and _block_reason != "unit",
 		is_available(),
 		_consent_resolved,
 		_consent_busy,
@@ -361,7 +456,19 @@ func offer_phase() -> String:
 
 
 func offer_status_text() -> String:
+	# "NO FILL" is only the classified SDK result. A request that is still
+	# inside the SDK says "AD LOADING". The backoff between those requests
+	# keeps the SDK result so a no-fill is not relabeled as a local miss.
 	return status_text(offer_phase(), _last_failure_kind, _loading)
+
+
+func log_unready_press() -> void:
+	_log("yes pressed with no ad to show. own_message=ad_not_ready sdk_no_fill=%s sdk_initialized=%s %s detail=%s" % [
+		_last_failure_kind == "no_fill",
+		_sdk_initialized,
+		_readiness_label(),
+		_last_error_detail,
+	])
 
 
 func _note_offer_phase() -> void:
@@ -371,7 +478,13 @@ func _note_offer_phase() -> void:
 		return
 	_offer_phase = phase
 	_offer_notice = notice
-	_log("rewarded readiness=%s notice=%s" % [phase, notice])
+	_log("rewarded readiness=%s notice=%s sdk_initialized=%s %s detail=%s" % [
+		phase,
+		notice,
+		_sdk_initialized,
+		_readiness_label(),
+		_last_error_detail,
+	])
 	availability_changed.emit()
 
 
@@ -407,12 +520,11 @@ func set_load_hold(hold: bool) -> void:
 
 
 func nudge_offer_load() -> void:
-	# The wiped-out card is on screen. If consent already allows a request and
-	# nothing is in flight, ask again instead of waiting out the backoff.
-	if not _ads_request_allowed or not _native_mobile() or _showing or _loading or _ad != null:
+	# The card is on screen. Start the first request when consent allows it
+	# and nothing is loaded. A no-fill or network backoff keeps its timer.
+	if not _ads_request_allowed or not _native_mobile() or _showing or _loading or _ad != null or _retry_pending:
 		return
-	_cancel_rewarded_retry()
-	if not _sdk_started:
+	if not _sdk_started or not _sdk_initialized:
 		_start_sdk()
 		return
 	_load_rewarded()
@@ -449,7 +561,7 @@ func _start_sdk() -> void:
 	if not _ads_request_allowed:
 		return
 	if _sdk_started:
-		if _ad == null and not _loading and not _showing:
+		if _sdk_initialized and _ad == null and not _loading and not _showing and not _retry_pending:
 			_load_rewarded()
 		return
 	if not Engine.has_singleton("PoingGodotAdMob"):
@@ -479,6 +591,7 @@ func _on_sdk_initialized(status: InitializationStatus) -> void:
 			if adapter != null:
 				state = int(adapter.initialization_state)
 			adapters.append("%s:%s" % [str(key), state])
+	_sdk_initialized = true
 	_log("Mobile Ads SDK initialized. adapters=%s" % ",".join(adapters))
 	_load_rewarded()
 
@@ -490,7 +603,9 @@ func _load_rewarded() -> void:
 		return
 	if not _ads_request_allowed or not _native_mobile() or _loading or _showing or _ad != null:
 		return
-	var unit := AdCfg.rewarded_unit_id()
+	if not _sdk_initialized:
+		return
+	var unit := _rewarded_unit()
 	if unit.is_empty():
 		_block_reason = "unit"
 		_log("rewarded load skipped because no unit id is allowed")
@@ -513,24 +628,37 @@ func _load_rewarded() -> void:
 		_note_offer_phase()
 		return
 	_block_reason = ""
+	# Drop any backoff timer before this request. A late timer must not start
+	# a second load, and a late callback from an older request is ignored.
+	_cancel_rewarded_retry()
+	_load_generation += 1
+	var generation := _load_generation
 	_loading = true
-	_retry_pending = false
 	_log_rewarded_selection("rewarded request started")
 	_mark_timing("ad_request_started")
 	_note_offer_phase()
 	_load_callback = RewardedAdLoadCallback.new()
-	_load_callback.on_ad_loaded = _on_ad_loaded
-	_load_callback.on_ad_failed_to_load = _on_ad_failed_to_load
+	_load_callback.on_ad_loaded = _on_ad_loaded.bind(generation)
+	_load_callback.on_ad_failed_to_load = _on_ad_failed_to_load.bind(generation)
 	_loader = RewardedAdLoader.new()
 	_loader.load(unit, AdRequest.new(), _load_callback)
 
 
-func _on_ad_loaded(ad: RewardedAd) -> void:
+func _on_ad_loaded(ad: RewardedAd, generation: int = -1) -> void:
+	if generation >= 0 and generation != _load_generation:
+		_log("ignored late rewarded load. generation=%d current=%d" % [generation, _load_generation])
+		if ad != null:
+			ad.destroy()
+		return
 	_loading = false
 	_load_failures = 0
 	_last_error_code = -1
+	_last_error_domain = ""
+	_last_error_detail = ""
 	_last_failure_kind = ""
 	_cancel_rewarded_retry()
+	if _ad != null and _ad != ad:
+		_ad.destroy()
 	_ad = ad
 	_fullscreen = FullScreenContentCallback.new()
 	_fullscreen.on_ad_showed_full_screen_content = func() -> void: _log("rewarded ad showed")
@@ -544,7 +672,10 @@ func _on_ad_loaded(ad: RewardedAd) -> void:
 		var message := error.message if error != null else "show_failed"
 		_log("rewarded ad failed before show: %s" % message)
 	_ad.full_screen_content_callback = _fullscreen
-	_log("rewarded ad loaded")
+	var loaded_info := ""
+	if ad != null and ad.has_method("get_response_info"):
+		loaded_info = describe_response_info(ad.get_response_info())
+	_log("rewarded ad loaded. %s" % loaded_info)
 	_mark_timing("ad_load_callback")
 	_note_death("ad_loaded")
 	if _load_hold:
@@ -553,16 +684,14 @@ func _on_ad_loaded(ad: RewardedAd) -> void:
 	_note_offer_phase()
 
 
-func _on_ad_failed_to_load(error: LoadAdError) -> void:
+func _on_ad_failed_to_load(error, generation: int = -1) -> void:
+	if generation >= 0 and generation != _load_generation:
+		_log("ignored late rewarded load failure. %s" % describe_load_error(error))
+		return
 	_loading = false
 	_load_failures += 1
-	var domain := ""
-	if error != null:
-		domain = str(_field(error, "domain"))
-		if str(_field(error, "code")).is_valid_int():
-			_last_error_code = int(_field(error, "code"))
-	_last_failure_kind = load_failure_kind(_last_error_code, domain)
-	_log("rewarded load failed: %s" % describe_load_error(error))
+	_remember_ad_error(error)
+	_log("rewarded load failed. stage=load sdk_initialized=%s %s %s" % [_sdk_initialized, describe_load_error(error), _readiness_label()])
 	_mark_timing("ad_load_callback")
 	_note_death("ad_failed")
 	_schedule_rewarded_retry()
@@ -570,6 +699,19 @@ func _on_ad_failed_to_load(error: LoadAdError) -> void:
 		_phase_after_hold = true
 		return
 	_note_offer_phase()
+
+
+func _remember_ad_error(error) -> void:
+	var domain := ""
+	var code := -1
+	if error != null:
+		domain = _text_field(error, "domain")
+		if str(_field(error, "code")).is_valid_int():
+			code = int(_field(error, "code"))
+	_last_error_code = code
+	_last_error_domain = domain
+	_last_failure_kind = load_failure_kind(code, domain)
+	_last_error_detail = describe_load_error(error)
 
 
 func _cancel_rewarded_retry() -> void:
@@ -584,10 +726,10 @@ func _schedule_rewarded_retry() -> void:
 	_retry_pending = true
 	_retry_token += 1
 	var token := _retry_token
-	var delay := retry_delay_for_failure(_load_failures)
-	_log("retrying rewarded load in %.0fs. failures=%d" % [delay, _load_failures])
+	var delay := retry_delay_for_failure(_load_failures) * maxf(_retry_delay_scale, 0.0)
+	_log("retrying rewarded load in %.0fs. failures=%d kind=%s" % [delay, _load_failures, _last_failure_kind])
 	get_tree().create_timer(delay).timeout.connect(func() -> void:
-		if not is_instance_valid(self) or token != _retry_token:
+		if not is_instance_valid(self) or not is_inside_tree() or token != _retry_token:
 			return
 		_retry_pending = false
 		_load_rewarded()
@@ -612,9 +754,12 @@ func _on_ad_dismissed(session_id: int) -> void:
 	_load_rewarded()
 
 
-func _on_ad_failed_to_show(error: AdError, session_id: int) -> void:
-	var message := error.message if error != null else "show_failed"
-	_log("rewarded ad failed to show: %s" % message)
+func _on_ad_failed_to_show(error, session_id: int) -> void:
+	_remember_ad_error(error)
+	var message := "show_failed"
+	if error != null:
+		message = str(error.message)
+	_log("rewarded show failed. stage=presentation %s %s" % [describe_load_error(error), _readiness_label()])
 	_release_ad()
 	_emit_failed(message, session_id)
 	_load_rewarded()
@@ -622,11 +767,40 @@ func _on_ad_failed_to_show(error: AdError, session_id: int) -> void:
 
 func _release_ad() -> void:
 	_showing = false
+	if _presented_ad != null and _presented_ad != _ad:
+		_presented_ad.destroy()
+	_presented_ad = null
 	if _ad != null:
 		_ad.destroy()
 		_ad = null
 	_fullscreen = null
 	_reward_listener = null
+
+
+func _consent_label() -> String:
+	if not Engine.has_singleton("PoingGodotAdMobConsentInformation"):
+		return "plugin_missing allowed=%s" % _ads_request_allowed
+	var status := int(UserMessagingPlatform.consent_information.get_consent_status())
+	return "%s allowed=%s" % [ump_status_name(status), _ads_request_allowed]
+
+
+func _readiness_label() -> String:
+	# Placement id, consent, and load state only. No advertising id or device id.
+	return "unit=%s consent=%s consent_satisfied=%s sdk_initialized=%s loaded=%s loading=%s retry=%s showing=%s failures=%d code=%s domain=%s kind=%s phase=%s" % [
+		_rewarded_unit(),
+		_consent_label(),
+		_ads_request_allowed,
+		_sdk_initialized,
+		_ad != null,
+		_loading,
+		_retry_pending,
+		_showing,
+		_load_failures,
+		_last_error_code,
+		_last_error_domain,
+		_last_failure_kind,
+		offer_phase(),
+	]
 
 
 func _note_death(what: String) -> void:
@@ -642,12 +816,15 @@ func _mark_timing(event: String) -> void:
 
 
 func _log_rewarded_selection(where: String) -> void:
-	var mode := AdCfg.monetization_mode()
-	var unit := AdCfg.rewarded_unit_id()
+	var name := _platform_name()
+	var mode := AdCfg.mode_for_platform(name) if not name.is_empty() else AdCfg.monetization_mode()
+	var unit := _rewarded_unit()
 	_log("%s. %s" % [where, AdCfg.describe_rewarded_selection(mode, unit)])
 	var note := AdCfg.rewarded_selection_note(mode, unit)
 	if not note.is_empty():
 		_log(note)
+	if name == "ios" and AdCfg.normalize_mode(mode) == "production" and not TrackingPolicy.idfa_allowed(_tracking_status):
+		_log("test_device_match=unconfirmed tracking=%s. A console test device matches only after the system allows tracking. This request does not include an advertising identifier." % TrackingPolicy.status_name(_tracking_status))
 
 
 func _log(message: String) -> void:
