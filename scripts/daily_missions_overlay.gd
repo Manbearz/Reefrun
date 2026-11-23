@@ -100,14 +100,22 @@ const SCREEN_TRACK := [
 const SCREEN_COUNT := [
 	Rect2(524, 767, 132, 28),
 	Rect2(522, 926, 123, 28),
-	Rect2(514, 1084, 131, 28),
+	# The bottom capsule's highlight reaches x=529. The value starts after it
+	# and stops 6px before the reward plate at x=653. The box is wide enough
+	# for 200/200 at the shared counter size.
+	Rect2(532, 1084, 114, 28),
 ]
 const SCREEN_COUNT_H := 19.0
 # Number, then the coin. One size for +5, +10, +20, and the +25 bonus.
-const REWARD_TEXT_H := 42.0
-const REWARD_COIN_H := 34.0
+# Text is 30% larger than the previous 42px glyphs. The coin is 20% larger than 34px.
+const REWARD_TEXT_H := 54.6
+const REWARD_COIN_H := 40.8
 const REWARD_GAP := 8.0
-const REWARD_CENTER_X := 755.0
+# Painted interior of each blue reward well. The flat fill is x=668 through
+# x=833, and the bright rim starts at x=834. Groups center on that span.
+const REWARD_BOX_LEFT := 668.0
+const REWARD_BOX_RIGHT := 834.0
+const REWARD_CENTER_X := (REWARD_BOX_LEFT + REWARD_BOX_RIGHT) * 0.5
 const SCREEN_REWARD_CENTER := [
 	Vector2(REWARD_CENTER_X, 753.0),
 	Vector2(REWARD_CENTER_X, 915.0),
@@ -149,6 +157,14 @@ const SCREEN_ICONS := [
 	Rect2(131, 868, 80, 80),
 	Rect2(133, 1026, 80, 80),
 ]
+# Extra scale inside the painted circle. The circle itself stays 80px.
+# The trophy is a little smaller than the others so its handles keep a gap.
+const SCREEN_ICON_SCALE := {
+	"collect_x_coins.png": 1.25,
+	"collect_coins.png": 1.25,
+	"pipes.png": 1.25,
+	"high_score.png": 1.20,
+}
 const SCREEN_BACK := Rect2(200, 1418, 540, 168)
 # Bottom of the blue mission card, and the painted top of the Back button.
 const SCREEN_CARD_BOTTOM := 1328.0
@@ -814,8 +830,14 @@ func _build_row(index: int) -> void:
 	fill.size = Vector2(0, _track[index].size.y - pad * 2.0)
 	fill.visible = false
 	fill.add_theme_stylebox_override("panel", _rounded(FILL_COLOR, groove))
+	fill.resized.connect(_fit_fill_radius.bind(fill))
+	_fit_fill_radius(fill)
 	track.add_child(fill)
 	_fills.append(fill)
+	if _screen and index == 0:
+		_cover_track_seam()
+	if _screen and index == 2:
+		_cover_count_band(_count[index])
 	var pill := Panel.new()
 	pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pill.position = _count[index].position
@@ -831,6 +853,8 @@ func _build_row(index: int) -> void:
 		clip_count = false
 	counter.configure("0/0", count_h, count_box.size, HORIZONTAL_ALIGNMENT_CENTER, false, clip_count)
 	counter.position = _count[index].position
+	if _screen:
+		counter.z_index = 1
 	_host.add_child(counter)
 	_counters.append(counter)
 	var amount := int(DailyMissions.REWARDS.get(SLOTS[index], 0))
@@ -887,6 +911,67 @@ func _fill_pad() -> float:
 	return 2.0
 
 
+# A 1/50 fill is only a few pixels wide. A corner radius sized for the full
+# groove turns that stub into a clipped circle with a bright fringe. Wide fills
+# keep the pill radius, and the width stays the real progress ratio.
+func _fit_fill_radius(fill: Panel) -> void:
+	var style: StyleBoxFlat = fill.get_theme_stylebox("panel") as StyleBoxFlat
+	if style == null:
+		return
+	var width := maxf(fill.size.x, 0.0)
+	var height := maxf(fill.size.y, 0.0)
+	var radius := int(floor(minf(width, height) * 0.5))
+	style.corner_radius_top_left = radius
+	style.corner_radius_top_right = radius
+	style.corner_radius_bottom_left = radius
+	style.corner_radius_bottom_right = radius
+	style.anti_aliasing = width >= height and width > 1.0
+
+
+# The first painted groove has a yellow-green seam along its top edge. The
+# fill sits inside the track and never covers it, so the empty bar reads as a
+# thin line. Paint the seam with the groove color. The other two grooves are clean.
+func _cover_track_seam() -> void:
+	var seam := ColorRect.new()
+	seam.name = "track_seam"
+	seam.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	seam.color = Color8(1, 28, 71)
+	seam.position = Vector2(260, 765)
+	seam.size = Vector2(246, 3)
+	_host.add_child(seam)
+
+
+# The third counter sits on a lighter band and the capsule highlight. Stretch
+# the clean plate color from just left of that band across the counter box.
+func _cover_count_band(rect: Rect2) -> void:
+	var plate := TextureRect.new()
+	plate.name = "count_plate"
+	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	plate.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	plate.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	plate.stretch_mode = TextureRect.STRETCH_SCALE
+	plate.position = rect.position
+	plate.size = rect.size
+	var art: TextureRect = _host.get_node_or_null("art") as TextureRect
+	var source: Image = art.texture.get_image() if art != null and art.texture != null else null
+	if source == null:
+		plate.queue_free()
+		var flat := ColorRect.new()
+		flat.name = "count_plate"
+		flat.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		flat.color = Color8(1, 56, 112)
+		flat.position = rect.position
+		flat.size = rect.size
+		_host.add_child(flat)
+		return
+	var column := Image.create(1, int(rect.size.y), false, Image.FORMAT_RGBA8)
+	var sample_x := 518
+	for y in int(rect.size.y):
+		column.set_pixel(0, y, source.get_pixel(sample_x, int(rect.position.y) + y))
+	plate.texture = ImageTexture.create_from_image(column)
+	_host.add_child(plate)
+
+
 func _add_mark(rect: Rect2) -> _RewardMark:
 	var mark := _RewardMark.new()
 	mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -939,7 +1024,9 @@ func _set_icon(index: int, mission_id: int) -> void:
 	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	icon.position = Vector2.ZERO
 	icon.size = holder.size
-	icon.show_icon(DailyMissions.icon_texture(mission_id), true)
+	var picture := DailyMissions.icon_texture(mission_id)
+	var scale := screen_icon_scale(picture) if _screen else 1.0
+	icon.show_icon(picture, true, scale)
 	holder.add_child(icon)
 
 
@@ -1708,23 +1795,39 @@ class _RewardMark extends Control:
 			draw_circle(dot, radius * 0.14, Color8(214, 246, 255))
 
 
+static func screen_icon_scale(texture: Texture2D) -> float:
+	if texture == null:
+		return 1.0
+	return float(SCREEN_ICON_SCALE.get(texture.resource_path.get_file(), 1.0))
+
+
 class _MissionIcon extends Control:
 	var texture: Texture2D
 	var _circular := false
+	var _screen_scale := 1.0
 
-	func show_icon(next: Texture2D, circular: bool) -> void:
+	func show_icon(next: Texture2D, circular: bool, screen_scale := 1.0) -> void:
 		texture = next
 		_circular = circular
+		_screen_scale = screen_scale if circular else 1.0
 		queue_redraw()
+
+	func content_rect() -> Rect2:
+		var pad := 0.14 if _circular else 0.12
+		var span := minf((1.0 - pad * 2.0) * _screen_scale, 1.0)
+		var margin := (1.0 - span) * 0.5
+		var box := Rect2(size * margin, size * span)
+		if texture == null or texture.get_width() < 1 or texture.get_height() < 1:
+			return box
+		var source := Vector2(texture.get_width(), texture.get_height())
+		var fit := minf(box.size.x / source.x, box.size.y / source.y)
+		var drawn := source * fit
+		return Rect2(box.position + (box.size - drawn) * 0.5, drawn)
 
 	func _draw() -> void:
 		if not _circular:
 			draw_rect(Rect2(Vector2.ZERO, size), Color8(0, 64, 113), true)
-		if texture == null or texture.get_width() < 1 or texture.get_height() < 1:
+		var drawn := content_rect()
+		if texture == null or drawn.size.x < 1.0:
 			return
-		var pad := 0.14 if _circular else 0.12
-		var box := Rect2(size * pad, size * (1.0 - pad * 2.0))
-		var source := Vector2(texture.get_width(), texture.get_height())
-		var fit := minf(box.size.x / source.x, box.size.y / source.y)
-		var drawn := source * fit
-		draw_texture_rect(texture, Rect2(box.position + (box.size - drawn) * 0.5, drawn), false)
+		draw_texture_rect(texture, drawn, false)

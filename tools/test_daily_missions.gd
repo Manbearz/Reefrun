@@ -806,6 +806,8 @@ func _test_board_chrome() -> bool:
 	}
 	if not _assert_chrome(Overlay, true, partial, PackedStringArray(["", "", "done", ""]), [0.0, 0.5, 1.0]):
 		return false
+	if not _assert_sliver(Overlay):
+		return false
 	if not _assert_chrome(Overlay, true, finished, PackedStringArray(["done", "done", "done", "done"]), [1.0, 1.0, 1.0]):
 		return false
 	if not _screen_covers_phones(Overlay):
@@ -820,6 +822,53 @@ func _test_board_chrome() -> bool:
 		push_error("[missions] reference board scale is not uniform")
 		return false
 	return true
+
+
+func _assert_sliver(Overlay) -> bool:
+	var board := {
+		"ok": true,
+		"slots": [
+			{"slot": "easy", "complete": false, "claimed": false, "goal": 50, "progress": 1, "reward": 5, "description": "Collect 50 coins."},
+			{"slot": "medium", "complete": false, "claimed": false, "goal": 80, "progress": 40, "reward": 10, "description": "Medium"},
+			{"slot": "hard", "complete": false, "claimed": false, "goal": 150, "progress": 5, "reward": 20, "description": "Pass 150 pipes."},
+		],
+		"bonus": {"unlocked": false, "claimed": false, "reward": 25},
+	}
+	var overlay = Overlay.new()
+	overlay.use_screen_board()
+	root.add_child(overlay)
+	overlay.present("board", true)
+	overlay.set("_applied", false)
+	overlay.show_board(board, "")
+	var fills: Array = overlay.get("_fills")
+	var tracks: Array = overlay.get("_track")
+	var counters: Array = overlay.get("_counters")
+	var groove: Rect2 = tracks[0]
+	var pad := 2.0
+	var inner_x := groove.size.x - pad * 2.0
+	var fill: Control = fills[0]
+	var style: StyleBoxFlat = fill.get_theme_stylebox("panel") as StyleBoxFlat
+	var ok := absf(fill.size.x - inner_x / 50.0) <= 0.01 and fill.visible
+	ok = ok and style != null and style.corner_radius_top_left <= int(floor(fill.size.x * 0.5))
+	ok = ok and not style.anti_aliasing
+	ok = ok and str(counters[2].get("_text")) == "5/150"
+	ok = ok and int(counters[2].z_index) >= 1
+	ok = ok and not Overlay.SCREEN_COUNT[2].intersects(Overlay.SCREEN_TRACK[2])
+	ok = ok and Overlay.SCREEN_COUNT[2].position.x >= 530.0
+	ok = ok and Overlay.SCREEN_COUNT[2].end.x <= 652.0
+	ok = ok and not Overlay.SCREEN_COUNT[2].has_point(Vector2(528, 1098))
+	var widest: float = counters[2].layout_width("150/150", Overlay.SCREEN_COUNT_H, false)
+	ok = ok and widest <= Overlay.SCREEN_COUNT[2].size.x
+	var host: Node = overlay.get("_host")
+	var seam: Control = host.get_node_or_null("track_seam") as Control
+	var plate: Control = host.get_node_or_null("count_plate") as Control
+	ok = ok and seam != null and seam.position.y < Overlay.SCREEN_TRACK[0].position.y
+	ok = ok and plate != null and Rect2(plate.position, plate.size).encloses(Rect2(counters[2].position, Vector2(8, 8)))
+	ok = ok and plate.z_index < counters[2].z_index
+	if not ok:
+		push_error("[missions] sliver fill %.2f radius %s count %s" % [fill.size.x, style, counters[2].position])
+	overlay.queue_free()
+	return ok
 
 
 func _screen_covers_phones(Overlay) -> bool:
@@ -918,6 +967,14 @@ func _assert_chrome(Overlay, screen_board: bool, board: Dictionary, modes: Packe
 			ok = false
 		if expected[i] > 0.001 and not fill.visible:
 			ok = false
+		var fill_style: StyleBoxFlat = fill.get_theme_stylebox("panel") as StyleBoxFlat
+		var limit: float = floorf(minf(fill.size.x, fill.size.y) * 0.5)
+		if fill_style == null or fill_style.corner_radius_top_left > limit:
+			push_error("[missions] fill %d radius %s on %s" % [i, fill_style, fill.size])
+			ok = false
+		if expected[i] > 0.001 and expected[i] < 1.0 and fill.size.x + 0.5 < fill.size.y and fill_style.anti_aliasing:
+			push_error("[missions] narrow fill %d still feathers" % i)
+			ok = false
 		if not is_equal_approx(track.size.x, groove.size.x) or not is_equal_approx(track.size.y, groove.size.y):
 			ok = false
 		var reward_box := Rect2(reward.position, reward.size)
@@ -942,13 +999,15 @@ func _assert_chrome(Overlay, screen_board: bool, board: Dictionary, modes: Packe
 			ok = false
 		if rewarded and screen_board:
 			var coin_box := Rect2(coin_icon.position, coin_icon.size)
-			var left_x := minf(coin_box.position.x, reward_box.position.x)
-			var right_x := maxf(coin_box.end.x, reward_box.end.x)
+			var live: Control = texts[i]
+			var live_box := Rect2(live.position, live.size)
+			var left_x := minf(coin_box.position.x, live_box.position.x)
+			var right_x := maxf(coin_box.end.x, live_box.end.x)
 			var cluster_center := Vector2((left_x + right_x) * 0.5, coin_box.position.y + coin_box.size.y * 0.5)
 			var mark_center := mark_box.position + mark_box.size * 0.5
 			if mark_center.distance_to(cluster_center) > 4.0:
 				ok = false
-			if coin_box.position.x + 1.0 < reward_box.end.x:
+			if coin_box.position.x + 1.0 < live_box.end.x:
 				ok = false
 		if rewarded and not screen_board:
 			var mark_center := mark_box.position + mark_box.size * 0.5
@@ -1124,8 +1183,16 @@ func _test_mission_icons() -> bool:
 		var icon: Control = holder.get_child(0)
 		if icon.texture_filter != CanvasItem.TEXTURE_FILTER_NEAREST:
 			ok = false
-		var shown := icon.get("texture") as Texture2D
+		var shown: Texture2D = icon.get("texture") as Texture2D
 		if shown == null or shown.resource_path != "res://assets/ui/mission_icons/%s.png" % files[i]:
+			ok = false
+		var wanted_scale: float = 1.25 if files[i] == "pipes" else 1.0
+		if not is_equal_approx(float(icon.get("_screen_scale")), wanted_scale):
+			ok = false
+		var drawn: Rect2 = icon.call("content_rect")
+		if drawn.get_center().distance_to(icon.size * 0.5) > 0.05:
+			ok = false
+		if drawn.size.x > icon.size.x - 4.0 or drawn.size.y > icon.size.y - 4.0:
 			ok = false
 		if holder.position.x + holder.size.x > Overlay.SCREEN_DESC[i].position.x:
 			ok = false
@@ -1134,7 +1201,59 @@ func _test_mission_icons() -> bool:
 	overlay.queue_free()
 	if not ok:
 		push_error("[missions] mission icons did not land on the cards")
-	return ok
+		return false
+	return _assert_icon_growth(Overlay)
+
+
+func _assert_icon_growth(Overlay) -> bool:
+	# iPhone 13 points, with the notch and home-indicator insets used on device.
+	var phone := Vector2(390, 844)
+	var margins := Vector4(0, 47, 0, 34)
+	var board: Rect2 = Overlay.screen_board_rect(phone, margins)
+	var fit: float = board.size.x / float(Overlay.SCREEN_SIZE.x)
+	var samples := {
+		"collect_x_coins.png": 1.25,
+		"collect_coins.png": 1.25,
+		"pipes.png": 1.25,
+		"high_score.png": 1.20,
+		"mine.png": 1.0,
+	}
+	for file in samples:
+		var texture: Texture2D = load("res://assets/ui/mission_icons/%s" % file) as Texture2D
+		var scale: float = float(samples[file])
+		var before: Rect2 = _icon_content(Overlay, texture, 1.0)
+		var after: Rect2 = _icon_content(Overlay, texture, scale)
+		var before_span := maxf(before.size.x, before.size.y)
+		var after_span := maxf(after.size.x, after.size.y)
+		if before_span <= 1.0 or absf(after_span / before_span - scale) > 0.02:
+			push_error("[missions] %s grew from %.1f to %.1f" % [file, before_span, after_span])
+			return false
+		var aspect := float(texture.get_width()) / float(texture.get_height())
+		if absf(after.size.x / after.size.y - aspect) > 0.02:
+			push_error("[missions] %s aspect changed" % file)
+			return false
+		if after.get_center().distance_to(Vector2(40, 40)) > 0.05:
+			push_error("[missions] %s left the circle center %s" % [file, after])
+			return false
+		if after.position.x < 3.0 or after.position.y < 3.0 or after.end.x > 77.0 or after.end.y > 77.0:
+			push_error("[missions] %s reached the frame %s" % [file, after])
+			return false
+		var gap := 56.0 - after_span * 0.5
+		if gap < 8.0 or gap * fit < 2.0:
+			push_error("[missions] %s gap %.1f is tight on iPhone 13" % [file, gap * fit])
+			return false
+	if not is_equal_approx(fit * 80.0, 80.0 * board.size.x / Overlay.SCREEN_SIZE.x):
+		return false
+	return true
+
+
+func _icon_content(Overlay, texture: Texture2D, scale: float) -> Rect2:
+	var icon: Control = Overlay._MissionIcon.new()
+	icon.size = Vector2(80, 80)
+	icon.call("show_icon", texture, true, scale)
+	var drawn: Rect2 = icon.call("content_rect")
+	icon.free()
+	return drawn
 
 
 func _test_readable_labels() -> bool:
@@ -1364,6 +1483,24 @@ func _test_readable_labels() -> bool:
 		if absf(payout_mid - coin_mid) > 0.6:
 			push_error("[missions] coin is not centered on %s" % payout.get("_text"))
 			ok = false
+		var group_left := payout.position.x
+		var group_right := coin.position.x + coin.size.x
+		var group_mid := (group_left + group_right) * 0.5
+		var box_mid: float = (Overlay.REWARD_BOX_LEFT + Overlay.REWARD_BOX_RIGHT) * 0.5
+		if absf(Overlay.REWARD_CENTER_X - box_mid) > 0.01 or absf(group_mid - box_mid) > 1.0:
+			push_error("[missions] %s is not centered in the well" % payout.get("_text"))
+			ok = false
+		if group_left < Overlay.REWARD_BOX_LEFT - 1.5 or group_right > Overlay.REWARD_BOX_RIGHT + 1.5:
+			push_error("[missions] %s leaves the blue box %s-%s" % [payout.get("_text"), group_left, group_right])
+			ok = false
+	if absf(Overlay.REWARD_TEXT_H / 42.0 - 1.30) > 0.021 or absf(Overlay.REWARD_COIN_H / 34.0 - 1.20) > 0.021:
+		push_error("[missions] reward scale text %.2f coin %.2f" % [Overlay.REWARD_TEXT_H / 42.0, Overlay.REWARD_COIN_H / 34.0])
+		ok = false
+	var iphone_board: Rect2 = Overlay.screen_board_rect(Vector2(390, 844), Vector4(0, 47, 0, 34))
+	var iphone_fit: float = iphone_board.size.x / float(Overlay.SCREEN_SIZE.x)
+	if Overlay.REWARD_TEXT_H * iphone_fit < 24.0:
+		push_error("[missions] reward text is %.1f px on iPhone 13" % (Overlay.REWARD_TEXT_H * iphone_fit))
+		ok = false
 	if str(overlay.get("_bonus_mark").get("_mode")) != "":
 		push_error("[missions] bonus mark '%s'" % overlay.get("_bonus_mark").get("_mode"))
 		ok = false
