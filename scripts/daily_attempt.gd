@@ -545,9 +545,10 @@ static func lives_from_status(status: Dictionary) -> int:
 	return -1
 
 
-# saved_used is the most lives already confirmed for saved_challenge.
-# The same challenge can never come back with more lives. A different
-# challenge id is the server's next daily period. The device clock is ignored.
+# saved_used is the last count stored for saved_challenge. A failed response
+# or a payload without a matching pair cannot grant lives back. A server pair
+# of attempts_used and attempts_remaining replaces that cache. A different
+# challenge id is the next daily period. The device clock is ignored.
 static func merge_lives(saved_challenge: String, saved_used: int, status: Dictionary) -> Dictionary:
 	var kept_challenge := saved_challenge.strip_edges()
 	var kept_used := clampi(saved_used, 0, ATTEMPT_LIMIT)
@@ -571,6 +572,16 @@ static func merge_lives(saved_challenge: String, saved_used: int, status: Dictio
 			cid = str(course.get("challenge_id", "")).strip_edges()
 	var counted := bool(status.get("attempts_counted", false))
 	var lives := lives_from_status(status)
+	if bool(status.get("attempts_inferred", false)) and int(status.get("attempts_remaining", 1)) <= 0:
+		# The live RPC has no attempts_remaining column. attempted=true means
+		# one row exists, not that the server counted three starts. Show the
+		# day closed for that response, and leave any saved count unchanged.
+		out["lives"] = 0
+		out["challenge_id"] = cid if cid != "" else kept_challenge
+		out["used"] = kept_used
+		out["store"] = false
+		out["authoritative"] = false
+		return out
 	if not counted:
 		if kept_challenge != "" and kept_used >= ATTEMPT_LIMIT and (cid == "" or cid == kept_challenge):
 			out["lives"] = 0
@@ -603,14 +614,33 @@ static func merge_lives(saved_challenge: String, saved_used: int, status: Dictio
 		out["used"] = maxi(0, ATTEMPT_LIMIT - lives)
 		out["store"] = true
 		return out
+	# A matching used/remaining pair is the server count. It replaces a higher
+	# local cache, including a day that an older boolean response closed.
+	# A remaining-only payload still cannot give a confirmed life back.
+	var authoritative := authoritative_count(status)
 	var cap := ATTEMPT_LIMIT - kept_used
-	if lives > cap:
+	if not authoritative and lives > cap:
 		lives = cap
 	out["lives"] = lives
 	out["challenge_id"] = cid
-	out["used"] = maxi(kept_used, ATTEMPT_LIMIT - lives)
+	out["authoritative"] = authoritative
+	if authoritative:
+		out["used"] = int(status.get("attempts_used", 0))
+	else:
+		out["used"] = maxi(kept_used, ATTEMPT_LIMIT - lives)
 	out["store"] = true
 	return out
+
+
+static func authoritative_count(status: Dictionary) -> bool:
+	if bool(status.get("attempts_inferred", false)) or not bool(status.get("ok", false)):
+		return false
+	if not bool(status.get("attempts_counted", false)):
+		return false
+	if not status.has("attempts_used") or not status.has("attempts_remaining"):
+		return false
+	var verdict := count_verdict(status)
+	return bool(verdict.get("consistent", false)) and str(verdict.get("source", "")) == "supabase"
 
 
 static func lives_from_claim(claim: Dictionary) -> int:

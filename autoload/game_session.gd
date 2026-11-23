@@ -1051,16 +1051,17 @@ func clear_claim_key() -> void:
 	_save()
 
 
-# Confirmed starts for one server challenge. The same challenge never gets a
-# life back. A different challenge id replaces the day. Practice does not write.
-func note_ranked_attempts(challenge_id: String, used: int, resets_unix: int = -1) -> void:
+# Confirmed starts for one server challenge. A different challenge id replaces
+# the day. Practice does not write. A lower count is kept only when the server
+# sent a matching attempts_used and attempts_remaining pair.
+func note_ranked_attempts(challenge_id: String, used: int, resets_unix: int = -1, authoritative: bool = false) -> void:
 	if DailyTestModeScript.enabled():
 		return
 	var cid := challenge_id.strip_edges()
 	if cid == "":
 		return
 	var next := clampi(used, 0, DailyAttemptScript.ATTEMPT_LIMIT)
-	if cid == daily_attempt_challenge and next < daily_attempt_used:
+	if not authoritative and cid == daily_attempt_challenge and next < daily_attempt_used:
 		next = daily_attempt_used
 	var changed := cid != daily_attempt_challenge or next != daily_attempt_used
 	daily_attempt_challenge = cid

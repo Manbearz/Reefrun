@@ -28,6 +28,7 @@ func _run() -> void:
 	ok = _check("unknown_status_is_not_three_lives", _unknown()) and ok
 	ok = _check("production_status_shape", _production_status_shape()) and ok
 	ok = _check("restart_cannot_restore_a_life", _restart_floor()) and ok
+	ok = _check("counted_pair_replaces_closed_boolean", _counted_pair_replaces_closed_boolean()) and ok
 	ok = _check("locked_button_replaces_open_art", _button_art()) and ok
 	ok = _check("locked_only_at_zero", _locked()) and ok
 	ok = _check("active_run_is_not_stopped", _active()) and ok
@@ -911,6 +912,104 @@ func _restart_floor() -> bool:
 	)
 
 
+func _counted_pair_replaces_closed_boolean() -> bool:
+	var cid := "daily:2026-11-22:cv1:pv1"
+	var legacy: Dictionary = DailyAttemptScript.parse_status({
+		"ok": true,
+		"status": 200,
+		"data": [{"attempted": true, "recoverable": false, "challenge_id": cid, "course_seed": 1}],
+	})
+	var closed: Dictionary = DailyAttemptScript.merge_lives(cid, 0, legacy)
+	var counted: Dictionary = DailyAttemptScript.parse_status({
+		"ok": true,
+		"status": 200,
+		"data": [_status_row_for(cid, 2)],
+	})
+	var replaced: Dictionary = DailyAttemptScript.merge_lives(cid, 3, counted)
+	var partial: Dictionary = DailyAttemptScript.merge_lives(cid, 3, _counted(cid, 2))
+	var failed: Dictionary = DailyAttemptScript.merge_lives(cid, 1, {"ok": false, "status": 0, "error": "offline"})
+	var none: Dictionary = DailyAttemptScript.merge_lives(cid, 0, {"ok": false, "status": 500, "error": "unavailable"})
+	if (
+		str(DailyAttemptScript.count_verdict(legacy).get("source", "")) != "legacy_consumed"
+		or int(closed.get("lives", -1)) != 0
+		or bool(closed.get("store", true))
+		or int(closed.get("used", -1)) != 0
+		or not bool(replaced.get("authoritative", false))
+		or int(replaced.get("lives", -1)) != 2
+		or int(replaced.get("used", -1)) != 1
+		or not bool(replaced.get("store", false))
+		or int(partial.get("lives", -1)) != 0
+		or int(failed.get("lives", -1)) != 2
+		or int(none.get("lives", 0)) != -1
+	):
+		return false
+	var menu_script: GDScript = load("res://scenes/menu/main_menu.gd") as GDScript
+	if menu_script == null:
+		return false
+	var menu = menu_script.new()
+	var host := Control.new()
+	var button := Button.new()
+	menu._modes = host
+	menu._daily_button = button
+	menu._daily_lives = 3
+	menu._build_daily_fish()
+	var img := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.1, 0.45, 0.95, 1.0))
+	menu._remember_fish_color(ImageTexture.create_from_image(img))
+	var color_tex: Texture2D = menu._daily_fish_color
+	var fish_ok := true
+	for remaining in [3, 2, 1, 0]:
+		menu._apply_attempt_fish(remaining)
+		var enabled: bool = not button.disabled and not menu._mode_shows_locked()
+		if enabled != (remaining > 0) or menu._daily_locked != (remaining == 0):
+			fish_ok = false
+		if not _fish_icons_match(menu, [remaining > 0, remaining > 1, remaining > 2], color_tex):
+			fish_ok = false
+	menu._daily_checking = true
+	menu._apply_attempt_fish(-1)
+	var loading: bool = button.disabled and not menu._daily_locked and menu._fish_display_lives() < 0
+	menu.free()
+	host.free()
+	button.free()
+	if not fish_ok or not loading:
+		return false
+	var session := get_root().get_node_or_null("GameSession")
+	if session == null:
+		return false
+	var prev_id: String = session.daily_attempt_challenge
+	var prev_used: int = session.daily_attempt_used
+	var prev_resets: int = session.daily_attempt_resets_unix
+	session.note_ranked_attempts(cid, 3, 99)
+	session.note_ranked_attempts(cid, 1, 99, true)
+	var lowered: bool = session.daily_attempt_used == 1 and session.daily_attempt_challenge == cid
+	session.note_ranked_attempts(cid, 0, 99, false)
+	var held: bool = session.daily_attempt_used == 1
+	session.note_ranked_attempts(prev_id, prev_used, prev_resets, true)
+	if prev_id == "":
+		session.daily_attempt_challenge = ""
+		session.daily_attempt_used = prev_used
+		session.daily_attempt_resets_unix = prev_resets
+		session._save()
+	return lowered and held
+
+
+func _status_row_for(cid: String, remaining: int) -> Dictionary:
+	return {
+		"challenge_id": cid,
+		"challenge_date": "2026-11-22",
+		"course_seed": 1,
+		"course_version": 1,
+		"physics_version": 1,
+		"as_of_unix": 1,
+		"resets_unix": 2,
+		"attempted": remaining < 3,
+		"recoverable": false,
+		"attempts_used": 3 - remaining,
+		"attempts_remaining": remaining,
+		"best_score": 0,
+	}
+
+
 func _button_art() -> bool:
 	var menu_script: GDScript = load("res://scenes/menu/main_menu.gd") as GDScript
 	if menu_script == null:
@@ -1000,6 +1099,12 @@ func _other_modes() -> bool:
 
 func _sql() -> bool:
 	var sql := FileAccess.get_file_as_string("res://tools/supabase/daily_three_attempts.sql")
+	var limit_at := sql.find("function public.reefrun_limit_daily_attempts")
+	var limit_fn := sql.substr(limit_at, sql.find("revoke all on function public.reefrun_limit_daily_attempts") - limit_at)
+	var start_at := sql.find("function public.start_daily_attempt")
+	var start_fn := sql.substr(start_at, sql.find("function public.finalize_daily_attempt") - start_at)
+	var claim_at := sql.find("function public.claim_daily_attempt")
+	var claim_fn := sql.substr(claim_at, start_at - claim_at)
 	return (
 		sql.find("greatest(0, 3 - v_used)") >= 0
 		and sql.find("unique (player_id, challenge_id, idempotency_key)") >= 0
@@ -1007,7 +1112,17 @@ func _sql() -> bool:
 		and sql.find("score = greatest(public.leaderboard_scores.score, excluded.score)") >= 0
 		and sql.find("pg_advisory_xact_lock") >= 0
 		and sql.find("America/New_York") < 0
+		and sql.find("delete from") < 0
 		and sql.find("grant execute on function public.claim_daily_attempt(uuid) to authenticated") >= 0
+		and limit_fn.find("pg_advisory_xact_lock") >= 0
+		and limit_fn.find("v_count >= 3") >= 0
+		and start_fn.find("pg_advisory_xact_lock") >= 0
+		and start_fn.find("pg_advisory_xact_lock") < start_fn.find("for update")
+		and claim_fn.find("pg_advisory_xact_lock") >= 0
+		and claim_fn.find("pg_advisory_xact_lock") < claim_fn.find("for update")
+		and claim_fn.find("v_rows >= 3") >= 0
+		and sql.find("enable row level security") >= 0
+		and sql.find("revoke all on table public.daily_attempts from public, anon, authenticated") >= 0
 	)
 
 

@@ -21,9 +21,12 @@
 -- The new columns are extra JSON fields. Old builds ignore them.
 -- Ship this SQL before the Godot client that reads attempts_remaining.
 -- Until this SQL is applied, get_daily_attempt_status omits
--- attempts_remaining. The client treats attempted=false as 0 used and
--- 3 remaining, and attempted=true as the day already consumed. The
--- second and third real starts still fail on that older function.
+-- attempts_remaining. The client shows attempted=false as 3 remaining
+-- and attempted=true as closed for that response. It does not save that
+-- boolean as three counted starts. After this SQL is applied, a matching
+-- attempts_used and attempts_remaining pair replaces that display, even
+-- on a device that already cached a closed day from the old boolean.
+-- The second and third real starts still fail until this function is live.
 --
 -- A RUN THAT CROSSES MIDNIGHT
 -- The attempt stores the challenge it was claimed on. Finalize writes the
@@ -53,6 +56,12 @@ as $$
 declare
 	v_count integer;
 begin
+	-- Same lock claim and start take first. A second insert waits until the
+	-- first transaction commits, then sees that row in this count.
+	perform pg_catalog.pg_advisory_xact_lock(
+		pg_catalog.hashtext(new.player_id::text),
+		pg_catalog.hashtext(new.challenge_id)
+	);
 	select count(*)
 	into v_count
 	from public.daily_attempts
@@ -65,6 +74,8 @@ begin
 	return new;
 end;
 $$;
+
+revoke all on function public.reefrun_limit_daily_attempts() from public, anon, authenticated;
 
 drop trigger if exists daily_attempts_limit on public.daily_attempts;
 create trigger daily_attempts_limit
@@ -211,6 +222,7 @@ declare
 	v_owned boolean := false;
 	v_replay boolean := false;
 	v_used integer := 0;
+	v_rows integer := 0;
 	v_pending uuid;
 	v_best integer := 0;
 begin
@@ -245,12 +257,23 @@ begin
 		and a.idempotency_key = p_idempotency_key
 	for update;
 
+	perform 1
+	from public.daily_attempts as a
+	where a.player_id = uid
+		and a.challenge_id = v_challenge_id
+	for update;
+
 	select count(*)
 	into v_used
 	from public.daily_attempts as a
 	where a.player_id = uid
 		and a.challenge_id = v_challenge_id
 		and a.started_at is not null;
+	select count(*)
+	into v_rows
+	from public.daily_attempts as a
+	where a.player_id = uid
+		and a.challenge_id = v_challenge_id;
 
 	if v_existing_id is not null then
 		v_replay := true;
@@ -266,6 +289,8 @@ begin
 			and a.challenge_id = v_challenge_id
 			and a.started_at is null
 			and a.finalized_at is null
+		order by a.claimed_at
+		limit 1
 		for update;
 		if v_pending is not null then
 			update public.daily_attempts
@@ -274,8 +299,14 @@ begin
 				and player_id = uid
 				and started_at is null
 				and finalized_at is null;
-			v_new_id := v_pending;
-			v_owned := true;
+			if not found then
+				v_owned := false;
+			else
+				v_new_id := v_pending;
+				v_owned := true;
+			end if;
+		elsif v_rows >= 3 then
+			v_owned := false;
 		else
 			insert into public.daily_attempts as d (player_id, challenge_id, idempotency_key)
 			values (uid, v_challenge_id, p_idempotency_key)
@@ -343,8 +374,25 @@ begin
 		raise exception 'missing attempt';
 	end if;
 
-	select a.started_at, a.finalized_at, a.challenge_id
-	into v_started, v_finalized, v_challenge_id
+	-- Read the challenge without holding its row. The advisory lock has to
+	-- come before any row lock so this cannot deadlock with claim.
+	select a.challenge_id
+	into v_challenge_id
+	from public.daily_attempts as a
+	where a.id = p_attempt_id
+		and a.player_id = uid;
+
+	if v_challenge_id is null then
+		raise exception 'attempt not found';
+	end if;
+
+	perform pg_catalog.pg_advisory_xact_lock(
+		pg_catalog.hashtext(uid::text),
+		pg_catalog.hashtext(v_challenge_id)
+	);
+
+	select a.started_at, a.finalized_at
+	into v_started, v_finalized
 	from public.daily_attempts as a
 	where a.id = p_attempt_id
 		and a.player_id = uid
@@ -354,10 +402,11 @@ begin
 		raise exception 'attempt not found';
 	end if;
 
-	perform pg_catalog.pg_advisory_xact_lock(
-		pg_catalog.hashtext(uid::text),
-		pg_catalog.hashtext(v_challenge_id)
-	);
+	perform 1
+	from public.daily_attempts as a
+	where a.player_id = uid
+		and a.challenge_id = v_challenge_id
+	for update;
 
 	select count(*)
 	into v_used
@@ -543,6 +592,9 @@ begin
 	select p_attempt_id, p_score, true, false, v_best;
 end;
 $$;
+
+alter table public.daily_attempts enable row level security;
+revoke all on table public.daily_attempts from public, anon, authenticated;
 
 revoke all on function public.get_daily_attempt_status(uuid) from public, anon;
 revoke all on function public.claim_daily_attempt(uuid) from public, anon;

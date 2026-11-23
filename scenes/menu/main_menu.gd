@@ -2982,7 +2982,8 @@ func _finish_daily_status(status: Dictionary, generation: int) -> void:
 		GameSession.note_ranked_attempts(
 			str(merged.get("challenge_id", "")),
 			int(merged.get("used", 0)),
-			int(status.get("resets_at_unix", -1))
+			int(status.get("resets_at_unix", -1)),
+			bool(merged.get("authoritative", false))
 		)
 	var lives := int(merged.get("lives", -1))
 	var course: Variant = status.get("course", {})
@@ -3258,21 +3259,25 @@ func _choose_daily() -> void:
 		int(challenge.get("course_seed", 0)),
 	])
 	if bool(started.get("attempts_counted", false)):
+		var started_status := {
+			"ok": true,
+			"attempts_counted": true,
+			"attempts_remaining": int(started.get("attempts_remaining", 0)),
+			"challenge_id": str(challenge.get("challenge_id", "")),
+		}
+		if started.has("attempts_used"):
+			started_status["attempts_used"] = int(started.get("attempts_used", 0))
 		var merged: Dictionary = DailyAttemptScript.merge_lives(
 			GameSession.daily_attempt_challenge,
 			GameSession.daily_attempt_used,
-			{
-				"ok": true,
-				"attempts_counted": true,
-				"attempts_remaining": int(started.get("attempts_remaining", 0)),
-				"challenge_id": str(challenge.get("challenge_id", "")),
-			}
+			started_status
 		)
 		if bool(merged.get("store", false)):
 			GameSession.note_ranked_attempts(
 				str(merged.get("challenge_id", "")),
 				int(merged.get("used", 0)),
-				int(claim.get("resets_at_unix", -1))
+				int(claim.get("resets_at_unix", -1)),
+				bool(merged.get("authoritative", false))
 			)
 		_apply_attempt_fish(int(merged.get("lives", 0)))
 	_begin_claimed_game(challenge)
